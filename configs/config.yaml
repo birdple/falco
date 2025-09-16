@@ -1,0 +1,57 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: "30s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+  shutdown_timeout: "30s"
+
+storage:
+  primary: "filesystem"
+  secondary: "none"
+  local:
+    path: "./data/images"
+    create_dirs: true
+  s3:
+    bucket: "your-image-bucket"
+    region: "us-west-2"
+    endpoint: ""
+    access_key: ""
+    secret_key: ""
+
+cache:
+  size_mb: 256
+  ttl_hours: 24
+  cleanup_interval: "10m"
+
+processing:
+  max_file_size_mb: 10
+  default_quality: 85
+  default_format: "webp"
+  concurrent_workers: 4
+  supported_formats: ["jpeg", "png", "webp"]
+  max_dimensions:
+    width: 4000
+    height: 4000
+
+security:
+  api_key_required: false
+  api_key: ""
+  cors:
+    origins: ["http://localhost:3000", "http://localhost:8080"]
+    methods: ["GET", "POST", "OPTIONS"]
+    headers: ["Content-Type", "Authorization"]
+  rate_limit:
+    requests_per_minute: 1000
+    burst: 100
+
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+  enable_caller: false
+
+development:
+  debug: true
+  enable_pprof: false
+  enable_metrics: false

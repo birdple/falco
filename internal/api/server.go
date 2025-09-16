@@ -1,0 +1,133 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"github.com/sirupsen/logrus"
+
+	apimw "github.com/ivangsm/imagine/internal/api/middleware"
+	"github.com/ivangsm/imagine/internal/config"
+	"github.com/ivangsm/imagine/internal/processor"
+	"github.com/ivangsm/imagine/internal/storage"
+)
+
+// ServerConfig holds configuration for the API server
+type ServerConfig struct {
+	Config         *config.Config
+	Logger         *logrus.Logger
+	Storage        storage.StorageBackend
+	ImageProcessor processor.ImageProcessor
+}
+
+// Server represents the HTTP server
+type Server struct {
+	config         *config.Config
+	logger         *logrus.Logger
+	router         *chi.Mux
+	server         *http.Server
+	storage        storage.StorageBackend
+	imageProcessor processor.ImageProcessor
+}
+
+// NewServer creates a new API server
+func NewServer(cfg *ServerConfig) *Server {
+	s := &Server{
+		config:         cfg.Config,
+		logger:         cfg.Logger,
+		storage:        cfg.Storage,
+		imageProcessor: cfg.ImageProcessor,
+	}
+
+	s.setupRouter()
+	s.setupServer()
+
+	return s
+}
+
+// setupRouter configures the Chi router with middleware and routes
+func (s *Server) setupRouter() {
+	r := chi.NewRouter()
+
+	// Security middleware
+	r.Use(apimw.SecurityHeaders)
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Timeout(60 * time.Second))
+
+	// Request size limiting
+	maxRequestSize := s.config.GetMaxFileSizeBytes() * 2 // Allow some overhead
+	sizeLimiter := apimw.NewRequestSizeLimiter(maxRequestSize, s.logger)
+	r.Use(sizeLimiter.Handler)
+
+	// Rate limiting
+	if s.config.Security.RateLimit.RequestsPerMinute > 0 {
+		rateLimiter := apimw.NewRateLimiter(
+			s.config.Security.RateLimit.RequestsPerMinute,
+			s.config.Security.RateLimit.Burst,
+			s.logger,
+		)
+		r.Use(rateLimiter.Handler)
+	}
+
+	// API key authentication
+	if s.config.Security.APIKeyRequired || s.config.Security.APIKey != "" {
+		apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger)
+		r.Use(apiKeyAuth.Handler)
+	}
+
+	// CORS middleware
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   s.config.Security.CORS.Origins,
+		AllowedMethods:   s.config.Security.CORS.Methods,
+		AllowedHeaders:   append(s.config.Security.CORS.Headers, "X-API-Key", "Authorization"),
+		ExposedHeaders:   []string{"Link", "X-RateLimit-Limit", "X-RateLimit-Remaining"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}))
+
+	// Health check endpoint (no auth required)
+	r.Get("/health", s.handleHealth)
+
+	// API routes
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/upload", s.handleUpload)
+		r.Get("/images/{id}", s.handleDelivery)
+	})
+
+	s.router = r
+}
+
+// setupServer configures the HTTP server
+func (s *Server) setupServer() {
+	s.server = &http.Server{
+		Addr:         s.config.GetServerAddress(),
+		Handler:      s.router,
+		ReadTimeout:  s.config.Server.ReadTimeout,
+		WriteTimeout: s.config.Server.WriteTimeout,
+		IdleTimeout:  s.config.Server.IdleTimeout,
+	}
+}
+
+// Start starts the HTTP server
+func (s *Server) Start() error {
+	s.logger.WithField("address", s.config.GetServerAddress()).Info("Starting HTTP server")
+	return s.server.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the server
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.logger.Info("Shutting down HTTP server")
+	return s.server.Shutdown(ctx)
+}
+
+// Router returns the Chi router (useful for testing)
+func (s *Server) Router() *chi.Mux {
+	return s.router
+}
