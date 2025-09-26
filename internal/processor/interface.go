@@ -13,6 +13,29 @@ type ProcessingParams struct {
 	Quality int    `json:"quality,omitempty"`
 	Format  string `json:"format,omitempty"`
 	Fit     string `json:"fit,omitempty"` // "cover", "contain", "fill"
+
+	// Advanced transformations
+	CropX  int     `json:"crop_x,omitempty"` // Crop start X position
+	CropY  int     `json:"crop_y,omitempty"` // Crop start Y position
+	CropW  int     `json:"crop_w,omitempty"` // Crop width
+	CropH  int     `json:"crop_h,omitempty"` // Crop height
+	Rotate float64 `json:"rotate,omitempty"` // Rotation angle in degrees
+	Flip   string  `json:"flip,omitempty"`   // "horizontal", "vertical"
+	Flop   bool    `json:"flop,omitempty"`   // Mirror horizontally
+
+	// Filters and effects
+	Brightness float64 `json:"brightness,omitempty"` // -100 to 100
+	Contrast   float64 `json:"contrast,omitempty"`   // -100 to 100
+	Gamma      float64 `json:"gamma,omitempty"`      // 0.0 to 3.0
+	Saturation float64 `json:"saturation,omitempty"` // -100 to 500
+	Hue        int     `json:"hue,omitempty"`        // -180 to 180
+	Blur       float64 `json:"blur,omitempty"`       // 0.0 to 100.0
+	Sharpen    float64 `json:"sharpen,omitempty"`    // 0.0 to 100.0
+
+	// Watermark
+	WatermarkURL      string  `json:"watermark_url,omitempty"`
+	WatermarkOpacity  float64 `json:"watermark_opacity,omitempty"`  // 0.0 to 1.0
+	WatermarkPosition string  `json:"watermark_position,omitempty"` // "top-left", "top-right", "bottom-left", "bottom-right", "center"
 }
 
 // ProcessedImage holds the result of image processing

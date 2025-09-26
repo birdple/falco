@@ -250,6 +250,92 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse advanced transformation parameters
+	if cropX := r.URL.Query().Get("crop_x"); cropX != "" {
+		if x, err := strconv.Atoi(cropX); err == nil && x >= 0 {
+			params.CropX = x
+		}
+	}
+
+	if cropY := r.URL.Query().Get("crop_y"); cropY != "" {
+		if y, err := strconv.Atoi(cropY); err == nil && y >= 0 {
+			params.CropY = y
+		}
+	}
+
+	if cropW := r.URL.Query().Get("crop_w"); cropW != "" {
+		if w, err := strconv.Atoi(cropW); err == nil && w > 0 {
+			params.CropW = w
+		}
+	}
+
+	if cropH := r.URL.Query().Get("crop_h"); cropH != "" {
+		if h, err := strconv.Atoi(cropH); err == nil && h > 0 {
+			params.CropH = h
+		}
+	}
+
+	if rotate := r.URL.Query().Get("rotate"); rotate != "" {
+		if r, err := strconv.ParseFloat(rotate, 64); err == nil {
+			params.Rotate = r
+		}
+	}
+
+	if flip := r.URL.Query().Get("flip"); flip != "" {
+		if flip == "horizontal" || flip == "vertical" {
+			params.Flip = flip
+		}
+	}
+
+	if flop := r.URL.Query().Get("flop"); flop != "" {
+		if f, err := strconv.ParseBool(flop); err == nil {
+			params.Flop = f
+		}
+	}
+
+	// Parse filter parameters
+	if brightness := r.URL.Query().Get("brightness"); brightness != "" {
+		if b, err := strconv.ParseFloat(brightness, 64); err == nil && b >= -100 && b <= 100 {
+			params.Brightness = b
+		}
+	}
+
+	if contrast := r.URL.Query().Get("contrast"); contrast != "" {
+		if c, err := strconv.ParseFloat(contrast, 64); err == nil && c >= -100 && c <= 100 {
+			params.Contrast = c
+		}
+	}
+
+	if gamma := r.URL.Query().Get("gamma"); gamma != "" {
+		if g, err := strconv.ParseFloat(gamma, 64); err == nil && g >= 0 && g <= 3 {
+			params.Gamma = g
+		}
+	}
+
+	if saturation := r.URL.Query().Get("saturation"); saturation != "" {
+		if s, err := strconv.ParseFloat(saturation, 64); err == nil && s >= -100 && s <= 500 {
+			params.Saturation = s
+		}
+	}
+
+	if hue := r.URL.Query().Get("hue"); hue != "" {
+		if h, err := strconv.Atoi(hue); err == nil && h >= -180 && h <= 180 {
+			params.Hue = h
+		}
+	}
+
+	if blur := r.URL.Query().Get("blur"); blur != "" {
+		if b, err := strconv.ParseFloat(blur, 64); err == nil && b >= 0 && b <= 100 {
+			params.Blur = b
+		}
+	}
+
+	if sharpen := r.URL.Query().Get("sharpen"); sharpen != "" {
+		if s, err := strconv.ParseFloat(sharpen, 64); err == nil && s >= 0 && s <= 100 {
+			params.Sharpen = s
+		}
+	}
+
 	// Retrieve original image
 	reader, metadata, err := s.storage.Retrieve(ctx, imageID)
 	if err != nil {

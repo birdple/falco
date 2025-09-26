@@ -121,10 +121,27 @@ func (s *Server) Start() error {
 	return s.server.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server with enhanced resource management
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.logger.Info("Shutting down HTTP server")
-	return s.server.Shutdown(ctx)
+	s.logger.Info("Initiating HTTP server shutdown")
+
+	// Set a reasonable timeout if none provided
+	shutdownCtx := ctx
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 30*time.Second {
+		var cancel context.CancelFunc
+		shutdownCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+
+	// Attempt graceful shutdown
+	err := s.server.Shutdown(shutdownCtx)
+	if err != nil {
+		s.logger.WithError(err).Warn("HTTP server shutdown completed with errors")
+		return err
+	}
+
+	s.logger.Info("HTTP server shutdown completed successfully")
+	return nil
 }
 
 // Router returns the Chi router (useful for testing)

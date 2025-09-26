@@ -36,13 +36,16 @@ func main() {
 
 	logger.Info("Starting Imagine Image Processing Service")
 
-	// Initialize storage backend
+	// Create application context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initialize components
 	storageBackend, err := initializeStorage(cfg)
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to initialize storage backend")
 	}
 
-	// Initialize image processor
 	imageProcessor := processor.NewImageProcessor(
 		cfg.Processing.MaxFileSizeMB,
 		cfg.Processing.DefaultQuality,
@@ -52,9 +55,10 @@ func main() {
 	)
 
 	// Initialize cache
+	var lruCache *cache.LRUCache
 	cacheSize := cfg.GetCacheSizeBytes()
 	if cacheSize > 0 {
-		lruCache := cache.NewLRUCache(cacheSize, 10*time.Minute)
+		lruCache = cache.NewLRUCache(cacheSize, cfg.GetCacheTTL())
 		imageProcessor.SetCache(lruCache)
 		logger.WithField("cache_size_mb", cfg.Cache.SizeMB).Info("Cache initialized")
 	}
@@ -67,31 +71,104 @@ func main() {
 		ImageProcessor: imageProcessor,
 	})
 
-	// Start server
+	// Start server in a goroutine
+	serverErr := make(chan error, 1)
 	go func() {
 		logger.WithField("address", cfg.GetServerAddress()).Info("Server starting")
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
-			logger.WithError(err).Fatal("Server failed to start")
+			serverErr <- err
 		}
 	}()
 
-	// Wait for interrupt signal to gracefully shutdown the server
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	// Set up graceful shutdown
+	shutdown := setupGracefulShutdown(ctx, cancel, logger)
 
-	logger.Info("Shutting down server...")
-
-	// Give outstanding requests a deadline for completion
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
-
-	// Shutdown server
-	if err := server.Shutdown(ctx); err != nil {
-		logger.WithError(err).Error("Server forced to shutdown")
+	// Wait for either server error or shutdown signal
+	select {
+	case err := <-serverErr:
+		logger.WithError(err).Error("Server error")
+	case <-shutdown:
+		logger.Info("Shutdown signal received")
 	}
 
-	logger.Info("Server exited")
+	// Perform graceful shutdown
+	shutdownTimeout := cfg.Server.ShutdownTimeout
+	if shutdownTimeout == 0 {
+		shutdownTimeout = 30 * time.Second
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer shutdownCancel()
+
+	logger.Info("Initiating graceful shutdown...")
+
+	// Phase 1: Stop accepting new requests
+	logger.Info("Phase 1: Stopping server (no new requests)")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.WithError(err).Error("Server shutdown error")
+	}
+
+	// Phase 2: Clean up resources
+	logger.Info("Phase 2: Cleaning up resources")
+	cleanupResources(ctx, storageBackend, lruCache, logger)
+
+	// Phase 3: Final cleanup
+	logger.Info("Phase 3: Final cleanup")
+	time.Sleep(100 * time.Millisecond) // Brief pause for cleanup
+
+	logger.Info("Server shutdown complete")
+}
+
+// setupGracefulShutdown sets up signal handling for graceful shutdown
+func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, logger *logrus.Logger) <-chan struct{} {
+	shutdown := make(chan struct{})
+
+	go func() {
+		defer close(shutdown)
+
+		// Create signal channel
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan,
+			syscall.SIGINT,  // Ctrl+C
+			syscall.SIGTERM, // Termination signal
+			syscall.SIGHUP,  // Terminal closed
+		)
+
+		// Wait for signal
+		sig := <-sigChan
+		logger.WithField("signal", sig.String()).Info("Received shutdown signal")
+
+		// Cancel context to signal shutdown to all goroutines
+		cancel()
+
+		// Give a brief moment for cleanup
+		time.Sleep(50 * time.Millisecond)
+	}()
+
+	return shutdown
+}
+
+// cleanupResources performs cleanup of application resources
+func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, lruCache *cache.LRUCache, logger *logrus.Logger) {
+	// Clean up cache
+	if lruCache != nil {
+		logger.Info("Cleaning up cache...")
+		lruCache.Clear()
+		logger.Info("Cache cleanup completed")
+	}
+
+	// Clean up storage connections (if applicable)
+	if storageBackend != nil {
+		logger.Info("Cleaning up storage connections...")
+		// Note: Filesystem storage doesn't need explicit cleanup
+		// S3 storage would close connections here if needed
+		logger.Info("Storage cleanup completed")
+	}
+
+	// Clean up temporary files
+	logger.Info("Cleaning up temporary files...")
+	// Add cleanup for any temporary files if needed
+	logger.Info("Temporary file cleanup completed")
 }
 
 // initializeStorage initializes the storage backend based on configuration

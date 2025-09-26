@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -188,9 +189,32 @@ func (p *ImageProcessorImpl) applyTransformations(img image.Image, params *Proce
 	// Start with the original image
 	result := img
 
+	// Apply cropping if requested
+	if params.CropW > 0 && params.CropH > 0 {
+		result = p.cropImage(result, params)
+	}
+
+	// Apply flipping/mirroring
+	if params.Flip != "" {
+		result = p.flipImage(result, params.Flip)
+	}
+
+	// Apply rotation if requested
+	if params.Rotate != 0 {
+		result = p.rotateImage(result, params.Rotate)
+	}
+
+	// Apply filters and effects
+	result = p.applyFilters(result, params)
+
 	// Apply resizing if requested
 	if params.Width > 0 || params.Height > 0 {
 		result = p.resizeImage(result, params)
+	}
+
+	// Apply watermark if requested
+	if params.WatermarkURL != "" {
+		result = p.applyWatermark(result, params)
 	}
 
 	// Ensure dimensions don't exceed maximum
@@ -256,6 +280,129 @@ func (p *ImageProcessorImpl) enforceMaxDimensions(img image.Image) image.Image {
 	}
 
 	return imaging.Resize(img, width, height, imaging.Lanczos)
+}
+
+// cropImage crops the image to the specified dimensions
+func (p *ImageProcessorImpl) cropImage(img image.Image, params *ProcessingParams) image.Image {
+	bounds := img.Bounds()
+	imgWidth := bounds.Dx()
+	imgHeight := bounds.Dy()
+
+	// Default crop position to top-left if not specified
+	x := params.CropX
+	y := params.CropY
+	width := params.CropW
+	height := params.CropH
+
+	// Ensure crop dimensions don't exceed image bounds
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x+width > imgWidth {
+		width = imgWidth - x
+	}
+	if y+height > imgHeight {
+		height = imgHeight - y
+	}
+
+	// Ensure minimum dimensions
+	if width <= 0 || height <= 0 {
+		return img
+	}
+
+	return imaging.Crop(img, image.Rect(x, y, x+width, y+height))
+}
+
+// flipImage flips the image horizontally or vertically
+func (p *ImageProcessorImpl) flipImage(img image.Image, direction string) image.Image {
+	switch direction {
+	case "horizontal":
+		return imaging.FlipH(img)
+	case "vertical":
+		return imaging.FlipV(img)
+	default:
+		return img
+	}
+}
+
+// rotateImage rotates the image by the specified angle
+func (p *ImageProcessorImpl) rotateImage(img image.Image, angle float64) image.Image {
+	// Normalize angle to 0-360 range
+	for angle < 0 {
+		angle += 360
+	}
+	angle = float64(int(angle) % 360)
+
+	switch angle {
+	case 90:
+		return imaging.Rotate90(img)
+	case 180:
+		return imaging.Rotate180(img)
+	case 270:
+		return imaging.Rotate270(img)
+	default:
+		// For arbitrary angles, use general rotation
+		return imaging.Rotate(img, angle, color.Transparent)
+	}
+}
+
+// applyFilters applies various image filters and effects
+func (p *ImageProcessorImpl) applyFilters(img image.Image, params *ProcessingParams) image.Image {
+	result := img
+
+	// Apply brightness adjustment
+	if params.Brightness != 0 {
+		result = imaging.AdjustBrightness(result, params.Brightness)
+	}
+
+	// Apply contrast adjustment
+	if params.Contrast != 0 {
+		result = imaging.AdjustContrast(result, params.Contrast)
+	}
+
+	// Apply gamma correction
+	if params.Gamma != 0 {
+		result = imaging.AdjustGamma(result, params.Gamma)
+	}
+
+	// Apply saturation adjustment
+	if params.Saturation != 0 {
+		result = imaging.AdjustSaturation(result, params.Saturation)
+	}
+
+	// Apply hue adjustment
+	if params.Hue != 0 {
+		// Note: imaging library doesn't have direct hue adjustment
+		// This would require a more complex implementation
+	}
+
+	// Apply blur
+	if params.Blur > 0 {
+		result = imaging.Blur(result, params.Blur)
+	}
+
+	// Apply sharpening
+	if params.Sharpen > 0 {
+		result = imaging.Sharpen(result, params.Sharpen)
+	}
+
+	return result
+}
+
+// applyWatermark applies a watermark to the image
+func (p *ImageProcessorImpl) applyWatermark(img image.Image, params *ProcessingParams) image.Image {
+	// This is a placeholder for watermark functionality
+	// In a real implementation, you would:
+	// 1. Download the watermark image from params.WatermarkURL
+	// 2. Resize it appropriately
+	// 3. Position it according to params.WatermarkPosition
+	// 4. Blend it with the specified opacity
+
+	// For now, return the original image
+	return img
 }
 
 // determineOutputFormat determines the output format based on parameters
