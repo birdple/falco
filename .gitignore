@@ -92,3 +92,7 @@ config.override.yaml
 testdata/output/
 
 images/
+data/
+
+server
+*.webp

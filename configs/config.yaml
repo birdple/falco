@@ -45,6 +45,10 @@ security:
     requests_per_minute: 1000
     burst: 100
 
+  honeypot:
+    db_path: "data/honeypot.db"
+    ban_threshold: 3
+
 logging:
   level: "info"
   format: "text"

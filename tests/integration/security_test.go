@@ -6,11 +6,32 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ivangsm/imagine/internal/database"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 
 	apimw "github.com/ivangsm/imagine/internal/api/middleware"
 )
+
+// setupTestHoneypot creates a new honeypot with an in-memory database for testing.
+func setupTestHoneypot(t *testing.T) (*apimw.Honeypot, func()) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel) // Keep test logs clean
+
+	// Use in-memory SQLite database for tests
+	db, err := database.NewHoneypotDB(":memory:", logger)
+	if err != nil {
+		t.Fatalf("Failed to create in-memory honeypot DB: %v", err)
+	}
+
+	honeypot := apimw.NewHoneypot(db, logger)
+
+	cleanup := func() {
+		db.Close()
+	}
+
+	return honeypot, cleanup
+}
 
 func TestSecurityHeaders(t *testing.T) {
 	// Create a test handler
@@ -42,7 +63,10 @@ func TestAPIKeyAuth_ValidKey(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
-	auth := apimw.NewAPIKeyAuth("test-key", logger)
+	honeypot, cleanup := setupTestHoneypot(t)
+	defer cleanup()
+
+	auth := apimw.NewAPIKeyAuth("test-key", logger, honeypot)
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -66,7 +90,10 @@ func TestAPIKeyAuth_InvalidKey(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
-	auth := apimw.NewAPIKeyAuth("test-key", logger)
+	honeypot, cleanup := setupTestHoneypot(t)
+	defer cleanup()
+
+	auth := apimw.NewAPIKeyAuth("test-key", logger, honeypot)
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -89,7 +116,10 @@ func TestAPIKeyAuth_BearerToken(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
-	auth := apimw.NewAPIKeyAuth("test-key", logger)
+	honeypot, cleanup := setupTestHoneypot(t)
+	defer cleanup()
+
+	auth := apimw.NewAPIKeyAuth("test-key", logger, honeypot)
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -113,7 +143,10 @@ func TestAPIKeyAuth_ExemptPath(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
-	auth := apimw.NewAPIKeyAuth("test-key", logger)
+	honeypot, cleanup := setupTestHoneypot(t)
+	defer cleanup()
+
+	auth := apimw.NewAPIKeyAuth("test-key", logger, honeypot)
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

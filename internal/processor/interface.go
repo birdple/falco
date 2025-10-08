@@ -145,6 +145,8 @@ func GetContentType(format ImageFormat) string {
 		return "image/jpeg"
 	case FormatPNG:
 		return "image/png"
+	case FormatWebP:
+		return "image/webp"
 	default:
 		return "application/octet-stream"
 	}

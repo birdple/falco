@@ -88,6 +88,13 @@ type SecurityConfig struct {
 		RequestsPerMinute int `mapstructure:"requests_per_minute"`
 		Burst             int `mapstructure:"burst"`
 	} `mapstructure:"rate_limit"`
+	Honeypot HoneypotConfig `mapstructure:"honeypot"`
+}
+
+// HoneypotConfig holds honeypot-specific configuration
+type HoneypotConfig struct {
+	DBPath       string `mapstructure:"db_path"`
+	BanThreshold int    `mapstructure:"ban_threshold"`
 }
 
 // LoggingConfig holds logging configuration
@@ -171,7 +178,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.cors.headers", []string{"Content-Type", "Authorization"})
 	v.SetDefault("security.rate_limit.requests_per_minute", 1000)
 	v.SetDefault("security.rate_limit.burst", 100)
-
+	v.SetDefault("security.honeypot.db_path", "data/honeypot.db")
+	v.SetDefault("security.honeypot.ban_threshold", 3)
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
