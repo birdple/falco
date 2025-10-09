@@ -100,12 +100,12 @@ echo -e "\n${BLUE}Step 2: File Upload Tests${NC}"
 test_upload "images/1757578781.png" "PNG File Upload"
 
 # Test JPEG file
-test_upload "images/IMG_1014.JPG" "JPEG File Upload"
+test_upload "images/1014.JPG" "JPEG File Upload"
 
 # Test WebP file (expected to fail)
 echo -e "\n${YELLOW}Testing: WebP File Upload (Expected to Fail)${NC}"
-echo "File: images/IMG_8882.webp"
-response=$(http -f POST http://localhost:8080/api/v1/upload file@images/IMG_8882.webp 2>/dev/null)
+echo "File: images/8882.webp"
+response=$(http -f POST http://localhost:8080/api/v1/upload file@images/8882.webp 2>/dev/null)
 if echo "$response" | grep -q '"success":false'; then
     echo -e "${YELLOW}✅ EXPECTED FAILURE (WebP not supported)${NC}"
 else

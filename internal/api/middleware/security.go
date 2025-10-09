@@ -39,9 +39,10 @@ func SecurityHeaders(next http.Handler) http.Handler {
 
 // APIKeyAuth provides API key authentication
 type APIKeyAuth struct {
-	apiKey      string
-	logger      *logrus.Logger
-	exemptPaths map[string]bool
+	apiKey            string
+	logger            *logrus.Logger
+	exemptPaths       map[string]bool
+	exemptPathPrefixes []string
 }
 
 // NewAPIKeyAuth creates a new API key authentication middleware
@@ -51,20 +52,34 @@ func NewAPIKeyAuth(apiKey string, logger *logrus.Logger) *APIKeyAuth {
 		"/":       true,
 	}
 
+	// Exempt path prefixes - any path starting with these prefixes will skip auth
+	exemptPathPrefixes := []string{
+		"/api/v1/images/", // Image delivery/retrieval endpoints (public)
+	}
+
 	return &APIKeyAuth{
-		apiKey:      apiKey,
-		logger:      logger,
-		exemptPaths: exemptPaths,
+		apiKey:            apiKey,
+		logger:            logger,
+		exemptPaths:       exemptPaths,
+		exemptPathPrefixes: exemptPathPrefixes,
 	}
 }
 
 // Handler returns the middleware handler
 func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip authentication for exempt paths
+		// Skip authentication for exact exempt paths
 		if a.exemptPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
+		}
+
+		// Skip authentication for paths with exempt prefixes
+		for _, prefix := range a.exemptPathPrefixes {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		// Get API key from header

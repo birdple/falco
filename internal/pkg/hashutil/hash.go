@@ -23,12 +23,9 @@ func GenerateSHA256FromReader(reader io.Reader) (string, error) {
 }
 
 // GenerateImageID generates a unique image ID from hash
-// Format: img_<first16chars_of_hash>
+// Format: <first16chars_of_hash>
 func GenerateImageID(hash string) string {
-	if len(hash) > 16 {
-		hash = hash[:16]
-	}
-	return "img_" + hash
+	return hash[:16]
 }
 
 // GenerateImageIDFromData generates an image ID from data

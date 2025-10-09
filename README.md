@@ -92,10 +92,10 @@ CACHE_SIZE_MB=512
 CONCURRENT_WORKERS=4
 
 # Security Configuration
-API_KEY_REQUIRED=false               # Set to true to enable API key auth
-API_KEY=your-secret-api-key
+API_KEY_REQUIRED=false               # Set to true to enable API key auth for uploads
+API_KEY=your-secret-api-key          # Required when API_KEY_REQUIRED=true
 CORS_ORIGINS=*                       # Comma-separated list
-RATE_LIMIT_RPM=1000                  # Requests per minute
+RATE_LIMIT_RPM=1000                  # Requests per minute (applies to all endpoints)
 ```
 
 ### MinIO Setup
@@ -168,7 +168,10 @@ http -f POST localhost:8080/api/v1/upload \
   file@image.jpg
 ```
 
-**Note:** The `/health` endpoint is always accessible without authentication.
+**Note:**
+- The `/health` endpoint is always accessible without authentication
+- **Image retrieval/delivery endpoints (`/api/v1/images/{id}`) are always public** - no API key required
+- API key is only required for **upload endpoint** (`/api/v1/upload`) when `API_KEY_REQUIRED=true`
 
 ### Upload Image
 
@@ -320,50 +323,20 @@ http POST localhost:8080/api/v1/upload \
 
 ### Retrieve and Transform Images
 
+**Important:** Image retrieval endpoints are **always public** and do not require authentication. This allows you to share image URLs freely.
+
 ```bash
-# cURL - Get original image (without auth)
+# cURL - Get original image
 curl http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
 
-# HTTPie - Get original image (without auth)
+# HTTPie - Get original image
 http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6
 
-# cURL - Get original image (with X-API-Key header)
-curl -H "X-API-Key: your-secret-api-key" \
-  http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
-
-# HTTPie - Get original image (with X-API-Key header)
-http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6 \
-  X-API-Key:your-secret-api-key
-
-# cURL - Get original image (with Bearer token)
-curl -H "Authorization: Bearer your-secret-api-key" \
-  http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
-
-# HTTPie - Get original image (with Bearer token)
-http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6 \
-  Authorization:"Bearer your-secret-api-key"
-
-# cURL - Get resized image (short parameters, without auth)
+# cURL - Get resized image (short parameters)
 curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
 
-# HTTPie - Get resized image (short parameters, without auth)
+# HTTPie - Get resized image (short parameters)
 http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
-
-# cURL - Get resized image (with X-API-Key header)
-curl -H "X-API-Key: your-secret-api-key" \
-  "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
-
-# HTTPie - Get resized image (with X-API-Key header)
-http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg" \
-  X-API-Key:your-secret-api-key
-
-# cURL - Get resized image (with Bearer token)
-curl -H "Authorization: Bearer your-secret-api-key" \
-  "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
-
-# HTTPie - Get resized image (with Bearer token)
-http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg" \
-  Authorization:"Bearer your-secret-api-key"
 
 # cURL - Get resized image (long parameters)
 curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?width=800&height=600&quality=90&format=webp"
@@ -378,7 +351,7 @@ curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&q=85
 http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&q=85"
 ```
 
-**Note:** When `API_KEY_REQUIRED=true`, you must include the API key in the headers for all image retrieval requests. You can use either `X-API-Key` header or `Authorization: Bearer` token.
+**Note:** No authentication required foage retrieval. URLs can be shared publicly and embedded in websites, apps, or CDNs.
 
 #### Basic Transformation Parameters
 
@@ -386,20 +359,20 @@ http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&
 |-------|------|------|-------|-------------|
 | `w` | `width` | int | 1-8000 | Target width in pixels |
 | `h` | `height` | int | 1-8000 | Target height in pixels |
-| `q` | `quality` | int | 1-100 | Output quality (higher = better quality, larger file) |
+| `q` | `quality` | int | 1-100 | Outpuality (higher = better quality, larger file) |
 | `f` | `format` | string | jpeg, png, webp | Output format |
 | - | `fit` | string | cover, contain, fill | Resize mode |
 
 **Resize Modes (`fit` parameter):**
 - `cover` - Resize to cover dimensions, cropping if needed (default)
 - `contain` - Resize to fit within dimensions, maintaining aspect ratio
-- `fill` - Resize and stretch to exact dimensions
+- `fill` - Resize and stretch to exact dimons
 
 #### Advanced Transformation Parameters
 
 **Cropping:**
 - `crop_x` - X coordinate for crop start (pixels)
-- `crop_y` - Y coordinate for crop start (pixels)
+- `crop_y` - Y coordinate for crop start (ls)
 - `crop_w` - Crop width (pixels)
 - `crop_h` - Crop height (pixels)
 
@@ -432,7 +405,7 @@ http --download "localhost:8080/api/v1/images/img_abc?flip=horizontal"
 
 **Color Adjustments:**
 - `brightness` - Brightness adjustment (-100 to 100)
-- `contrast` - Contrast adjustment (-100 to 100)
+- `contrast` - Contrast adjustment (-100 t0)
 - `saturation` - Saturation adjustment (-100 to 500)
 - `gamma` - Gamma correction (0 to 3)
 - `hue` - Hue rotation (-180 to 180 degrees)
@@ -445,10 +418,10 @@ curl "http://localhost:8080/api/v1/images/img_abc?brightness=20&saturation=30"
 http --download "localhost:8080/api/v1/images/img_abc?brightness=20&saturation=30"
 
 # cURL - Adjust gamma
-curl "http://localhost:8080/api/v1/images/img_abc?gamma=1.5"
+curl "http://localhost:8080/api/v1/images/abc?gamma=1.5"
 
 # HTTPie - Adjust gamma
-http --download "localhost:8080/api/v1/images/img_abc?gamma=1.5"
+http --download "localhost:8080/api/v1/images/abc?gamma=1.5"
 ```
 
 **Filters:**
@@ -466,16 +439,16 @@ http --download "localhost:8080/api/v1/images/img_abc?blur=5"
 curl "http://localhost:8080/api/v1/images/img_abc?sharpen=2"
 
 # HTTPie - Sharpen image
-http --download "localhost:8080/api/v1/images/img_abc?sharpen=2"
+http --download "localhost:8080/api/v1/imaimg_abc?sharpen=2"
 ```
 
 #### Complex Transformation Examples
 
 ```bash
-# cURL - Resize, convert to WebP, and adjust colors
+# cURL - Resize, convert to WebP, and adjuolors
 curl "http://localhost:8080/api/v1/images/img_abc?w=1200&h=800&f=webp&q=85&brightness=10&contrast=5"
 
-# HTTPie - Resize, convert to WebP, and adjust colors
+# HTTPie - Resize, convert to WebP, and adjustors
 http --download "localhost:8080/api/v1/images/img_abc?w=1200&h=800&f=webp&q=85&brightness=10&contrast=5"
 
 # cURL - Create thumbnail with crop and blur
@@ -657,10 +630,10 @@ imagine/
 ### Built-in Security Features
 - **Input Validation** - File type validation using magic numbers
 - **Size Limits** - Configurable file size restrictions (default 10MB)
-- **Rate Limiting** - Per-client request throttling (configurable RPM)
+- **Rate Limiting** - Per-client request throttling (configurable RPM, applies to all endpoints)
 - **CORS Support** - Configurable cross-origin policies
 - **Secure Headers** - X-Frame-Options, CSP, X-Content-Type-Options, etc.
-- **API Key Authentication** - Optional API key protection with constant-time comparison
+- **API Key Authentication** - Optional API key protection for uploads only (images are publicly accessible)
 
 ### Security Best Practices
 - Non-root container execution
