@@ -1,67 +1,73 @@
-# Build stage
+# ----------------------------------------
+# Build stage (Etapa de Compilación)
+# ----------------------------------------
 FROM golang:1.25-alpine AS builder
 
-# Install build dependencies
+# Instala las dependencias de C (GCC/G++) necesarias para CGO en Alpine.
 RUN apk add --no-cache gcc g++ musl-dev
 
-# Set working directory
+# Establece el directorio de trabajo
 WORKDIR /app
 
-# Copy go mod files
+# Copia los archivos de módulo
 COPY go.mod go.sum ./
 
-# Download dependencies
+# Descarga las dependencias
 RUN go mod download
 
-# Copy source code
+# Copia el código fuente completo (¡Necesario para que CGO encuentre todo!)
 COPY . .
 
-# Build the binary with optimizations
+# Compila el binario con optimizaciones
+# *AÑADIDOS* -tags '...' para asegurar el enlace correcto de SQLite/CGO en Alpine.
 RUN CGO_ENABLED=1 go build \
+    -tags 'netgo osusergo static_build sqlite_omit_load_extension' \
     -a \
     -installsuffix cgo \
-    -ldflags="-w -s -X main.version=dev" \
+    -ldflags="-w -s" \
     -o imagine-server \
     cmd/server/main.go
 
-# Runtime stage
+# ----------------------------------------
+# Runtime stage (Etapa de Ejecución)
+# ----------------------------------------
 FROM alpine:3.18
 
-# Install runtime dependencies
+# Instala las dependencias de ejecución (certs y zona horaria)
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     && rm -rf /var/cache/apk/*
 
-# Create non-root user
+# Crea un usuario sin privilegios
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
-# Create necessary directories
+# Crea los directorios necesarios
 RUN mkdir -p /app/data /app/logs && \
     chown -R appuser:appgroup /app
 
-# Set working directory
+# Establece el directorio de trabajo
 WORKDIR /app
 
-# Copy binary from builder stage
+# Copia el binario desde la etapa 'builder'
 COPY --from=builder /app/imagine-server .
 
-# Copy configuration files
+# Copia los archivos de configuración
 COPY --from=builder /app/configs ./configs
 
-# Change ownership of the binary
+# Cambia la propiedad del binario
 RUN chown appuser:appgroup imagine-server
 
-# Switch to non-root user
+# Cambia al usuario sin privilegios
 USER appuser
 
-# Expose port
+# Expone el puerto
 EXPOSE 8080
 
-# Health check
+# Chequeo de salud
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Run the application
+# Comando de ejecución
 CMD ["./imagine-server"]
