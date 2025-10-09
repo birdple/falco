@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary with optimizations
-RUN CGO_ENABLED=1 GOOS=linux go build \
+RUN CGO_ENABLED=1 go build \
     -a \
     -installsuffix cgo \
     -ldflags="-w -s -X main.version=dev" \

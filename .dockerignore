@@ -1,0 +1,87 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+ARCHITECTURE.md
+TECHNICAL_SPEC.md
+DEPLOYMENT_GUIDE.md
+IMPLEMENTATION_ROADMAP.md
+
+# Development files
+.env.example
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+tests/
+coverage.out
+coverage.html
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Logs
+logs/
+*.log
+
+# Data directories (for production builds)
+data/
+uploads/
+cache/
+
+# Temporary files
+tmp/
+*.tmp
+*.temp
+
+# Node modules (if any)
+node_modules/
+
+# Coverage reports
+*.out
+coverage.html
+
+# Air (hot reload)
+.air.toml
+
+# Makefile (not needed in container)
+Makefile
+
+# Deployment files (will be mounted as volumes)
+deployments/
+
+# SSL certificates (will be mounted as volumes)
+ssl/
+*.pem
+*.key
+*.crt

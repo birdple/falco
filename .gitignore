@@ -48,9 +48,6 @@ logs/
 uploads/
 cache/
 
-# Docker
-.dockerignore
-
 # Air (hot reload)
 tmp/
 .air.toml
