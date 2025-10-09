@@ -321,17 +321,49 @@ http POST localhost:8080/api/v1/upload \
 ### Retrieve and Transform Images
 
 ```bash
-# cURL - Get original image
+# cURL - Get original image (without auth)
 curl http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
 
-# HTTPie - Get original image (download to file)
+# HTTPie - Get original image (without auth)
 http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6
 
-# cURL - Get resized image (short parameters)
+# cURL - Get original image (with X-API-Key header)
+curl -H "X-API-Key: your-secret-api-key" \
+  http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
+
+# HTTPie - Get original image (with X-API-Key header)
+http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6 \
+  X-API-Key:your-secret-api-key
+
+# cURL - Get original image (with Bearer token)
+curl -H "Authorization: Bearer your-secret-api-key" \
+  http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
+
+# HTTPie - Get original image (with Bearer token)
+http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6 \
+  Authorization:"Bearer your-secret-api-key"
+
+# cURL - Get resized image (short parameters, without auth)
 curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
 
-# HTTPie - Get resized image (short parameters)
+# HTTPie - Get resized image (short parameters, without auth)
 http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
+
+# cURL - Get resized image (with X-API-Key header)
+curl -H "X-API-Key: your-secret-api-key" \
+  "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
+
+# HTTPie - Get resized image (with X-API-Key header)
+http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg" \
+  X-API-Key:your-secret-api-key
+
+# cURL - Get resized image (with Bearer token)
+curl -H "Authorization: Bearer your-secret-api-key" \
+  "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
+
+# HTTPie - Get resized image (with Bearer token)
+http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg" \
+  Authorization:"Bearer your-secret-api-key"
 
 # cURL - Get resized image (long parameters)
 curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?width=800&height=600&quality=90&format=webp"
@@ -345,6 +377,8 @@ curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&q=85
 # HTTPie - Mix short and long parameters
 http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&q=85"
 ```
+
+**Note:** When `API_KEY_REQUIRED=true`, you must include the API key in the headers for all image retrieval requests. You can use either `X-API-Key` header or `Authorization: Bearer` token.
 
 #### Basic Transformation Parameters
 
@@ -492,10 +526,11 @@ graph TB
     Client[Client Applications] --> API[API Server - Chi Router]
 
     API --> MW[Middleware Layer]
+    MW --> Security[Security Headers]
     MW --> Auth[API Key Auth]
     MW --> RateLimit[Rate Limiter]
-    MW --> Security[Security Headers]
     MW --> CORS[CORS Handler]
+    MW --> SizeLimit[Request Size Limiter]
 
     MW --> Handlers[HTTP Handlers]
     Handlers --> Upload[Upload Handler]
@@ -542,8 +577,7 @@ imagine/
 │   │   ├── handlers.go             # Request handlers (upload, delivery, health)
 │   │   ├── server.go               # Server setup and middleware
 │   │   └── middleware/             # HTTP middleware
-│   │       ├── security.go         # Auth, rate limiting, security headers
-│   │       └── honeypot.go         # Honeypot for attack detection
+│   │       └── security.go         # Auth, rate limiting, security headers
 │   ├── config/                     # Configuration management (SOLID refactored)
 │   │   ├── config.go               # Main config loader
 │   │   ├── types.go                # Configuration types
@@ -568,8 +602,6 @@ imagine/
 │   │   └── interface.go            # Processor interfaces
 │   ├── cache/                      # Caching layer
 │   │   └── lru.go                  # LRU cache implementation
-│   ├── database/                   # Database utilities
-│   │   └── database.go             # Database helpers
 │   └── pkg/                        # Shared packages (DRY)
 │       ├── httputil/               # HTTP utilities
 │       │   ├── client.go           # Client IP, User Agent extraction
@@ -629,7 +661,6 @@ imagine/
 - **CORS Support** - Configurable cross-origin policies
 - **Secure Headers** - X-Frame-Options, CSP, X-Content-Type-Options, etc.
 - **API Key Authentication** - Optional API key protection with constant-time comparison
-- **Honeypot System** - Detects and tracks malicious activity
 
 ### Security Best Practices
 - Non-root container execution
@@ -665,7 +696,7 @@ Too Many Requests
 - Request/response logging with correlation IDs
 - Error tracking and alerting
 - Performance metrics logging
-- Security event logging (failed auth attempts, rate limits)
+- Security event logging (failed auth attempts, rate limits, etc.)
 
 ### Metrics (Optional)
 - Prometheus metrics endpoint (when enabled)

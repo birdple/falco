@@ -42,11 +42,10 @@ type APIKeyAuth struct {
 	apiKey      string
 	logger      *logrus.Logger
 	exemptPaths map[string]bool
-	honeypot    *Honeypot
 }
 
 // NewAPIKeyAuth creates a new API key authentication middleware
-func NewAPIKeyAuth(apiKey string, logger *logrus.Logger, honeypot *Honeypot) *APIKeyAuth {
+func NewAPIKeyAuth(apiKey string, logger *logrus.Logger) *APIKeyAuth {
 	exemptPaths := map[string]bool{
 		"/health": true,
 		"/":       true,
@@ -56,7 +55,6 @@ func NewAPIKeyAuth(apiKey string, logger *logrus.Logger, honeypot *Honeypot) *AP
 		apiKey:      apiKey,
 		logger:      logger,
 		exemptPaths: exemptPaths,
-		honeypot:    honeypot,
 	}
 }
 
@@ -85,7 +83,6 @@ func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 					"path":       r.URL.Path,
 				}).Warn("Missing API key")
 
-				a.honeypot.RecordFailedAttempt(r)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -98,7 +95,6 @@ func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 					"path":       r.URL.Path,
 				}).Warn("Invalid API key")
 
-				a.honeypot.RecordFailedAttempt(r)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}

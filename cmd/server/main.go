@@ -11,10 +11,8 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/birdple/imagine/internal/api"
-	apimw "github.com/birdple/imagine/internal/api/middleware"
 	"github.com/birdple/imagine/internal/cache"
 	"github.com/birdple/imagine/internal/config"
-	"github.com/birdple/imagine/internal/database"
 	"github.com/birdple/imagine/internal/processor"
 	"github.com/birdple/imagine/internal/storage"
 )
@@ -75,20 +73,12 @@ func main() {
 		logger.WithField("cache_size_mb", cfg.Cache.SizeMB).Info("Cache initialized")
 	}
 
-	// Initialize Honeypot
-	honeypotDB, err := database.NewHoneypotDB(cfg.Security.Honeypot.DBPath, logger)
-	if err != nil {
-		logger.WithError(err).Fatal("Failed to initialize honeypot database")
-	}
-	honeypot := apimw.NewHoneypot(honeypotDB, logger)
-
 	// Initialize API server
 	server := api.NewServer(&api.ServerConfig{
 		Config:         cfg,
 		Logger:         logger,
 		Storage:        storageBackend,
 		ImageProcessor: imageProcessor,
-		Honeypot:       honeypot,
 	})
 
 	// Start server in a goroutine
@@ -130,7 +120,7 @@ func main() {
 
 	// Phase 2: Clean up resources
 	logger.Info("Phase 2: Cleaning up resources")
-	cleanupResources(ctx, storageBackend, lruCache, honeypotDB, logger)
+	cleanupResources(ctx, storageBackend, lruCache, logger)
 
 	// Phase 3: Final cleanup
 	logger.Info("Phase 3: Final cleanup")
@@ -169,16 +159,7 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, logge
 }
 
 // cleanupResources performs cleanup of application resources
-func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, lruCache *cache.LRUCache, honeypotDB *database.HoneypotDB, logger *logrus.Logger) {
-	// Clean up honeypot database
-	if honeypotDB != nil {
-		logger.Info("Closing honeypot database...")
-		if err := honeypotDB.Close(); err != nil {
-			logger.WithError(err).Error("Failed to close honeypot database")
-		}
-		logger.Info("Honeypot database closed")
-	}
-
+func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, lruCache *cache.LRUCache, logger *logrus.Logger) {
 	// Clean up cache
 	if lruCache != nil {
 		logger.Info("Cleaning up cache...")

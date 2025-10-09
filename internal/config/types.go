@@ -90,13 +90,6 @@ type SecurityConfig struct {
 		RequestsPerMinute int `mapstructure:"requests_per_minute"`
 		Burst             int `mapstructure:"burst"`
 	} `mapstructure:"rate_limit"`
-	Honeypot HoneypotConfig `mapstructure:"honeypot"`
-}
-
-// HoneypotConfig holds honeypot-specific configuration
-type HoneypotConfig struct {
-	DBPath       string `mapstructure:"db_path"`
-	BanThreshold int    `mapstructure:"ban_threshold"`
 }
 
 // LoggingConfig holds logging configuration

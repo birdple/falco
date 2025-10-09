@@ -22,7 +22,6 @@ type ServerConfig struct {
 	Logger         *logrus.Logger
 	Storage        storage.StorageBackend
 	ImageProcessor processor.ImageProcessor
-	Honeypot       *apimw.Honeypot
 }
 
 // Server represents the HTTP server
@@ -33,7 +32,6 @@ type Server struct {
 	server         *http.Server
 	storage        storage.StorageBackend
 	imageProcessor processor.ImageProcessor
-	honeypot       *apimw.Honeypot
 }
 
 // NewServer creates a new API server
@@ -43,7 +41,6 @@ func NewServer(cfg *ServerConfig) *Server {
 		logger:         cfg.Logger,
 		storage:        cfg.Storage,
 		imageProcessor: cfg.ImageProcessor,
-		honeypot:       cfg.Honeypot,
 	}
 
 	s.setupRouter()
@@ -58,7 +55,6 @@ func (s *Server) setupRouter() {
 
 	// Security middleware
 	r.Use(apimw.SecurityHeaders)
-	r.Use(s.honeypot.Handler)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
@@ -82,7 +78,7 @@ func (s *Server) setupRouter() {
 
 	// API key authentication
 	if s.config.Security.APIKeyRequired {
-		apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger, s.honeypot)
+		apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger)
 		r.Use(apiKeyAuth.Handler)
 	}
 
@@ -110,9 +106,8 @@ func (s *Server) setupRouter() {
 	s.router = r
 }
 
-// handleNotFound handles requests for non-existent routes, recording them as honeypot attempts.
+// handleNotFound handles requests for non-existent routes
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
-	s.honeypot.RecordFailedAttempt(r)
 	http.NotFound(w, r)
 }
 
