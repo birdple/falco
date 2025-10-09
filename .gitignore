@@ -46,7 +46,6 @@ Thumbs.db
 data/
 logs/
 uploads/
-cache/
 
 # Air (hot reload)
 tmp/
