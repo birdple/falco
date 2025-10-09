@@ -55,7 +55,7 @@ gantt
 mkdir -p {cmd/server,internal/{api/{handlers,middleware},config,storage,processor,cache,logger},pkg/utils,configs,deployments,docs,tests/{unit,integration}}
 
 # 2. Update go.mod with dependencies
-go mod init github.com/ivangsm/imagine
+go mod init github.com/birdple/imagine
 ```
 
 **Key Dependencies to Add**:

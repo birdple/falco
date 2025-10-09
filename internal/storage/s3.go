@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -107,7 +108,7 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 	// Update metadata with S3-specific fields
 	metadata.ID = key
 	metadata.ContentType = aws.ToString(result.ContentType)
-	metadata.Size = result.ContentLength
+	metadata.Size = *result.ContentLength
 	metadata.ETag = strings.Trim(aws.ToString(result.ETag), `"`)
 
 	return result.Body, metadata, nil
@@ -152,7 +153,7 @@ func (s *S3Storage) Health(ctx context.Context) error {
 	// Try to list objects with max 1 result
 	_, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:  aws.String(s.bucket),
-		MaxKeys: 1,
+		MaxKeys: aws.Int32(1),
 	})
 
 	if err != nil {
@@ -179,7 +180,7 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 
 		for _, obj := range page.Contents {
 			stats.TotalImages++
-			stats.TotalSize += obj.Size
+			stats.TotalSize += *obj.Size
 		}
 	}
 
@@ -188,10 +189,8 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 
 // isNotFoundError checks if an error indicates that an object was not found
 func isNotFoundError(err error) bool {
-	var notFoundErr *types.NotFound
-	var noSuchKeyErr *types.NoSuchKey
-	return err.Error() == "NotFound" ||
-		strings.Contains(err.Error(), "NoSuchKey") ||
-		(notFoundErr != nil && err == notFoundErr) ||
-		(noSuchKeyErr != nil && err == noSuchKeyErr)
+	var notFound *types.NotFound
+	var noSuchKey *types.NoSuchKey
+	return errors.As(err, &notFound) || errors.As(err, &noSuchKey) ||
+		err.Error() == "NotFound" || strings.Contains(err.Error(), "NoSuchKey")
 }

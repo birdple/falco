@@ -3,8 +3,8 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/ivangsm/imagine/internal/database"
-	"github.com/ivangsm/imagine/internal/pkg/httputil"
+	"github.com/birdple/imagine/internal/database"
+	"github.com/birdple/imagine/internal/pkg/httputil"
 	"github.com/sirupsen/logrus"
 )
 

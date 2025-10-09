@@ -10,13 +10,13 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/ivangsm/imagine/internal/api"
-	apimw "github.com/ivangsm/imagine/internal/api/middleware"
-	"github.com/ivangsm/imagine/internal/cache"
-	"github.com/ivangsm/imagine/internal/config"
-	"github.com/ivangsm/imagine/internal/database"
-	"github.com/ivangsm/imagine/internal/processor"
-	"github.com/ivangsm/imagine/internal/storage"
+	"github.com/birdple/imagine/internal/api"
+	apimw "github.com/birdple/imagine/internal/api/middleware"
+	"github.com/birdple/imagine/internal/cache"
+	"github.com/birdple/imagine/internal/config"
+	"github.com/birdple/imagine/internal/database"
+	"github.com/birdple/imagine/internal/processor"
+	"github.com/birdple/imagine/internal/storage"
 )
 
 func main() {

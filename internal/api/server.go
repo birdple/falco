@@ -10,10 +10,10 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/sirupsen/logrus"
 
-	apimw "github.com/ivangsm/imagine/internal/api/middleware"
-	"github.com/ivangsm/imagine/internal/config"
-	"github.com/ivangsm/imagine/internal/processor"
-	"github.com/ivangsm/imagine/internal/storage"
+	apimw "github.com/birdple/imagine/internal/api/middleware"
+	"github.com/birdple/imagine/internal/config"
+	"github.com/birdple/imagine/internal/processor"
+	"github.com/birdple/imagine/internal/storage"
 )
 
 // ServerConfig holds configuration for the API server

@@ -10,7 +10,7 @@ A blazing-fast image processing service built in Go that serves as a simplified 
 - **RESTful API** with Chi router for lightning-fast routing
 - **Multi-format Support** - JPEG, PNG, WebP with WebP as default for optimal compression
 - **Dynamic Transformations** - Resize, quality adjustment, format conversion on-the-fly
-- **Flexible Storage** - Local filesystem primary with S3 secondary storage
+- **Flexible Storage** - Local filesystem, Minio, or Amazon S3 storage
 - **High Performance** - Concurrent processing with goroutine pools
 - **Smart Caching** - In-memory LRU cache for frequently accessed images
 
@@ -28,12 +28,14 @@ A blazing-fast image processing service built in Go that serves as a simplified 
 - Go 1.21+
 - Docker (optional)
 - AWS CLI (for S3 storage)
+- Minio CLI (for Minio storage)
+
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/ivangsm/imagine.git
+git clone https://github.com/birdple/imagine.git
 cd imagine
 
 # Install dependencies
@@ -65,7 +67,7 @@ HOST=0.0.0.0
 ENV=production
 
 # Storage Configuration
-STORAGE_PRIMARY=filesystem
+STORAGE_PRIMARY=filesystem # filesystem, s3, minio
 STORAGE_LOCAL_PATH=/app/data/images
 STORAGE_S3_BUCKET=my-image-bucket
 STORAGE_S3_REGION=us-west-2
@@ -101,8 +103,8 @@ curl -X POST http://localhost:8080/api/v1/upload \
 {
   "success": true,
   "data": {
-    "id": "img_1234567890abcdef",
-    "url": "/api/v1/images/img_1234567890abcdef",
+    "id": "1234567890abcdef",
+    "url": "/api/v1/images/1234567890abcdef",
     "format": "webp",
     "size": 1024576,
     "dimensions": {
@@ -260,7 +262,7 @@ imagine/
 
 ```dockerfile
 # Multi-stage build for minimal image size
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 # ... build stage
 
 FROM alpine:3.18 AS production
@@ -288,6 +290,11 @@ spec:
 - **Google Cloud Run** - Fully managed serverless platform
 - **Azure Container Instances** - Simple container deployment
 - **DigitalOcean App Platform** - Platform-as-a-Service deployment
+- **Coolify** - Open-source platform
+- **Dokploy** - Open-source platform
+
+
+
 
 ## 🧪 Testing
 
@@ -359,9 +366,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - 📧 Email: support@imagine-service.com
-- 🐛 Issues: [GitHub Issues](https://github.com/ivangsm/imagine/issues)
-- 📖 Documentation: [Wiki](https://github.com/ivangsm/imagine/wiki)
-- 💬 Discussions: [GitHub Discussions](https://github.com/ivangsm/imagine/discussions)
+- 🐛 Issues: [GitHub Issues](https://github.com/birdple/imagine/issues)
+- 📖 Documentation: [Wiki](https://github.com/birdple/imagine/wiki)
+- 💬 Discussions: [GitHub Discussions](https://github.com/birdple/imagine/discussions)
 
 ---
 

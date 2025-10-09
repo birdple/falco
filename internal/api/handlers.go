@@ -13,9 +13,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/ivangsm/imagine/internal/pkg/hashutil"
-	"github.com/ivangsm/imagine/internal/processor"
-	"github.com/ivangsm/imagine/internal/storage"
+	"github.com/birdple/imagine/internal/pkg/hashutil"
+	"github.com/birdple/imagine/internal/processor"
+	"github.com/birdple/imagine/internal/storage"
 )
 
 // UploadResponse represents the response for successful uploads

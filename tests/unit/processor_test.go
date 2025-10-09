@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ivangsm/imagine/internal/processor"
+	"github.com/birdple/imagine/internal/processor"
 )
 
 func TestImageProcessor_Process(t *testing.T) {

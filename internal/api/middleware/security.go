@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ivangsm/imagine/internal/pkg/httputil"
+	"github.com/birdple/imagine/internal/pkg/httputil"
 	"github.com/sirupsen/logrus"
 )
 

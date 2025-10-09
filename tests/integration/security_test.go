@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ivangsm/imagine/internal/database"
+	"github.com/birdple/imagine/internal/database"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 
-	apimw "github.com/ivangsm/imagine/internal/api/middleware"
+	apimw "github.com/birdple/imagine/internal/api/middleware"
 )
 
 // setupTestHoneypot creates a new honeypot with an in-memory database for testing.
