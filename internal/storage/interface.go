@@ -53,6 +53,7 @@ type StorageType string
 const (
 	StorageTypeFilesystem StorageType = "filesystem"
 	StorageTypeS3         StorageType = "s3"
+	StorageTypeMinIO      StorageType = "minio"
 )
 
 // StorageConfig holds configuration for storage backends
@@ -64,6 +65,21 @@ type StorageConfig struct {
 	S3Endpoint string
 	AccessKey  string
 	SecretKey  string
+	// MinIO specific fields
+	MinIOEndpoint string
+	MinIOBucket   string
+	MinIORegion   string
+	MinIOSecure   bool
+}
+
+// MinIOConfig holds MinIO storage configuration
+type MinIOConfig struct {
+	Bucket    string
+	Endpoint  string
+	Region    string
+	AccessKey string
+	SecretKey string
+	Secure    bool
 }
 
 // NewStorageBackend creates a new storage backend based on the configuration
@@ -78,6 +94,15 @@ func NewStorageBackend(config *StorageConfig) (StorageBackend, error) {
 			Endpoint:  config.S3Endpoint,
 			AccessKey: config.AccessKey,
 			SecretKey: config.SecretKey,
+		})
+	case StorageTypeMinIO:
+		return NewMinIOStorage(&MinIOConfig{
+			Bucket:    config.MinIOBucket,
+			Endpoint:  config.MinIOEndpoint,
+			Region:    config.MinIORegion,
+			AccessKey: config.AccessKey,
+			SecretKey: config.SecretKey,
+			Secure:    config.MinIOSecure,
 		})
 	default:
 		return nil, ErrUnsupportedStorageType

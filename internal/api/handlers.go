@@ -59,8 +59,25 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	var quality int
 	var format string
 
-	// Handle multipart form upload
-	if strings.Contains(contentType, "multipart/form-data") {
+	// Handle direct binary upload (image/*)
+	if strings.HasPrefix(contentType, "image/") {
+		imageReader = r.Body
+		filename = "image" + getExtensionFromContentType(contentType)
+
+		// Get optional parameters from query string
+		if q := r.URL.Query().Get("quality"); q != "" {
+			var err error
+			if quality, err = strconv.Atoi(q); err != nil {
+				s.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter")
+				return
+			}
+		}
+
+		if f := r.URL.Query().Get("format"); f != "" {
+			format = f
+		}
+
+	} else if strings.Contains(contentType, "multipart/form-data") {
 		// Parse multipart form
 		err := r.ParseMultipartForm(32 << 20) // 32MB max memory
 		if err != nil {
@@ -205,7 +222,8 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters for transformations
 	params := &processor.ProcessingParams{}
 
-	if width := r.URL.Query().Get("w"); width != "" {
+	// Support both short (w) and long (width) parameter names
+	if width := getQueryParam(r, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= s.config.Processing.MaxDimensions.Width {
 			params.Width = widthVal
 		} else {
@@ -214,7 +232,7 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if height := r.URL.Query().Get("h"); height != "" {
+	if height := getQueryParam(r, "h", "height"); height != "" {
 		if h, err := strconv.Atoi(height); err == nil && h > 0 && h <= s.config.Processing.MaxDimensions.Height {
 			params.Height = h
 		} else {
@@ -223,7 +241,7 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if quality := r.URL.Query().Get("q"); quality != "" {
+	if quality := getQueryParam(r, "q", "quality"); quality != "" {
 		if q, err := strconv.Atoi(quality); err == nil && q > 0 && q <= 100 {
 			params.Quality = q
 		} else {
@@ -232,7 +250,7 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if format := r.URL.Query().Get("f"); format != "" {
+	if format := getQueryParam(r, "f", "format"); format != "" {
 		if s.imageProcessor.ValidateFormat(format) {
 			params.Format = format
 		} else {
@@ -416,6 +434,32 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // Helper functions
+
+// getQueryParam returns the first non-empty value from multiple parameter names
+func getQueryParam(r *http.Request, names ...string) string {
+	for _, name := range names {
+		if value := r.URL.Query().Get(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// getExtensionFromContentType returns file extension based on content type
+func getExtensionFromContentType(contentType string) string {
+	switch {
+	case strings.Contains(contentType, "image/png"):
+		return ".png"
+	case strings.Contains(contentType, "image/jpeg"), strings.Contains(contentType, "image/jpg"):
+		return ".jpg"
+	case strings.Contains(contentType, "image/webp"):
+		return ".webp"
+	case strings.Contains(contentType, "image/gif"):
+		return ".gif"
+	default:
+		return ".bin"
+	}
+}
 
 func (s *Server) sendError(w http.ResponseWriter, statusCode int, code, message string) {
 	response := UploadResponse{

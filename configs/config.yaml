@@ -18,6 +18,13 @@ storage:
     endpoint: ""
     access_key: ""
     secret_key: ""
+  minio:
+    bucket: "your-minio-bucket"
+    endpoint: "http://localhost:9000"
+    region: "us-east-1"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+    secure: false
 
 cache:
   size_mb: 256

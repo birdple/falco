@@ -6,6 +6,7 @@
 - Go 1.21+ installed
 - Docker and Docker Compose
 - AWS CLI configured (for S3 storage)
+- MinIO server (optional, for MinIO storage)
 - Make utility
 
 ### Local Development Setup
@@ -307,6 +308,91 @@ spec:
 }
 ```
 
+### MinIO Deployment
+
+#### Docker Compose with MinIO
+```yaml
+# docker-compose.minio.yml
+version: '3.8'
+
+services:
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./data/minio:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  imagine-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - ENV=production
+      - PORT=8080
+      - STORAGE_PRIMARY=minio
+      - STORAGE_MINIO_BUCKET=images
+      - STORAGE_MINIO_ENDPOINT=http://minio:9000
+      - STORAGE_MINIO_ACCESS_KEY=minioadmin
+      - STORAGE_MINIO_SECRET_KEY=minioadmin
+      - STORAGE_MINIO_SECURE=false
+      - CACHE_SIZE_MB=512
+      - LOG_LEVEL=info
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+```
+
+#### MinIO Setup Commands
+```bash
+# Create bucket for images
+docker-compose -f docker-compose.minio.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
+docker-compose -f docker-compose.minio.yml exec minio mc mb local/images
+docker-compose -f docker-compose.minio.yml exec minio mc policy set public local/images
+
+# Set bucket versioning (optional)
+docker-compose -f docker-compose.minio.yml exec minio mc version enable local/images
+```
+
+#### Kubernetes with MinIO Operator
+```yaml
+# k8s/minio-tenant.yaml
+apiVersion: minio.min.io/v2
+kind: Tenant
+metadata:
+  name: imagine-storage
+  namespace: imagine-service
+spec:
+  pools:
+  - servers: 4
+    volumesPerServer: 4
+    size: 100Gi
+    storageClassName: fast-ssd
+  credentials:
+    accessKey: minioadmin
+    secretKey: minioadmin
+  buckets:
+  - name: images
+  requestAutoCert: false
+  certConfig: {}
+```
+
 ## Configuration Management
 
 ### Environment Variables Reference
@@ -323,6 +409,12 @@ spec:
 | `STORAGE_S3_REGION` | us-west-2 | S3 region |
 | `STORAGE_S3_ACCESS_KEY` | - | S3 access key |
 | `STORAGE_S3_SECRET_KEY` | - | S3 secret key |
+| `STORAGE_MINIO_BUCKET` | your-minio-bucket | MinIO bucket name |
+| `STORAGE_MINIO_ENDPOINT` | http://localhost:9000 | MinIO server endpoint |
+| `STORAGE_MINIO_REGION` | us-east-1 | MinIO region |
+| `STORAGE_MINIO_ACCESS_KEY` | minioadmin | MinIO access key |
+| `STORAGE_MINIO_SECRET_KEY` | minioadmin | MinIO secret key |
+| `STORAGE_MINIO_SECURE` | false | Use HTTPS for MinIO connection |
 | `CACHE_SIZE_MB` | 256 | Cache size in MB |
 | `CACHE_TTL_HOURS` | 24 | Cache TTL in hours |
 | `MAX_FILE_SIZE_MB` | 10 | Maximum file size |
@@ -362,6 +454,25 @@ STORAGE_SECONDARY=filesystem
 STORAGE_LOCAL_PATH=/app/data/images
 STORAGE_S3_BUCKET=prod-image-bucket
 STORAGE_S3_REGION=us-west-2
+CACHE_SIZE_MB=512
+LOG_LEVEL=info
+LOG_FORMAT=json
+API_KEY_REQUIRED=true
+RATE_LIMIT_RPM=1000
+```
+
+#### MinIO Production (.env.minio)
+```bash
+ENV=production
+PORT=8080
+HOST=0.0.0.0
+STORAGE_PRIMARY=minio
+STORAGE_SECONDARY=filesystem
+STORAGE_LOCAL_PATH=/app/data/images
+STORAGE_MINIO_BUCKET=prod-images
+STORAGE_MINIO_ENDPOINT=https://minio.yourdomain.com
+STORAGE_MINIO_REGION=us-east-1
+STORAGE_MINIO_SECURE=true
 CACHE_SIZE_MB=512
 LOG_LEVEL=info
 LOG_FORMAT=json

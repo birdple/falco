@@ -81,7 +81,7 @@ func (s *Server) setupRouter() {
 	}
 
 	// API key authentication
-	if s.config.Security.APIKeyRequired || s.config.Security.APIKey != "" {
+	if s.config.Security.APIKeyRequired {
 		apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger, s.honeypot)
 		r.Use(apiKeyAuth.Handler)
 	}

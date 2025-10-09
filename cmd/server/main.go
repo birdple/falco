@@ -38,6 +38,16 @@ func main() {
 
 	logger.Info("Starting Imagine Image Processing Service")
 
+	// Debug: Show storage configuration
+	logger.WithFields(logrus.Fields{
+		"storage_primary":   cfg.Storage.Primary,
+		"storage_secondary": cfg.Storage.Secondary,
+		"s3_bucket":         cfg.Storage.S3.Bucket,
+		"minio_bucket":      cfg.Storage.MinIO.Bucket,
+		"minio_endpoint":    cfg.Storage.MinIO.Endpoint,
+		"local_path":        cfg.GetLocalStoragePath(),
+	}).Info("Storage configuration loaded")
+
 	// Create application context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -192,15 +202,57 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 
 // initializeStorage initializes the storage backend based on configuration
 func initializeStorage(cfg *config.Config) (storage.StorageBackend, error) {
+	storageType := storage.StorageType(cfg.Storage.Primary)
+
+	// Debug: Show what storage type we're trying to initialize
+	logrus.WithFields(logrus.Fields{
+		"requested_type": storageType,
+		"primary_config": cfg.Storage.Primary,
+		"minio_endpoint": cfg.Storage.MinIO.Endpoint,
+		"minio_bucket":   cfg.Storage.MinIO.Bucket,
+		"s3_bucket":      cfg.Storage.S3.Bucket,
+	}).Info("Initializing storage backend")
+
+	// Determine which credentials to use based on storage type
+	accessKey := cfg.Storage.S3.AccessKey
+	secretKey := cfg.Storage.S3.SecretKey
+	if storageType == storage.StorageTypeMinIO {
+		accessKey = cfg.Storage.MinIO.AccessKey
+		secretKey = cfg.Storage.MinIO.SecretKey
+	}
+
 	storageConfig := &storage.StorageConfig{
-		Type:       storage.StorageType(cfg.Storage.Primary),
+		Type:       storageType,
 		LocalPath:  cfg.GetLocalStoragePath(),
 		S3Bucket:   cfg.Storage.S3.Bucket,
 		S3Region:   cfg.Storage.S3.Region,
 		S3Endpoint: cfg.Storage.S3.Endpoint,
-		AccessKey:  cfg.Storage.S3.AccessKey,
-		SecretKey:  cfg.Storage.S3.SecretKey,
+		AccessKey:  accessKey,
+		SecretKey:  secretKey,
+		// MinIO configuration
+		MinIOBucket:   cfg.Storage.MinIO.Bucket,
+		MinIOEndpoint: cfg.Storage.MinIO.Endpoint,
+		MinIORegion:   cfg.Storage.MinIO.Region,
+		MinIOSecure:   cfg.Storage.MinIO.Secure,
 	}
 
-	return storage.NewStorageBackend(storageConfig)
+	backend, err := storage.NewStorageBackend(storageConfig)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to initialize storage backend")
+		return nil, err
+	}
+
+	// Show what type of storage we actually created
+	switch storageType {
+	case storage.StorageTypeMinIO:
+		logrus.Info("Using MinIO storage backend")
+	case storage.StorageTypeS3:
+		logrus.Info("Using S3 storage backend")
+	case storage.StorageTypeFilesystem:
+		logrus.Info("Using filesystem storage backend")
+	default:
+		logrus.WithField("type", storageType).Warn("Unknown storage backend type")
+	}
+
+	return backend, nil
 }

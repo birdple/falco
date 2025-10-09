@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
@@ -38,6 +39,7 @@ type StorageConfig struct {
 	Secondary string             `mapstructure:"secondary"`
 	Local     LocalStorageConfig `mapstructure:"local"`
 	S3        S3StorageConfig    `mapstructure:"s3"`
+	MinIO     MinIOStorageConfig `mapstructure:"minio"`
 }
 
 // LocalStorageConfig holds local filesystem storage configuration
@@ -53,6 +55,16 @@ type S3StorageConfig struct {
 	Endpoint  string `mapstructure:"endpoint"`
 	AccessKey string `mapstructure:"access_key"`
 	SecretKey string `mapstructure:"secret_key"`
+}
+
+// MinIOStorageConfig holds MinIO storage configuration
+type MinIOStorageConfig struct {
+	Bucket    string `mapstructure:"bucket"`
+	Endpoint  string `mapstructure:"endpoint"`
+	Region    string `mapstructure:"region"`
+	AccessKey string `mapstructure:"access_key"`
+	SecretKey string `mapstructure:"secret_key"`
+	Secure    bool   `mapstructure:"secure"`
 }
 
 // CacheConfig holds cache-related configuration
@@ -114,17 +126,24 @@ type DevelopmentConfig struct {
 
 // Load loads configuration from various sources
 func Load() (*Config, error) {
+	// Load .env file first
+	if err := godotenv.Load(); err != nil {
+		// .env file is optional, so don't fail if not found
+		// Just log that we're not using .env file
+		fmt.Println("No .env file found or failed to load, using system environment variables")
+	}
+
 	v := viper.New()
 
 	// Set defaults
 	setDefaults(v)
 
-	// Load from config file
+	// Load from config file first
 	if err := loadFromFile(v); err != nil {
 		return nil, fmt.Errorf("failed to load config file: %w", err)
 	}
 
-	// Load from environment variables
+	// Load from environment variables (these will override config file values)
 	loadFromEnv(v)
 
 	// Unmarshal into config struct
@@ -156,6 +175,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("storage.secondary", "none")
 	v.SetDefault("storage.local.path", "./data/images")
 	v.SetDefault("storage.local.create_dirs", true)
+	v.SetDefault("storage.minio.bucket", "your-minio-bucket")
+	v.SetDefault("storage.minio.endpoint", "http://localhost:9000")
+	v.SetDefault("storage.minio.region", "us-east-1")
+	v.SetDefault("storage.minio.secure", false)
 
 	// Cache defaults
 	v.SetDefault("cache.size_mb", 256)
@@ -214,31 +237,37 @@ func loadFromFile(v *viper.Viper) error {
 func loadFromEnv(v *viper.Viper) {
 	// Environment variable mappings
 	envMappings := map[string]string{
-		"PORT":                  "server.port",
-		"HOST":                  "server.host",
-		"ENV":                   "development.debug",
-		"STORAGE_PRIMARY":       "storage.primary",
-		"STORAGE_SECONDARY":     "storage.secondary",
-		"STORAGE_LOCAL_PATH":    "storage.local.path",
-		"STORAGE_S3_BUCKET":     "storage.s3.bucket",
-		"STORAGE_S3_REGION":     "storage.s3.region",
-		"STORAGE_S3_ACCESS_KEY": "storage.s3.access_key",
-		"STORAGE_S3_SECRET_KEY": "storage.s3.secret_key",
-		"CACHE_SIZE_MB":         "cache.size_mb",
-		"CACHE_TTL_HOURS":       "cache.ttl_hours",
-		"MAX_FILE_SIZE_MB":      "processing.max_file_size_mb",
-		"DEFAULT_QUALITY":       "processing.default_quality",
-		"DEFAULT_FORMAT":        "processing.default_format",
-		"CONCURRENT_WORKERS":    "processing.concurrent_workers",
-		"API_KEY_REQUIRED":      "security.api_key_required",
-		"API_KEY":               "security.api_key",
-		"CORS_ORIGINS":          "security.cors.origins",
-		"RATE_LIMIT_RPM":        "security.rate_limit.requests_per_minute",
-		"LOG_LEVEL":             "logging.level",
-		"LOG_FORMAT":            "logging.format",
-		"LOG_OUTPUT":            "logging.output",
-		"DEBUG":                 "development.debug",
-		"ENABLE_PPROF":          "development.enable_pprof",
+		"PORT":                     "server.port",
+		"HOST":                     "server.host",
+		"ENV":                      "development.debug",
+		"STORAGE_PRIMARY":          "storage.primary",
+		"STORAGE_SECONDARY":        "storage.secondary",
+		"STORAGE_LOCAL_PATH":       "storage.local.path",
+		"STORAGE_S3_BUCKET":        "storage.s3.bucket",
+		"STORAGE_S3_REGION":        "storage.s3.region",
+		"STORAGE_S3_ACCESS_KEY":    "storage.s3.access_key",
+		"STORAGE_S3_SECRET_KEY":    "storage.s3.secret_key",
+		"STORAGE_MINIO_BUCKET":     "storage.minio.bucket",
+		"STORAGE_MINIO_ENDPOINT":   "storage.minio.endpoint",
+		"STORAGE_MINIO_REGION":     "storage.minio.region",
+		"STORAGE_MINIO_ACCESS_KEY": "storage.minio.access_key",
+		"STORAGE_MINIO_SECRET_KEY": "storage.minio.secret_key",
+		"STORAGE_MINIO_SECURE":     "storage.minio.secure",
+		"CACHE_SIZE_MB":            "cache.size_mb",
+		"CACHE_TTL_HOURS":          "cache.ttl_hours",
+		"MAX_FILE_SIZE_MB":         "processing.max_file_size_mb",
+		"DEFAULT_QUALITY":          "processing.default_quality",
+		"DEFAULT_FORMAT":           "processing.default_format",
+		"CONCURRENT_WORKERS":       "processing.concurrent_workers",
+		"API_KEY_REQUIRED":         "security.api_key_required",
+		"API_KEY":                  "security.api_key",
+		"CORS_ORIGINS":             "security.cors.origins",
+		"RATE_LIMIT_RPM":           "security.rate_limit.requests_per_minute",
+		"LOG_LEVEL":                "logging.level",
+		"LOG_FORMAT":               "logging.format",
+		"LOG_OUTPUT":               "logging.output",
+		"DEBUG":                    "development.debug",
+		"ENABLE_PPROF":             "development.enable_pprof",
 	}
 
 	for envVar, configKey := range envMappings {
@@ -258,7 +287,7 @@ func setEnvValue(v *viper.Viper, key, value string) {
 		if intVal, err := strconv.Atoi(value); err == nil {
 			v.Set(key, intVal)
 		}
-	case "security.api_key_required", "development.debug", "development.enable_pprof", "development.enable_metrics":
+	case "security.api_key_required", "development.debug", "development.enable_pprof", "development.enable_metrics", "storage.minio.secure":
 		if boolVal, err := strconv.ParseBool(value); err == nil {
 			v.Set(key, boolVal)
 		}
@@ -278,11 +307,11 @@ func validateConfig(config *Config) error {
 	}
 
 	// Validate storage configuration
-	if config.Storage.Primary != "filesystem" && config.Storage.Primary != "s3" {
+	if config.Storage.Primary != "filesystem" && config.Storage.Primary != "s3" && config.Storage.Primary != "minio" {
 		return fmt.Errorf("invalid storage primary: %s", config.Storage.Primary)
 	}
 
-	if config.Storage.Secondary != "none" && config.Storage.Secondary != "filesystem" && config.Storage.Secondary != "s3" {
+	if config.Storage.Secondary != "none" && config.Storage.Secondary != "filesystem" && config.Storage.Secondary != "s3" && config.Storage.Secondary != "minio" {
 		return fmt.Errorf("invalid storage secondary: %s", config.Storage.Secondary)
 	}
 
