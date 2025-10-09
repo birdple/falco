@@ -1,6 +1,6 @@
 # Imagine - High-Performance Image Processing Service
 
-![Imagine Service](imagine.jpg)
+![Imagine Service](imagine.webp)
 
 A blazing-fast image processing service built in Go that serves as a simplified Cloudinary alternative. Designed for maximum performance, scalability, and ease of deployment.
 
