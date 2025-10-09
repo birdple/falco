@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,8 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
+	"github.com/ivangsm/imagine/internal/pkg/hashutil"
 	"github.com/ivangsm/imagine/internal/processor"
 	"github.com/ivangsm/imagine/internal/storage"
 )
@@ -59,14 +60,21 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	var quality int
 	var format string
 
+	var imageData []byte
+	var err error
+
 	// Handle direct binary upload (image/*)
 	if strings.HasPrefix(contentType, "image/") {
-		imageReader = r.Body
+		// Read the entire body into memory
+		imageData, err = io.ReadAll(r.Body)
+		if err != nil {
+			s.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
+			return
+		}
 		filename = "image" + getExtensionFromContentType(contentType)
 
 		// Get optional parameters from query string
 		if q := r.URL.Query().Get("quality"); q != "" {
-			var err error
 			if quality, err = strconv.Atoi(q); err != nil {
 				s.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter")
 				return
@@ -93,7 +101,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 
-		imageReader = file
+		// Read file data
+		imageData, err = io.ReadAll(file)
+		if err != nil {
+			s.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
+			return
+		}
 		filename = header.Filename
 
 		// Get optional parameters
@@ -146,7 +159,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		imageReader = resp.Body
+		// Read downloaded data
+		imageData, err = io.ReadAll(resp.Body)
+		if err != nil {
+			s.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
+			return
+		}
 		filename = extractFilenameFromURL(uploadReq.URL)
 		quality = uploadReq.Quality
 		format = uploadReq.Format
@@ -156,8 +174,51 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate unique ID for the image
-	imageID := generateImageID()
+	// Generate image ID from hash of original data
+	imageID := hashutil.GenerateImageIDFromData(imageData)
+
+	// Check if image already exists
+	exists, err := s.storage.Exists(ctx, imageID)
+	if err != nil {
+		s.logger.WithError(err).Warn("Failed to check image existence")
+	}
+
+	if exists {
+		// Image already exists, retrieve metadata and return
+		s.logger.WithField("image_id", imageID).Info("Image already exists, returning existing")
+
+		_, metadata, err := s.storage.Retrieve(ctx, imageID)
+		if err != nil {
+			s.logger.WithError(err).Error("Failed to retrieve existing image metadata")
+			s.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
+			return
+		}
+
+		// Return existing image data
+		response := UploadResponse{
+			Success: true,
+			Data: UploadData{
+				ID:           imageID,
+				URL:          fmt.Sprintf("/api/v1/images/%s", imageID),
+				OriginalName: metadata.OriginalName,
+				Format:       metadata.Format,
+				Size:         metadata.Size,
+				Dimensions: Dimensions{
+					Width:  metadata.Width,
+					Height: metadata.Height,
+				},
+				CreatedAt: metadata.CreatedAt,
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK) // 200 instead of 201 for existing
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// Image doesn't exist, process it
+	imageReader = bytes.NewReader(imageData)
 
 	// Process the image
 	processedImage, err := s.imageProcessor.Process(ctx, imageReader, &processor.ProcessingParams{
@@ -484,9 +545,8 @@ func (s *Server) serveImage(w http.ResponseWriter, reader io.Reader, metadata *s
 	io.Copy(w, reader)
 }
 
-func generateImageID() string {
-	return "img_" + strings.ReplaceAll(uuid.New().String(), "-", "")
-}
+// generateImageID has been replaced by hashutil.GenerateImageIDFromData
+// to enable content-based deduplication
 
 func extractFilenameFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
