@@ -8,12 +8,13 @@ A blazing-fast image processing service built in Go that serves as a simplified 
 
 ### Core Capabilities
 - **RESTful API** with Chi router for lightning-fast routing
-- **Multi-format Support** - JPEG, PNG, WebP with WebP as default for optimal compression
+- **Multi-format Support** - JPEG, PNG, WebP, SVG (input only) with WebP as default for optimal compression
 - **Dynamic Transformations** - Resize, quality adjustment, format conversion, filters, and more on-the-fly
 - **Flexible Storage** - Local filesystem, MinIO, or Amazon S3 storage
 - **High Performance** - Concurrent processing with goroutine pools
 - **Smart Caching** - In-memory LRU cache for frequently accessed images
 - **Content-based Deduplication** - Automatic detection of duplicate images using hash-based IDs
+- **Custom Image IDs** - Optional manual ID specification for better organization
 
 ### Production Ready
 - **Docker Containerization** with multi-stage builds for minimal image size
@@ -215,9 +216,10 @@ http -f POST localhost:8080/api/v1/upload \
 ```
 
 **Parameters (form fields):**
-- `file` (required) - The image file to upload
+- `file` (required) - The image file to upload (supports JPEG, PNG, WebP, SVG)
 - `quality` (optional) - Output quality (1-100)
 - `format` (optional) - Output format (jpeg, png, webp)
+- `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
 
 #### Method 2: Direct Binary Upload
 
@@ -258,6 +260,7 @@ http POST "localhost:8080/api/v1/upload?quality=90" \
 **Parameters (query string):**
 - `quality` (optional) - Output quality (1-100)
 - `format` (optional) - Output format (jpeg, png, webp)
+- `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
 
 #### Method 3: URL-Based Upload
 
@@ -297,6 +300,7 @@ http POST localhost:8080/api/v1/upload \
 - `url` (required) - URL of the image to download and process
 - `quality` (optional) - Output quality (1-100)
 - `format` (optional) - Output format (jpeg, png, webp)
+- `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
 
 **HTTPie Note:** Use `:=` for numbers (e.g., `quality:=90`) and `=` for strings (e.g., `format=webp`)
 
@@ -320,6 +324,65 @@ http POST localhost:8080/api/v1/upload \
 ```
 
 **Note:** Images are deduplicated based on content hash. If you upload the same image twice, you'll receive a 200 OK with the existing image data instead of creating a duplicate.
+
+#### SVG Support
+
+SVG files are supported as **input only** and will be rasterized during processing:
+
+```bash
+# cURL - Upload SVG and convert to WebP
+curl -X POST http://localhost:8080/api/v1/upload \
+  -H "Content-Type: image/svg+xml" \
+  --data-binary "@logo.svg" \
+  -G -d "format=webp"
+
+# HTTPie - Upload SVG as multipart
+http -f POST localhost:8080/api/v1/upload \
+  file@logo.svg \
+  format=webp
+
+# Upload SVG with custom ID
+curl -X POST "http://localhost:8080/api/v1/upload?id=company-logo" \
+  -H "Content-Type: image/svg+xml" \
+  --data-binary "@logo.svg"
+```
+
+**Important:** SVG is not available as an output format. SVG files are automatically rasterized and can be converted to JPEG, PNG, or WebP.
+
+#### Custom Image IDs
+
+You can specify custom IDs for better organization and semantic URLs:
+
+```bash
+# cURL - Upload with custom ID (query param)
+curl -X POST "http://localhost:8080/api/v1/upload?id=hero-banner-2024" \
+  -F "file=@banner.jpg"
+
+# cURL - Upload with custom ID (form field)
+curl -X POST http://localhost:8080/api/v1/upload \
+  -F "file=@profile.png" \
+  -F "id=user-avatar-john-doe"
+
+# HTTPie - Upload with custom ID
+http -f POST localhost:8080/api/v1/upload \
+  file@image.jpg \
+  id=product-thumbnail-12345
+
+# cURL - JSON upload with custom ID
+curl -X POST http://localhost:8080/api/v1/upload \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/image.jpg",
+    "id": "featured-image-march-2024",
+    "format": "webp"
+  }'
+```
+
+**Custom ID Rules:**
+- Must be 1-100 characters long
+- Only alphanumeric characters, hyphens (-), and underscores (_) allowed
+- Examples of valid IDs: `hero-banner`, `user_avatar_123`, `product-2024-03-15`
+- If not provided, a content-based hash ID will be generated automatically
 
 ### Retrieve and Transform Images
 

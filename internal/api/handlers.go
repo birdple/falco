@@ -121,12 +121,21 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			format = f
 		}
 
+		// Check for custom ID in form data
+		if id := r.FormValue("id"); id != "" {
+			if isValidImageID(id) {
+				// Store for later use
+				r.URL.RawQuery = fmt.Sprintf("id=%s&%s", id, r.URL.RawQuery)
+			}
+		}
+
 	} else if contentType == "application/json" {
 		// Handle URL-based upload
 		var uploadReq struct {
 			URL     string `json:"url"`
 			Quality int    `json:"quality,omitempty"`
 			Format  string `json:"format,omitempty"`
+			ID      string `json:"id,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&uploadReq); err != nil {
@@ -169,13 +178,34 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		quality = uploadReq.Quality
 		format = uploadReq.Format
 
+		// Check for custom ID in JSON payload
+		if uploadReq.ID != "" {
+			if isValidImageID(uploadReq.ID) {
+				r.URL.RawQuery = fmt.Sprintf("id=%s", uploadReq.ID)
+			}
+		}
+
 	} else {
 		s.sendError(w, http.StatusBadRequest, "UNSUPPORTED_CONTENT_TYPE", "Unsupported content type")
 		return
 	}
 
-	// Generate image ID from hash of original data
-	imageID := hashutil.GenerateImageIDFromData(imageData)
+	// Generate image ID from hash of original data, or use provided ID
+	var imageID string
+
+	// Check for optional 'id' parameter
+	if customID := r.URL.Query().Get("id"); customID != "" {
+		// Validate custom ID (alphanumeric, hyphens, underscores only)
+		if isValidImageID(customID) {
+			imageID = customID
+		} else {
+			s.sendError(w, http.StatusBadRequest, "INVALID_ID", "Invalid ID format. Use alphanumeric characters, hyphens, and underscores only")
+			return
+		}
+	} else {
+		// Use hash-based ID generation
+		imageID = hashutil.GenerateImageIDFromData(imageData)
+	}
 
 	// Check if image already exists
 	exists, err := s.storage.Exists(ctx, imageID)
@@ -496,6 +526,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // Helper functions
 
+// isValidImageID validates that an image ID contains only safe characters
+func isValidImageID(id string) bool {
+	if id == "" || len(id) > 100 {
+		return false
+	}
+
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+
+	return true
+}
+
 // getQueryParam returns the first non-empty value from multiple parameter names
 func getQueryParam(r *http.Request, names ...string) string {
 	for _, name := range names {
@@ -517,6 +562,8 @@ func getExtensionFromContentType(contentType string) string {
 		return ".webp"
 	case strings.Contains(contentType, "image/gif"):
 		return ".gif"
+	case strings.Contains(contentType, "image/svg+xml"), strings.Contains(contentType, "image/svg"):
+		return ".svg"
 	default:
 		return ".bin"
 	}
