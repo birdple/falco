@@ -63,14 +63,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Set default environment variables
-ENV PORT=8080
-ENV HOST=0.0.0.0
-ENV ENV=production
-ENV STORAGE_PRIMARY=filesystem
-ENV STORAGE_LOCAL_PATH=/app/data/images
-ENV CACHE_SIZE_MB=256
-ENV LOG_LEVEL=info
-
 # Run the application
 CMD ["./imagine-server"]
