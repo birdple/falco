@@ -496,7 +496,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":    "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"version":   "1.0.0",
-		"uptime":    "unknown", // TODO: Implement uptime tracking
+		"uptime":    time.Since(s.startTime).String(),
 	}
 
 	// Check storage health
@@ -514,7 +514,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"status":       storageHealth["status"],
 			"total_images": stats.TotalImages,
 			"total_size":   stats.TotalSize,
-			"free_space":   stats.FreeSpace,
 		}
 	} else {
 		health["storage"] = storageHealth

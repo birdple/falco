@@ -32,6 +32,7 @@ type Server struct {
 	server         *http.Server
 	storage        storage.StorageBackend
 	imageProcessor processor.ImageProcessor
+	startTime      time.Time
 }
 
 // NewServer creates a new API server
@@ -41,6 +42,7 @@ func NewServer(cfg *ServerConfig) *Server {
 		logger:         cfg.Logger,
 		storage:        cfg.Storage,
 		imageProcessor: cfg.ImageProcessor,
+		startTime:      time.Now(),
 	}
 
 	s.setupRouter()
