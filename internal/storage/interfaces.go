@@ -19,25 +19,39 @@ type ImageMetadata struct {
 	ETag         string    `json:"etag,omitempty"`
 }
 
-// StorageBackend defines the interface for storage backends
-type StorageBackend interface {
-	// Store stores an image with the given key and metadata
-	Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error
-
-	// Retrieve retrieves an image by key
+// Reader defines the interface for reading operations
+type Reader interface {
 	Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error)
-
-	// Delete deletes an image by key
-	Delete(ctx context.Context, key string) error
-
-	// Exists checks if an image exists by key
 	Exists(ctx context.Context, key string) (bool, error)
+}
 
-	// Health checks the health of the storage backend
+// Writer defines the interface for writing operations
+type Writer interface {
+	Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error
+}
+
+// Deleter defines the interface for deletion operations
+type Deleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
+// HealthChecker defines the interface for health checking
+type HealthChecker interface {
 	Health(ctx context.Context) error
+}
 
-	// GetStats returns storage statistics
+// StatsProvider defines the interface for statistics
+type StatsProvider interface {
 	GetStats(ctx context.Context) (*StorageStats, error)
+}
+
+// StorageBackend combines all storage interfaces (Composite Pattern)
+type StorageBackend interface {
+	Reader
+	Writer
+	Deleter
+	HealthChecker
+	StatsProvider
 }
 
 // StorageStats holds storage statistics
@@ -82,29 +96,11 @@ type MinIOConfig struct {
 	Secure    bool
 }
 
-// NewStorageBackend creates a new storage backend based on the configuration
-func NewStorageBackend(config *StorageConfig) (StorageBackend, error) {
-	switch config.Type {
-	case StorageTypeFilesystem:
-		return NewFilesystemStorage(config.LocalPath)
-	case StorageTypeS3:
-		return NewS3Storage(&S3Config{
-			Bucket:    config.S3Bucket,
-			Region:    config.S3Region,
-			Endpoint:  config.S3Endpoint,
-			AccessKey: config.AccessKey,
-			SecretKey: config.SecretKey,
-		})
-	case StorageTypeMinIO:
-		return NewMinIOStorage(&MinIOConfig{
-			Bucket:    config.MinIOBucket,
-			Endpoint:  config.MinIOEndpoint,
-			Region:    config.MinIORegion,
-			AccessKey: config.AccessKey,
-			SecretKey: config.SecretKey,
-			Secure:    config.MinIOSecure,
-		})
-	default:
-		return nil, ErrUnsupportedStorageType
-	}
+// S3Config holds S3 storage configuration
+type S3Config struct {
+	Bucket    string
+	Region    string
+	Endpoint  string
+	AccessKey string
+	SecretKey string
 }

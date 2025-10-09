@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -13,19 +12,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3Config holds S3 storage configuration
-type S3Config struct {
-	Bucket    string
-	Region    string
-	Endpoint  string
-	AccessKey string
-	SecretKey string
-}
-
 // S3Storage implements StorageBackend for Amazon S3 storage
 type S3Storage struct {
-	client *s3.Client
-	bucket string
+	client          *s3.Client
+	bucket          string
+	metadataEncoder MetadataEncoder
 }
 
 // NewS3Storage creates a new S3 storage backend
@@ -62,25 +53,22 @@ func NewS3Storage(cfg *S3Config) (*S3Storage, error) {
 	client := s3.NewFromConfig(awsCfg)
 
 	return &S3Storage{
-		client: client,
-		bucket: cfg.Bucket,
+		client:          client,
+		bucket:          cfg.Bucket,
+		metadataEncoder: NewMetadataEncoder(),
 	}, nil
 }
 
 // Store stores an image with the given key and metadata
 func (s *S3Storage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
-	// Prepare S3 object metadata
-	s3Metadata := map[string]string{
-		"original-name": metadata.OriginalName,
-		"format":        metadata.Format,
-		"width":         fmt.Sprintf("%d", metadata.Width),
-		"height":        fmt.Sprintf("%d", metadata.Height),
-		"content-type":  metadata.ContentType,
-		"created-at":    metadata.CreatedAt.Format(time.RFC3339),
+	// Encode metadata
+	s3Metadata, err := s.metadataEncoder.Encode(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
 
 	// Upload object
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
 		Body:        data,
@@ -110,34 +98,17 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 		return nil, nil, fmt.Errorf("failed to get object: %w", err)
 	}
 
-	// Parse metadata
-	metadata := &ImageMetadata{
-		ID:          key,
-		ContentType: aws.ToString(result.ContentType),
-		Size:        result.ContentLength,
-		ETag:        strings.Trim(aws.ToString(result.ETag), `"`),
+	// Decode metadata from S3 metadata
+	metadata, err := s.metadataEncoder.Decode(result.Metadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
-	// Parse custom metadata
-	if result.Metadata != nil {
-		if originalName, ok := result.Metadata["original-name"]; ok {
-			metadata.OriginalName = originalName
-		}
-		if format, ok := result.Metadata["format"]; ok {
-			metadata.Format = format
-		}
-		if width, ok := result.Metadata["width"]; ok {
-			fmt.Sscanf(width, "%d", &metadata.Width)
-		}
-		if height, ok := result.Metadata["height"]; ok {
-			fmt.Sscanf(height, "%d", &metadata.Height)
-		}
-		if createdAt, ok := result.Metadata["created-at"]; ok {
-			if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
-				metadata.CreatedAt = t
-			}
-		}
-	}
+	// Update metadata with S3-specific fields
+	metadata.ID = key
+	metadata.ContentType = aws.ToString(result.ContentType)
+	metadata.Size = result.ContentLength
+	metadata.ETag = strings.Trim(aws.ToString(result.ETag), `"`)
 
 	return result.Body, metadata, nil
 }

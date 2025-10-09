@@ -3,12 +3,12 @@ package middleware
 import (
 	"crypto/subtle"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ivangsm/imagine/internal/pkg/httputil"
 	"github.com/sirupsen/logrus"
 )
 
@@ -80,8 +80,8 @@ func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 		if a.apiKey != "" {
 			if providedKey == "" {
 				a.logger.WithFields(logrus.Fields{
-					"ip":         getClientIP(r),
-					"user_agent": r.Header.Get("User-Agent"),
+					"ip":         httputil.GetClientIP(r),
+					"user_agent": httputil.GetUserAgent(r),
 					"path":       r.URL.Path,
 				}).Warn("Missing API key")
 
@@ -93,8 +93,8 @@ func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 			// Use constant-time comparison to prevent timing attacks
 			if subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.apiKey)) != 1 {
 				a.logger.WithFields(logrus.Fields{
-					"ip":         getClientIP(r),
-					"user_agent": r.Header.Get("User-Agent"),
+					"ip":         httputil.GetClientIP(r),
+					"user_agent": httputil.GetUserAgent(r),
 					"path":       r.URL.Path,
 				}).Warn("Invalid API key")
 
@@ -135,7 +135,7 @@ func NewRateLimiter(requestsPerMinute, burst int, logger *logrus.Logger) *RateLi
 // Handler returns the rate limiting middleware handler
 func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientIP := getClientIP(r)
+		clientIP := httputil.GetClientIP(r)
 
 		// Get or create client limiter
 		limiter, exists := rl.clients[clientIP]
@@ -154,7 +154,7 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 		if len(limiter.requests) >= rl.requestsPerMinute+rl.burst {
 			rl.logger.WithFields(logrus.Fields{
 				"ip":         clientIP,
-				"user_agent": r.Header.Get("User-Agent"),
+				"user_agent": httputil.GetUserAgent(r),
 				"path":       r.URL.Path,
 			}).Warn("Rate limit exceeded")
 
@@ -219,7 +219,7 @@ func (rsl *RequestSizeLimiter) Handler(next http.Handler) http.Handler {
 		// Check Content-Length header
 		if r.ContentLength > rsl.maxSize {
 			rsl.logger.WithFields(logrus.Fields{
-				"ip":             getClientIP(r),
+				"ip":             httputil.GetClientIP(r),
 				"content_length": r.ContentLength,
 				"max_size":       rsl.maxSize,
 			}).Warn("Request too large")
@@ -233,7 +233,7 @@ func (rsl *RequestSizeLimiter) Handler(next http.Handler) http.Handler {
 			reader:    r.Body,
 			remaining: rsl.maxSize,
 			logger:    rsl.logger,
-			ip:        getClientIP(r),
+			ip:        httputil.GetClientIP(r),
 		}
 
 		next.ServeHTTP(w, r)
@@ -273,36 +273,4 @@ func (lr *limitedReader) Read(p []byte) (n int, err error) {
 
 func (lr *limitedReader) Close() error {
 	return lr.reader.Close()
-}
-
-// getClientIP extracts the client IP address from the request
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (for proxies/load balancers)
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		// Take the first IP in the chain
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			ip := strings.TrimSpace(ips[0])
-			if net.ParseIP(ip) != nil {
-				return ip
-			}
-		}
-	}
-
-	// Check X-Real-IP header
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		if net.ParseIP(xri) != nil {
-			return xri
-		}
-	}
-
-	// Fall back to RemoteAddr
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-
-	return ip
 }

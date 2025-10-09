@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -12,8 +11,9 @@ import (
 
 // MinIOStorage implements StorageBackend for MinIO object storage
 type MinIOStorage struct {
-	client *minio.Client
-	bucket string
+	client          *minio.Client
+	bucket          string
+	metadataEncoder MetadataEncoder
 }
 
 // NewMinIOStorage creates a new MinIO storage backend
@@ -43,20 +43,18 @@ func NewMinIOStorage(cfg *MinIOConfig) (*MinIOStorage, error) {
 	}
 
 	return &MinIOStorage{
-		client: minioClient,
-		bucket: cfg.Bucket,
+		client:          minioClient,
+		bucket:          cfg.Bucket,
+		metadataEncoder: NewMetadataEncoder(),
 	}, nil
 }
 
 // Store stores an image with the given key and metadata
 func (m *MinIOStorage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
-	// Prepare MinIO object metadata
-	userMetadata := map[string]string{
-		"original-name": metadata.OriginalName,
-		"format":        metadata.Format,
-		"width":         fmt.Sprintf("%d", metadata.Width),
-		"height":        fmt.Sprintf("%d", metadata.Height),
-		"created-at":    metadata.CreatedAt.Format(time.RFC3339),
+	// Encode metadata
+	userMetadata, err := m.metadataEncoder.Encode(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
 
 	// Upload object
@@ -96,34 +94,17 @@ func (m *MinIOStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser,
 		return nil, nil, fmt.Errorf("failed to get object info: %w", err)
 	}
 
-	// Parse metadata
-	metadata := &ImageMetadata{
-		ID:          key,
-		ContentType: info.ContentType,
-		Size:        info.Size,
-		ETag:        info.ETag,
+	// Decode metadata from MinIO user metadata
+	metadata, err := m.metadataEncoder.Decode(info.UserMetadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
-	// Parse custom metadata
-	if info.UserMetadata != nil {
-		if originalName, ok := info.UserMetadata["original-name"]; ok {
-			metadata.OriginalName = originalName
-		}
-		if format, ok := info.UserMetadata["format"]; ok {
-			metadata.Format = format
-		}
-		if width, ok := info.UserMetadata["width"]; ok {
-			fmt.Sscanf(width, "%d", &metadata.Width)
-		}
-		if height, ok := info.UserMetadata["height"]; ok {
-			fmt.Sscanf(height, "%d", &metadata.Height)
-		}
-		if createdAt, ok := info.UserMetadata["created-at"]; ok {
-			if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
-				metadata.CreatedAt = t
-			}
-		}
-	}
+	// Update metadata with MinIO-specific fields
+	metadata.ID = key
+	metadata.ContentType = info.ContentType
+	metadata.Size = info.Size
+	metadata.ETag = info.ETag
 
 	return object, metadata, nil
 }

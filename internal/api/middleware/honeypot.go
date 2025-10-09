@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/ivangsm/imagine/internal/database"
+	"github.com/ivangsm/imagine/internal/pkg/httputil"
 	"github.com/sirupsen/logrus"
 )
 
@@ -30,7 +31,7 @@ func NewHoneypot(db *database.HoneypotDB, logger *logrus.Logger) *Honeypot {
 // It checks if an IP is banned before allowing the request to proceed.
 func (h *Honeypot) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientIP := getClientIP(r)
+		clientIP := httputil.GetClientIP(r)
 
 		isBanned, err := h.db.IsBanned(clientIP, BanThreshold)
 		if err != nil {
@@ -43,7 +44,7 @@ func (h *Honeypot) Handler(next http.Handler) http.Handler {
 		if isBanned {
 			h.logger.WithFields(logrus.Fields{
 				"ip":         clientIP,
-				"user_agent": r.Header.Get("User-Agent"),
+				"user_agent": httputil.GetUserAgent(r),
 				"path":       r.URL.Path,
 			}).Warn("Blocked request from banned IP")
 
@@ -58,7 +59,7 @@ func (h *Honeypot) Handler(next http.Handler) http.Handler {
 
 // RecordFailedAttempt is a helper to be called from other parts of the application (e.g., NotFound handler, auth middleware).
 func (h *Honeypot) RecordFailedAttempt(r *http.Request) {
-	clientIP := getClientIP(r)
+	clientIP := httputil.GetClientIP(r)
 
 	newAttemptCount, err := h.db.RecordFailedAttempt(clientIP)
 	if err != nil {
