@@ -35,6 +35,12 @@ type Deleter interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// BucketAware defines the interface for storage backends that support dynamic bucket selection
+type BucketAware interface {
+	WithBucket(bucket string) StorageBackend
+	GetCurrentBucket() string
+}
+
 // HealthChecker defines the interface for health checking
 type HealthChecker interface {
 	Health(ctx context.Context) error

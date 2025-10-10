@@ -17,6 +17,7 @@ import (
 type S3Storage struct {
 	client          *s3.Client
 	bucket          string
+	defaultBucket   string
 	metadataEncoder MetadataEncoder
 }
 
@@ -56,8 +57,28 @@ func NewS3Storage(cfg *S3Config) (*S3Storage, error) {
 	return &S3Storage{
 		client:          client,
 		bucket:          cfg.Bucket,
+		defaultBucket:   cfg.Bucket,
 		metadataEncoder: NewMetadataEncoder(),
 	}, nil
+}
+
+// WithBucket returns a new S3Storage instance with a different bucket
+func (s *S3Storage) WithBucket(bucket string) StorageBackend {
+	if bucket == "" {
+		bucket = s.defaultBucket
+	}
+
+	return &S3Storage{
+		client:          s.client,
+		bucket:          bucket,
+		defaultBucket:   s.defaultBucket,
+		metadataEncoder: s.metadataEncoder,
+	}
+}
+
+// GetCurrentBucket returns the current bucket name
+func (s *S3Storage) GetCurrentBucket() string {
+	return s.bucket
 }
 
 // Store stores an image with the given key and metadata

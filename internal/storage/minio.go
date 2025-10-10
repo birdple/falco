@@ -13,6 +13,7 @@ import (
 type MinIOStorage struct {
 	client          *minio.Client
 	bucket          string
+	defaultBucket   string
 	metadataEncoder MetadataEncoder
 }
 
@@ -45,8 +46,40 @@ func NewMinIOStorage(cfg *MinIOConfig) (*MinIOStorage, error) {
 	return &MinIOStorage{
 		client:          minioClient,
 		bucket:          cfg.Bucket,
+		defaultBucket:   cfg.Bucket,
 		metadataEncoder: NewMetadataEncoder(),
 	}, nil
+}
+
+// WithBucket returns a new MinIOStorage instance with a different bucket
+func (m *MinIOStorage) WithBucket(bucket string) StorageBackend {
+	if bucket == "" {
+		bucket = m.defaultBucket
+	}
+
+	// Ensure bucket exists
+	ctx := context.Background()
+	err := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"})
+	if err != nil {
+		// Check if bucket already exists
+		exists, errBucketExists := m.client.BucketExists(ctx, bucket)
+		if errBucketExists != nil || !exists {
+			// If we can't create or verify bucket, return original storage
+			return m
+		}
+	}
+
+	return &MinIOStorage{
+		client:          m.client,
+		bucket:          bucket,
+		defaultBucket:   m.defaultBucket,
+		metadataEncoder: m.metadataEncoder,
+	}
+}
+
+// GetCurrentBucket returns the current bucket name
+func (m *MinIOStorage) GetCurrentBucket() string {
+	return m.bucket
 }
 
 // Store stores an image with the given key and metadata

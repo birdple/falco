@@ -178,6 +178,39 @@ http -f POST localhost:8080/api/v1/upload \
 
 The API supports three upload methods: multipart form-data, direct binary upload, and URL-based upload.
 
+#### Dynamic Bucket and Directory Organization
+
+All upload and retrieval endpoints now support dynamic bucket and directory organization using two separate parameters:
+
+- **`b`** (or `bucket`): Specifies the bucket name where images will be stored
+- **`d`** (or `dir`/`directory`): Specifies the directory path within the bucket
+
+This separation provides clear organization between different storage buckets and subdirectories within them.
+
+```bash
+# Upload to default bucket root (default behavior)
+curl -X POST http://localhost:8080/api/v1/upload -F "file=@image.jpg"
+
+# Upload to specific bucket
+curl -X POST "http://localhost:8080/api/v1/upload?b=my-bucket" -F "file=@image.jpg"
+
+# Upload to specific bucket with directory path
+curl -X POST "http://localhost:8080/api/v1/upload?b=my-bucket&d=products/electronics" -F "file=@image.jpg"
+
+# Upload to default bucket with nested directory
+curl -X POST "http://localhost:8080/api/v1/upload?d=users/avatars/2024" -F "file=@avatar.png"
+
+# Upload to different bucket with nested directories
+curl -X POST "http://localhost:8080/api/v1/upload?b=birdple&d=images/test/nested" -F "file=@banner.jpg"
+```
+
+**Benefits:**
+- **Clear separation**: Bucket names and directory paths are separated for clarity
+- **Multi-bucket support**: Easily organize images across different buckets
+- **Flexible organization**: Organize images by project, user, date, or any custom structure within each bucket
+- **Easy cleanup**: Delete entire directories or switch between buckets
+- **Multi-tenant**: Isolate different clients in separate buckets or directories
+
 #### Method 1: Multipart Form-Data Upload
 
 ```bash
@@ -187,6 +220,13 @@ curl -X POST http://localhost:8080/api/v1/upload \
 
 # HTTPie - Basic upload
 http -f POST localhost:8080/api/v1/upload file@image.jpg
+
+# cURL - Upload to specific bucket and directory
+curl -X POST "http://localhost:8080/api/v1/upload?b=birdple&d=products" \
+  -F "file=@image.jpg"
+
+# HTTPie - Upload to specific bucket and directory
+http -f POST "localhost:8080/api/v1/upload?b=birdple&d=products" file@image.jpg
 
 # cURL - Upload with transformation parameters
 curl -X POST http://localhost:8080/api/v1/upload \
@@ -199,6 +239,12 @@ http -f POST localhost:8080/api/v1/upload \
   file@image.jpg \
   quality=90 \
   format=webp
+
+# cURL - Upload to bucket and directory with transformations
+curl -X POST "http://localhost:8080/api/v1/upload?b=birdple&d=thumbnails" \
+  -F "file=@image.jpg" \
+  -F "quality=85" \
+  -F "format=webp"
 
 # cURL - With API key (if required)
 curl -X POST http://localhost:8080/api/v1/upload \
@@ -215,11 +261,18 @@ http -f POST localhost:8080/api/v1/upload \
   format=webp
 ```
 
-**Parameters (form fields):**
-- `file` (required) - The image file to upload (supports JPEG, PNG, WebP, SVG)
-- `quality` (optional) - Output quality (1-100)
-- `format` (optional) - Output format (jpeg, png, webp)
-- `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
+**Parameters:**
+- Query Parameters:
+  - `b` or `bucket` (optional) - Bucket name for storing images (e.g., `birdple`, `my-images`)
+  - `d` or `dir` or `directory` (optional) - Directory path within bucket (e.g., `products/electronics`, `users/avatars`)
+  - `quality` (optional) - Output quality (1-100)
+  - `format` (optional) - Output format (jpeg, png, webp)
+  - `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
+- Form Fields:
+  - `file` (required) - The image file to upload (supports JPEG, PNG, WebP, SVG)
+  - `quality` (optional) - Output quality (1-100)
+  - `format` (optional) - Output format (jpeg, png, webp)
+  - `id` (optional) - Custom image ID
 
 #### Method 2: Direct Binary Upload
 
@@ -234,6 +287,16 @@ http POST localhost:8080/api/v1/upload \
   Content-Type:image/jpeg \
   < image.jpg
 
+# cURL - Upload to specific bucket and directory
+curl -X POST "http://localhost:8080/api/v1/upload?b=birdple&d=raw-images" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary "@image.jpg"
+
+# HTTPie - Upload to specific bucket and directory
+http POST "localhost:8080/api/v1/upload?b=birdple&d=raw-images" \
+  Content-Type:image/jpeg \
+  < image.jpg
+
 # cURL - With transformation parameters (query string)
 curl -X POST "http://localhost:8080/api/v1/upload?quality=90&format=webp" \
   -H "Content-Type: image/jpeg" \
@@ -243,6 +306,11 @@ curl -X POST "http://localhost:8080/api/v1/upload?quality=90&format=webp" \
 http POST "localhost:8080/api/v1/upload?quality=90&format=webp" \
   Content-Type:image/jpeg \
   < image.jpg
+
+# cURL - Upload to bucket and directory with transformations
+curl -X POST "http://localhost:8080/api/v1/upload?b=projects&d=website&quality=90&format=webp" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary "@image.jpg"
 
 # cURL - With API key
 curl -X POST "http://localhost:8080/api/v1/upload?quality=90" \
@@ -258,6 +326,8 @@ http POST "localhost:8080/api/v1/upload?quality=90" \
 ```
 
 **Parameters (query string):**
+- `b` or `bucket` (optional) - Bucket name for storing images
+- `d` or `dir` or `directory` (optional) - Directory path within bucket
 - `quality` (optional) - Output quality (1-100)
 - `format` (optional) - Output format (jpeg, png, webp)
 - `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
@@ -280,6 +350,21 @@ http POST localhost:8080/api/v1/upload \
   quality:=85 \
   format=webp
 
+# cURL - Upload to specific bucket and directory (query parameters)
+curl -X POST "http://localhost:8080/api/v1/upload?b=birdple&d=external" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/image.jpg",
+    "quality": 85,
+    "format": "webp"
+  }'
+
+# HTTPie - Upload to specific bucket and directory (query parameters)
+http POST "localhost:8080/api/v1/upload?b=birdple&d=external" \
+  url=https://example.com/image.jpg \
+  quality:=85 \
+  format=webp
+
 # cURL - With API key
 curl -X POST http://localhost:8080/api/v1/upload \
   -H "X-API-Key: your-secret-api-key" \
@@ -296,11 +381,15 @@ http POST localhost:8080/api/v1/upload \
   quality:=90
 ```
 
-**JSON Payload:**
-- `url` (required) - URL of the image to download and process
-- `quality` (optional) - Output quality (1-100)
-- `format` (optional) - Output format (jpeg, png, webp)
-- `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
+**Parameters:**
+- Query Parameters:
+  - `b` or `bucket` (optional) - Bucket name for storing images
+  - `d` or `dir` or `directory` (optional) - Directory path within bucket
+- JSON Payload:
+  - `url` (required) - URL of the image to download and process
+  - `quality` (optional) - Output quality (1-100)
+  - `format` (optional) - Output format (jpeg, png, webp)
+  - `id` (optional) - Custom image ID (alphanumeric, hyphens, underscores only, max 100 chars)
 
 **HTTPie Note:** Use `:=` for numbers (e.g., `quality:=90`) and `=` for strings (e.g., `format=webp`)
 
@@ -395,11 +484,23 @@ curl http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6
 # HTTPie - Get original image
 http --download localhost:8080/api/v1/images/img_a1b2c3d4e5f6
 
+# cURL - Get image from specific bucket and directory
+curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?b=birdple&d=products"
+
+# HTTPie - Get image from specific bucket and directory
+http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?b=birdple&d=products"
+
 # cURL - Get resized image (short parameters)
 curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
 
 # HTTPie - Get resized image (short parameters)
 http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&h=600&q=90&f=jpeg"
+
+# cURL - Get resized image from bucket and directory with transformations
+curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?b=birdple&d=bucket/test&w=800&h=600&q=90&f=webp"
+
+# HTTPie - Get resized image from bucket and directory with transformations
+http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?b=birdple&d=bucket/test&w=800&h=600&q=90&f=webp"
 
 # cURL - Get resized image (long parameters)
 curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?width=800&height=600&quality=90&format=webp"
@@ -414,15 +515,17 @@ curl "http://localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&q=85
 http --download "localhost:8080/api/v1/images/img_a1b2c3d4e5f6?w=800&height=600&q=85"
 ```
 
-**Note:** No authentication required foage retrieval. URLs can be shared publicly and embedded in websites, apps, or CDNs.
+**Note:** No authentication required for image retrieval. URLs can be shared publicly and embedded in websites, apps, or CDNs.
 
 #### Basic Transformation Parameters
 
 | Short | Long | Type | Range | Description |
 |-------|------|------|-------|-------------|
+| `b` | `bucket` | string | - | Bucket name where the image is stored |
+| `d` | `dir`, `directory` | string | - | Directory path within the bucket |
 | `w` | `width` | int | 1-8000 | Target width in pixels |
 | `h` | `height` | int | 1-8000 | Target height in pixels |
-| `q` | `quality` | int | 1-100 | Outpuality (higher = better quality, larger file) |
+| `q` | `quality` | int | 1-100 | Output quality (higher = better quality, larger file) |
 | `f` | `format` | string | jpeg, png, webp | Output format |
 | - | `fit` | string | cover, contain, fill | Resize mode |
 
@@ -525,6 +628,62 @@ curl "http://localhost:8080/api/v1/images/img_abc?crop_x=100&crop_y=100&crop_w=8
 
 # HTTPie - Full transformation pipeline
 http --download "localhost:8080/api/v1/images/img_abc?crop_x=100&crop_y=100&crop_w=800&crop_h=600&w=400&rotate=90&brightness=15&saturation=20&blur=1&f=webp&q=90"
+```
+
+#### Practical Use Cases with Bucket and Directory Organization
+
+```bash
+# Example 1: E-commerce product images organized by category
+# Upload product image to electronics category in products bucket
+curl -X POST "http://localhost:8080/api/v1/upload?b=products&d=electronics" \
+  -F "file=@laptop.jpg" \
+  -F "id=laptop-dell-xps-15"
+
+# Retrieve the product image
+curl "http://localhost:8080/api/v1/images/laptop-dell-xps-15?b=products&d=electronics"
+
+# Get thumbnail version
+curl "http://localhost:8080/api/v1/images/laptop-dell-xps-15?b=products&d=electronics&w=300&h=300&fit=cover"
+
+# Example 2: User avatars organized by date in users bucket
+# Upload user avatar
+curl -X POST "http://localhost:8080/api/v1/upload?b=users&d=avatars/2024/10" \
+  -F "file=@avatar.png" \
+  -F "id=user_12345"
+
+# Retrieve avatar with circular crop and optimization
+curl "http://localhost:8080/api/v1/images/user_12345?b=users&d=avatars/2024/10&w=200&h=200&fit=cover&f=webp&q=85"
+
+# Example 3: Blog content images by article in content bucket
+# Upload blog hero image
+curl -X POST "http://localhost:8080/api/v1/upload?b=content&d=blog/articles/2024/how-to-code" \
+  -F "file=@hero-image.jpg" \
+  -F "id=hero"
+
+# Retrieve optimized version for web
+curl "http://localhost:8080/api/v1/images/hero?b=content&d=blog/articles/2024/how-to-code&w=1200&f=webp&q=85"
+
+# Example 4: Multi-tenant application (each tenant has their own bucket)
+# Tenant A uploads logo
+curl -X POST "http://localhost:8080/api/v1/upload?b=company-a&d=branding" \
+  -F "file=@logo.svg" \
+  -F "id=logo"
+
+# Tenant B uploads logo (same ID, different bucket)
+curl -X POST "http://localhost:8080/api/v1/upload?b=company-b&d=branding" \
+  -F "file=@logo.png" \
+  -F "id=logo"
+
+# Each tenant retrieves their own logo
+curl "http://localhost:8080/api/v1/images/logo?b=company-a&d=branding"
+curl "http://localhost:8080/api/v1/images/logo?b=company-b&d=branding"
+
+# Example 5: Using curlie with URL upload to specific bucket and directory
+curlie POST "http://localhost:8080/api/v1/upload?b=birdple&d=bucket/test" \
+  Content-Type:application/json \
+  url=https://picsum.photos/800/600 \
+  quality:=85 \
+  format=webp
 ```
 
 ### Health Check

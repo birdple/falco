@@ -52,6 +52,23 @@ type APIError struct {
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Get bucket and directory parameters
+	bucket := r.URL.Query().Get("b")
+	if bucket == "" {
+		bucket = r.URL.Query().Get("bucket")
+	}
+
+	directory := r.URL.Query().Get("d")
+	if directory == "" {
+		directory = r.URL.Query().Get("dir")
+	}
+	if directory == "" {
+		directory = r.URL.Query().Get("directory")
+	}
+
+	// Normalize directory path
+	directory = normalizeDirectoryPath(directory)
+
 	// Check content type
 	contentType := r.Header.Get("Content-Type")
 
@@ -207,8 +224,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		imageID = hashutil.GenerateImageIDFromData(imageData)
 	}
 
-	// Check if image already exists
-	exists, err := s.storage.Exists(ctx, imageID)
+	// Build full storage key with directory and image ID
+	storageKey := buildStorageKey(directory, imageID)
+
+	// Get bucket-aware storage instance
+	storageBackend := s.getStorageForBucket(bucket)
+
+	// Check if image already exists (using bucket-aware storage)
+	exists, err := storageBackend.Exists(ctx, storageKey)
 	if err != nil {
 		s.logger.WithError(err).Warn("Failed to check image existence")
 	}
@@ -217,19 +240,22 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		// Image already exists, retrieve metadata and return
 		s.logger.WithField("image_id", imageID).Info("Image already exists, returning existing")
 
-		_, metadata, err := s.storage.Retrieve(ctx, imageID)
+		_, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 		if err != nil {
 			s.logger.WithError(err).Error("Failed to retrieve existing image metadata")
 			s.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
 			return
 		}
 
+		// Build URL with bucket and directory parameters if provided
+		imageURL := buildImageURL(imageID, bucket, directory)
+
 		// Return existing image data
 		response := UploadResponse{
 			Success: true,
 			Data: UploadData{
 				ID:           imageID,
-				URL:          fmt.Sprintf("/api/v1/images/%s", imageID),
+				URL:          imageURL,
 				OriginalName: metadata.OriginalName,
 				Format:       metadata.Format,
 				Size:         metadata.Size,
@@ -261,8 +287,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the processed image
-	err = s.storage.Store(ctx, imageID, processedImage.Data, &storage.ImageMetadata{
+	// Store the processed image with full storage key
+	err = storageBackend.Store(ctx, storageKey, processedImage.Data, &storage.ImageMetadata{
 		ID:           imageID,
 		OriginalName: filename,
 		Format:       processedImage.Metadata.Format,
@@ -278,12 +304,15 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build URL with bucket and directory parameters if provided
+	imageURL := buildImageURL(imageID, bucket, directory)
+
 	// Send success response
 	response := UploadResponse{
 		Success: true,
 		Data: UploadData{
 			ID:           imageID,
-			URL:          fmt.Sprintf("/api/v1/images/%s", imageID),
+			URL:          imageURL,
 			OriginalName: filename,
 			Format:       processedImage.Metadata.Format,
 			Size:         processedImage.Metadata.Size,
@@ -309,6 +338,29 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, http.StatusBadRequest, "MISSING_ID", "Image ID is required")
 		return
 	}
+
+	// Get bucket and directory parameters
+	bucket := r.URL.Query().Get("b")
+	if bucket == "" {
+		bucket = r.URL.Query().Get("bucket")
+	}
+
+	directory := r.URL.Query().Get("d")
+	if directory == "" {
+		directory = r.URL.Query().Get("dir")
+	}
+	if directory == "" {
+		directory = r.URL.Query().Get("directory")
+	}
+
+	// Normalize directory path
+	directory = normalizeDirectoryPath(directory)
+
+	// Build full storage key
+	storageKey := buildStorageKey(directory, imageID)
+
+	// Get bucket-aware storage instance
+	storageBackend := s.getStorageForBucket(bucket)
 
 	// Parse query parameters for transformations
 	params := &processor.ProcessingParams{}
@@ -445,8 +497,8 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Retrieve original image
-	reader, metadata, err := s.storage.Retrieve(ctx, imageID)
+	// Retrieve original image using full storage key
+	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 	if err != nil {
 		if storage.IsNotFound(err) {
 			s.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
@@ -607,4 +659,64 @@ func extractFilenameFromURL(rawURL string) string {
 	}
 
 	return "image"
+}
+
+// normalizeDirectoryPath normalizes and validates the directory path
+// Removes leading/trailing slashes and validates characters
+func normalizeDirectoryPath(path string) string {
+	if path == "" {
+		return ""
+	}
+
+	// Trim leading and trailing slashes
+	path = strings.Trim(path, "/")
+
+	// Remove any double slashes
+	for strings.Contains(path, "//") {
+		path = strings.ReplaceAll(path, "//", "/")
+	}
+
+	return path
+}
+
+// buildStorageKey combines directory path and image ID to create full storage key
+func buildStorageKey(directory, imageID string) string {
+	if directory == "" {
+		return imageID
+	}
+	return directory + "/" + imageID
+}
+
+// buildImageURL builds the image URL with optional bucket and directory parameters
+func buildImageURL(imageID, bucket, directory string) string {
+	baseURL := fmt.Sprintf("/api/v1/images/%s", imageID)
+	params := []string{}
+
+	if bucket != "" {
+		params = append(params, fmt.Sprintf("b=%s", bucket))
+	}
+	if directory != "" {
+		params = append(params, fmt.Sprintf("d=%s", directory))
+	}
+
+	if len(params) > 0 {
+		return fmt.Sprintf("%s?%s", baseURL, strings.Join(params, "&"))
+	}
+	return baseURL
+}
+
+// getStorageForBucket returns a storage backend instance for the specified bucket
+// If bucket is empty or storage doesn't support BucketAware, returns default storage
+func (s *Server) getStorageForBucket(bucket string) storage.StorageBackend {
+	if bucket == "" {
+		return s.storage
+	}
+
+	// Check if storage supports dynamic bucket selection
+	if bucketAware, ok := s.storage.(storage.BucketAware); ok {
+		return bucketAware.WithBucket(bucket)
+	}
+
+	// If storage doesn't support BucketAware, return default storage
+	return s.storage
 }
