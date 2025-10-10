@@ -497,6 +497,11 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Set default format to WebP if not specified
+	if params.Format == "" {
+		params.Format = "webp"
+	}
+
 	// Retrieve original image using full storage key
 	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 	if err != nil {
@@ -510,8 +515,14 @@ func (s *Server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
-	// If no transformations requested, serve original
-	if params.Width == 0 && params.Height == 0 && params.Quality == 0 && params.Format == "" {
+	// If no transformations requested except format, still process for format conversion
+	needsProcessing := params.Width != 0 || params.Height != 0 || params.Quality != 0 ||
+		params.Format != "" || params.CropW != 0 || params.CropH != 0 ||
+		params.Rotate != 0 || params.Flip != "" || params.Flop ||
+		params.Brightness != 0 || params.Contrast != 0 || params.Gamma != 0 ||
+		params.Saturation != 0 || params.Hue != 0 || params.Blur != 0 || params.Sharpen != 0
+
+	if !needsProcessing {
 		s.serveImage(w, reader, metadata)
 		return
 	}
