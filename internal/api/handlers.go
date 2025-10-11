@@ -48,6 +48,34 @@ type APIError struct {
 	Message string `json:"message"`
 }
 
+// ReprocessRequest represents the request for reprocessing images
+type ReprocessRequest struct {
+	URL     string `json:"url,omitempty"`     // URL of external image to process and replace
+	Bucket  string `json:"bucket,omitempty"`  // Bucket where to store/replace the image
+	Key     string `json:"key,omitempty"`     // Storage key for the image
+	Quality int    `json:"quality,omitempty"` // Processing quality (1-100)
+	Format  string `json:"format,omitempty"`  // Output format
+}
+
+// ReprocessResponse represents the response for reprocessing images
+type ReprocessResponse struct {
+	Success   bool              `json:"success"`
+	Processed []ReprocessResult `json:"processed,omitempty"`
+	Error     *APIError         `json:"error,omitempty"`
+}
+
+// ReprocessResult represents the result of reprocessing a single image
+type ReprocessResult struct {
+	Key          string  `json:"key"`
+	URLSize      int64   `json:"url_size"`      // Size of image from URL
+	BucketSize   int64   `json:"bucket_size"`   // Size of existing image in bucket
+	NewSize      int64   `json:"new_size"`      // Size of processed image
+	SavedBytes   int64   `json:"saved_bytes"`   // Bytes saved vs existing bucket image
+	SavedPercent float64 `json:"saved_percent"` // Percentage saved vs existing bucket image
+	Format       string  `json:"format"`
+	Quality      int     `json:"quality"`
+}
+
 // handleUpload handles image upload requests
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -584,6 +612,149 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(health)
+}
+
+// handleReprocess handles image reprocessing requests
+func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req ReprocessRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
+		return
+	}
+
+	// Validate required parameters
+	if req.URL == "" {
+		s.sendError(w, http.StatusBadRequest, "MISSING_URL", "URL is required")
+		return
+	}
+
+	if req.Bucket == "" {
+		s.sendError(w, http.StatusBadRequest, "MISSING_BUCKET", "Bucket is required")
+		return
+	}
+
+	if req.Key == "" {
+		s.sendError(w, http.StatusBadRequest, "MISSING_KEY", "Key is required")
+		return
+	}
+
+	if req.Quality <= 0 || req.Quality > 100 {
+		s.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Quality must be between 1 and 100")
+		return
+	}
+
+	if req.Format != "" && !s.imageProcessor.ValidateFormat(req.Format) {
+		s.sendError(w, http.StatusBadRequest, "INVALID_FORMAT", "Unsupported format")
+		return
+	}
+
+	// Validate URL
+	if _, err := url.Parse(req.URL); err != nil {
+		s.sendError(w, http.StatusBadRequest, "INVALID_URL", "Invalid URL format")
+		return
+	}
+
+	// Download image from URL
+	resp, err := http.Get(req.URL)
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to download image from URL")
+		s.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", "Failed to download image from URL")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", "Failed to download image from URL")
+		return
+	}
+
+	// Read downloaded data
+	imageData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to read image data")
+		s.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
+		return
+	}
+
+	urlSize := int64(len(imageData))
+
+	// Get bucket-aware storage instance
+	storageBackend := s.getStorageForBucket(req.Bucket)
+
+	// Check if image already exists to calculate savings
+	var existingSize int64
+	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {
+		if _, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
+			existingSize = metadata.Size
+		}
+	}
+
+	// Process the image
+	imageReader := bytes.NewReader(imageData)
+	params := &processor.ProcessingParams{
+		Quality: req.Quality,
+		Format:  req.Format,
+	}
+
+	processedImage, err := s.imageProcessor.Process(ctx, imageReader, params)
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to process image")
+		s.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
+		return
+	}
+	defer processedImage.Data.Close()
+
+	// Generate ID from hash of processed data for consistency
+	imageID := hashutil.GenerateImageIDFromData(imageData)
+
+	// Store the processed image
+	err = storageBackend.Store(ctx, req.Key, processedImage.Data, &storage.ImageMetadata{
+		ID:           imageID,
+		OriginalName: extractFilenameFromURL(req.URL),
+		Format:       processedImage.Metadata.Format,
+		Size:         processedImage.Metadata.Size,
+		Width:        processedImage.Metadata.Width,
+		Height:       processedImage.Metadata.Height,
+		ContentType:  processedImage.Metadata.ContentType,
+		CreatedAt:    processedImage.Metadata.CreatedAt,
+	})
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to store image")
+		s.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", "Failed to store image")
+		return
+	}
+
+	// Calculate savings
+	newSize := processedImage.Metadata.Size
+	savedBytes := existingSize - newSize
+	savedPercent := float64(0)
+	if existingSize > 0 {
+		savedPercent = float64(savedBytes) / float64(existingSize) * 100
+	}
+
+	// Send response
+	response := ReprocessResponse{
+		Success: true,
+		Processed: []ReprocessResult{
+			{
+				Key:          req.Key,
+				URLSize:      urlSize,
+				BucketSize:   existingSize,
+				NewSize:      newSize,
+				SavedBytes:   savedBytes,
+				SavedPercent: savedPercent,
+				Format:       processedImage.Metadata.Format,
+				Quality:      req.Quality,
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // Helper functions

@@ -208,6 +208,34 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 	return stats, nil
 }
 
+// List lists objects with the given prefix
+func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, error) {
+	var results []ListResult
+
+	// List objects with prefix
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list objects: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			results = append(results, ListResult{
+				Key:      aws.ToString(obj.Key),
+				Size:     *obj.Size,
+				Modified: *obj.LastModified,
+			})
+		}
+	}
+
+	return results, nil
+}
+
 // isNotFoundError checks if an error indicates that an object was not found
 func isNotFoundError(err error) bool {
 	var notFound *types.NotFound

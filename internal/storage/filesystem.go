@@ -216,6 +216,49 @@ func (fs *FilesystemStorage) GetStats(ctx context.Context) (*StorageStats, error
 	return stats, nil
 }
 
+// List lists objects with the given prefix
+func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	var results []ListResult
+
+	// Walk the directory to find files matching the prefix
+	err := filepath.Walk(fs.basePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip directories and metadata files
+		if info.IsDir() || strings.HasSuffix(path, ".meta.json") {
+			return nil
+		}
+
+		// Get relative path from base path
+		relPath, err := filepath.Rel(fs.basePath, path)
+		if err != nil {
+			return err
+		}
+
+		// Check if the relative path starts with the prefix
+		if prefix == "" || strings.HasPrefix(relPath, prefix) {
+			results = append(results, ListResult{
+				Key:      relPath,
+				Size:     info.Size(),
+				Modified: info.ModTime(),
+			})
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk directory: %w", err)
+	}
+
+	return results, nil
+}
+
 // getFilePath returns the file path for a given key
 func (fs *FilesystemStorage) getFilePath(key string) string {
 	// Create hash-based directory structure for better performance

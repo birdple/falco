@@ -199,3 +199,25 @@ func (m *MinIOStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 
 	return stats, nil
 }
+
+// List lists objects with the given prefix
+func (m *MinIOStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
+	var results []ListResult
+
+	// List objects with prefix
+	for objectInfo := range m.client.ListObjects(ctx, m.bucket, minio.ListObjectsOptions{
+		Prefix: prefix,
+	}) {
+		if objectInfo.Err != nil {
+			return nil, fmt.Errorf("failed to list objects: %w", objectInfo.Err)
+		}
+
+		results = append(results, ListResult{
+			Key:      objectInfo.Key,
+			Size:     objectInfo.Size,
+			Modified: objectInfo.LastModified,
+		})
+	}
+
+	return results, nil
+}

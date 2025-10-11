@@ -101,6 +101,7 @@ func (s *Server) setupRouter() {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/upload", s.handleUpload)
 		r.Get("/images/{id}", s.handleDelivery)
+		r.Post("/reprocess", s.handleReprocess)
 	})
 
 	r.NotFound(s.handleNotFound)

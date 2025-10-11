@@ -19,6 +19,18 @@ type ImageMetadata struct {
 	ETag         string    `json:"etag,omitempty"`
 }
 
+// ListResult holds information about a listed object
+type ListResult struct {
+	Key      string    `json:"key"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified"`
+}
+
+// Lister defines the interface for listing operations
+type Lister interface {
+	List(ctx context.Context, prefix string) ([]ListResult, error)
+}
+
 // Reader defines the interface for reading operations
 type Reader interface {
 	Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error)
@@ -56,6 +68,7 @@ type StorageBackend interface {
 	Reader
 	Writer
 	Deleter
+	Lister
 	HealthChecker
 	StatsProvider
 }

@@ -10,6 +10,7 @@ A blazing-fast image processing service built in Go that serves as a simplified 
 - **RESTful API** with Chi router for lightning-fast routing
 - **Multi-format Support** - JPEG, PNG, WebP, SVG (input only) with WebP as default for optimal compression
 - **Dynamic Transformations** - Resize, quality adjustment, format conversion, filters, and more on-the-fly
+- **External Image Reprocessing** - Download, process, and replace images from external URLs
 - **Flexible Storage** - Local filesystem, MinIO, or Amazon S3 storage
 - **High Performance** - Concurrent processing with goroutine pools
 - **Smart Caching** - In-memory LRU cache for frequently accessed images
@@ -686,6 +687,98 @@ curlie POST "http://localhost:8080/api/v1/upload?b=birdple&d=bucket/test" \
   format=webp
 ```
 
+### Reprocess Images from URL
+
+The reprocess endpoint allows you to download an image from an external URL, process it with specified quality and format parameters, and replace an existing image in your storage bucket. This is useful for updating images with optimized versions or changing formats while maintaining the same storage key.
+
+```bash
+# cURL - Reprocess external image and replace existing one
+curl -X POST http://localhost:8080/api/v1/reprocess \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/image.jpg",
+    "bucket": "my-bucket",
+    "key": "path/to/existing-image.webp",
+    "quality": 80,
+    "format": "webp"
+  }'
+
+# HTTPie - Reprocess external image and replace existing one
+http POST localhost:8080/api/v1/reprocess \
+  url=https://example.com/image.jpg \
+  bucket=my-bucket \
+  key=path/to/existing-image.webp \
+  quality:=80 \
+  format=webp
+
+# cURL - With API key (if required)
+curl -X POST http://localhost:8080/api/v1/reprocess \
+  -H "X-API-Key: your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/image.jpg",
+    "bucket": "birdple",
+    "key": "board-games/100423/game-image.webp",
+    "quality": 85,
+    "format": "webp"
+  }'
+
+# HTTPie - With API key (if required)
+http POST localhost:8080/api/v1/reprocess \
+  X-API-Key:your-secret-api-key \
+  url=https://example.com/image.jpg \
+  bucket=birdple \
+  key=board-games/100423/game-image.webp \
+  quality:=85 \
+  format=webp
+```
+
+**Parameters:**
+- JSON Payload:
+  - `url` (required) - URL of the external image to download and process
+  - `bucket` (required) - Bucket name where the image will be stored/replaced
+  - `key` (required) - Storage key path where the processed image will be stored (replaces existing image at this path)
+  - `quality` (required) - Output quality (1-100)
+  - `format` (optional) - Output format (jpeg, png, webp)
+
+**Response:**
+```json
+{
+  "success": true,
+  "processed": [
+    {
+      "key": "board-games/100423/game-image.webp",
+      "url_size": 2048576,
+      "bucket_size": 1536000,
+      "new_size": 512000,
+      "saved_bytes": 1024000,
+      "saved_percent": 66.67,
+      "format": "webp",
+      "quality": 80
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `url_size` - Size in bytes of the downloaded image from the URL
+- `bucket_size` - Size in bytes of the existing image in the bucket (0 if no existing image)
+- `new_size` - Size in bytes of the processed image stored
+- `saved_bytes` - Bytes saved compared to the existing bucket image
+- `saved_percent` - Percentage saved compared to the existing bucket image
+
+**Use Cases:**
+- Update existing images with optimized versions from external sources
+- Convert image formats while maintaining the same storage path
+- Replace images with higher quality versions from external URLs
+- Batch update images from external APIs or CDNs
+
+**Notes:**
+- The endpoint downloads the image from the provided URL, processes it, and stores it at the specified key, replacing any existing image
+- If no image exists at the specified key, `bucket_size` will be 0 and savings calculations will show 0
+- The endpoint processes exactly one image per request
+- All standard processing parameters (quality, format) are supported
+
 ### Health Check
 
 ```bash
@@ -730,6 +823,7 @@ graph TB
     MW --> Handlers[HTTP Handlers]
     Handlers --> Upload[Upload Handler]
     Handlers --> Delivery[Delivery Handler]
+    Handlers --> Reprocess[Reprocess Handler]
     Handlers --> Health[Health Handler]
 
     Upload --> Processor[Image Processor]
@@ -769,7 +863,7 @@ imagine/
 │   └── main.go                     # Application entry point
 ├── internal/
 │   ├── api/                        # HTTP layer
-│   │   ├── handlers.go             # Request handlers (upload, delivery, health)
+│   │   ├── handlers.go             # Request handlers (upload, delivery, reprocess, health)
 │   │   ├── server.go               # Server setup and middleware
 │   │   └── middleware/             # HTTP middleware
 │   │       └── security.go         # Auth, rate limiting, security headers
