@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,8 +49,8 @@ type APIError struct {
 	Message string `json:"message"`
 }
 
-// ReprocessRequest represents the request for reprocessing images
-type ReprocessRequest struct {
+// UpdateRequest represents the request for updating images
+type UpdateRequest struct {
 	URL     string `json:"url,omitempty"`     // URL of external image to process and replace
 	Bucket  string `json:"bucket,omitempty"`  // Bucket where to store/replace the image
 	Key     string `json:"key,omitempty"`     // Storage key for the image
@@ -57,15 +58,15 @@ type ReprocessRequest struct {
 	Format  string `json:"format,omitempty"`  // Output format
 }
 
-// ReprocessResponse represents the response for reprocessing images
-type ReprocessResponse struct {
-	Success   bool              `json:"success"`
-	Processed []ReprocessResult `json:"processed,omitempty"`
-	Error     *APIError         `json:"error,omitempty"`
+// UpdateResponse represents the response for updating images
+type UpdateResponse struct {
+	Success bool         `json:"success"`
+	Updated []UpdateResult `json:"updated,omitempty"`
+	Error   *APIError    `json:"error,omitempty"`
 }
 
-// ReprocessResult represents the result of reprocessing a single image
-type ReprocessResult struct {
+// UpdateResult represents the result of updating a single image
+type UpdateResult struct {
 	Key          string  `json:"key"`
 	URLSize      int64   `json:"url_size"`      // Size of image from URL
 	BucketSize   int64   `json:"bucket_size"`   // Size of existing image in bucket
@@ -74,6 +75,51 @@ type ReprocessResult struct {
 	SavedPercent float64 `json:"saved_percent"` // Percentage saved vs existing bucket image
 	Format       string  `json:"format"`
 	Quality      int     `json:"quality"`
+}
+
+// ListRequest represents the request for listing files
+type ListRequest struct {
+	Bucket string `json:"bucket,omitempty"` // Bucket to list from
+	Prefix string `json:"prefix,omitempty"` // Prefix/directory to filter by
+}
+
+// ListResponse represents the response for listing files
+type ListResponse struct {
+	Success     bool             `json:"success"`
+	Prefix      string           `json:"prefix,omitempty"`
+	Count       int              `json:"count"`
+	Files       []ListItem       `json:"files,omitempty"`
+	Directories []DirectoryInfo  `json:"directories,omitempty"`
+	Error       *APIError        `json:"error,omitempty"`
+}
+
+// ListItem represents a single file in a list response
+type ListItem struct {
+	Key      string    `json:"key"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified"`
+}
+
+// DirectoryInfo represents information about a subdirectory
+type DirectoryInfo struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	FileCount int    `json:"file_count"`
+}
+
+// DeleteRequest represents the request for deleting files or directories
+type DeleteRequest struct {
+	Bucket string   `json:"bucket,omitempty"` // Bucket to delete from
+	Keys   []string `json:"keys,omitempty"`   // List of keys to delete
+	Prefix string   `json:"prefix,omitempty"` // Prefix/directory to delete (deletes all files with this prefix)
+}
+
+// DeleteResponse represents the response for delete operations
+type DeleteResponse struct {
+	Success bool        `json:"success"`
+	Deleted []string    `json:"deleted,omitempty"` // List of deleted keys
+	Count   int         `json:"count"`
+	Error   *APIError   `json:"error,omitempty"`
 }
 
 // handleUpload handles image upload requests
@@ -614,12 +660,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(health)
 }
 
-// handleReprocess handles image reprocessing requests
-func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
+// handleUpdate handles image update requests
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Parse request body
-	var req ReprocessRequest
+	var req UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
 		return
@@ -736,9 +782,9 @@ func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send response
-	response := ReprocessResponse{
+	response := UpdateResponse{
 		Success: true,
-		Processed: []ReprocessResult{
+		Updated: []UpdateResult{
 			{
 				Key:          req.Key,
 				URLSize:      urlSize,
@@ -901,4 +947,187 @@ func (s *Server) getStorageForBucket(bucket string) storage.StorageBackend {
 
 	// If storage doesn't support BucketAware, return default storage
 	return s.storage
+}
+
+// handleList handles listing files in a bucket/directory
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get bucket and prefix from query parameters
+	bucket := r.URL.Query().Get("b")
+	if bucket == "" {
+		bucket = r.URL.Query().Get("bucket")
+	}
+
+	prefix := r.URL.Query().Get("p")
+	if prefix == "" {
+		prefix = r.URL.Query().Get("prefix")
+	}
+	if prefix == "" {
+		prefix = r.URL.Query().Get("d")
+	}
+	if prefix == "" {
+		prefix = r.URL.Query().Get("dir")
+	}
+	if prefix == "" {
+		prefix = r.URL.Query().Get("directory")
+	}
+
+	// Normalize prefix path
+	prefix = normalizeDirectoryPath(prefix)
+
+	// Get bucket-aware storage instance
+	storageBackend := s.getStorageForBucket(bucket)
+
+	// List files
+	results, err := storageBackend.List(ctx, prefix)
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to list files")
+		s.sendError(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list files")
+		return
+	}
+
+	// Separate files and directories
+	var files []ListItem
+	directoryMap := make(map[string]*DirectoryInfo)
+
+	// Build the prefix path for comparison
+	prefixPath := prefix
+	if prefixPath != "" && prefixPath[len(prefixPath)-1] != '/' {
+		prefixPath = prefixPath + "/"
+	}
+
+	for _, result := range results {
+		// Remove prefix from key
+		key := result.Key
+		if prefixPath != "" && strings.HasPrefix(key, prefixPath) {
+			key = strings.TrimPrefix(key, prefixPath)
+		}
+
+		// Check if this is a direct file or in a subdirectory
+		if strings.Contains(key, "/") {
+			// File is in a subdirectory
+			parts := strings.SplitN(key, "/", 2)
+			dirName := parts[0]
+
+			if _, exists := directoryMap[dirName]; !exists {
+				fullPath := prefixPath + dirName
+				if prefixPath == "" {
+					fullPath = dirName
+				}
+				directoryMap[dirName] = &DirectoryInfo{
+					Name:      dirName,
+					Path:      strings.TrimSuffix(fullPath, "/"),
+					FileCount: 0,
+				}
+			}
+			directoryMap[dirName].FileCount++
+		} else {
+			// Direct file in this directory
+			files = append(files, ListItem{
+				Key:      key,
+				Size:     result.Size,
+				Modified: result.Modified,
+			})
+		}
+	}
+
+	// Convert directory map to slice
+	var directories []DirectoryInfo
+	for _, dir := range directoryMap {
+		directories = append(directories, *dir)
+	}
+
+	// Sort directories by name for consistent output
+	sort.Slice(directories, func(i, j int) bool {
+		return directories[i].Name < directories[j].Name
+	})
+
+	// Sort files by key for consistent output
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Key < files[j].Key
+	})
+
+	response := ListResponse{
+		Success:     true,
+		Prefix:      prefix,
+		Count:       len(results),
+		Files:       files,
+		Directories: directories,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleDelete handles deleting files or entire directories
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req DeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
+		return
+	}
+
+	// Validate that either keys or prefix is provided
+	if len(req.Keys) == 0 && req.Prefix == "" {
+		s.sendError(w, http.StatusBadRequest, "MISSING_PARAMETERS", "Either 'keys' or 'prefix' must be provided")
+		return
+	}
+
+	// Get bucket-aware storage instance
+	storageBackend := s.getStorageForBucket(req.Bucket)
+
+	var deletedKeys []string
+
+	// If prefix is provided, list all files with that prefix and delete them
+	if req.Prefix != "" {
+		// Normalize prefix path
+		prefix := normalizeDirectoryPath(req.Prefix)
+
+		// List all files with this prefix
+		results, err := storageBackend.List(ctx, prefix)
+		if err != nil {
+			s.logger.WithError(err).Error("Failed to list files for deletion")
+			s.sendError(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list files for deletion")
+			return
+		}
+
+		// Delete each file
+		for _, result := range results {
+			if err := storageBackend.Delete(ctx, result.Key); err != nil {
+				s.logger.WithError(err).WithField("key", result.Key).Warn("Failed to delete file")
+				continue
+			}
+			deletedKeys = append(deletedKeys, result.Key)
+		}
+	}
+
+	// Delete specific keys if provided
+	if len(req.Keys) > 0 {
+		for _, key := range req.Keys {
+			if err := storageBackend.Delete(ctx, key); err != nil {
+				if storage.IsNotFound(err) {
+					s.logger.WithField("key", key).Warn("File not found for deletion")
+					continue
+				}
+				s.logger.WithError(err).WithField("key", key).Warn("Failed to delete file")
+				continue
+			}
+			deletedKeys = append(deletedKeys, key)
+		}
+	}
+
+	response := DeleteResponse{
+		Success: true,
+		Deleted: deletedKeys,
+		Count:   len(deletedKeys),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }

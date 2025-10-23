@@ -10,8 +10,9 @@ A blazing-fast image processing service built in Go that serves as a simplified 
 - **RESTful API** with Chi router for lightning-fast routing
 - **Multi-format Support** - JPEG, PNG, WebP, SVG (input only) with WebP as default for optimal compression
 - **Dynamic Transformations** - Resize, quality adjustment, format conversion, filters, and more on-the-fly
-- **External Image Reprocessing** - Download, process, and replace images from external URLs
-- **Flexible Storage** - Local filesystem, MinIO, or Amazon S3 storage
+- **Image Update** - Download, process, and replace images from external URLs
+- **File Management** - List files in buckets/directories and delete files or entire directories
+- **Flexible Storage** - Local filesystem, MinIO, or Amazon S3 storage with multi-bucket support
 - **High Performance** - Concurrent processing with goroutine pools
 - **Smart Caching** - In-memory LRU cache for frequently accessed images
 - **Content-based Deduplication** - Automatic detection of duplicate images using hash-based IDs
@@ -172,8 +173,12 @@ http -f POST localhost:8080/api/v1/upload \
 
 **Note:**
 - The `/health` endpoint is always accessible without authentication
-- **Image retrieval/delivery endpoints (`/api/v1/images/{id}`) are always public** - no API key required
-- API key is only required for **upload endpoint** (`/api/v1/upload`) when `API_KEY_REQUIRED=true`
+- **Image retrieval/delivery endpoint (`/api/v1/images/{id}`) is always public** - no API key required
+- API key is required for all management endpoints when `API_KEY_REQUIRED=true`:
+  - `/api/v1/upload` - Upload images
+  - `/api/v1/update` - Update images from URL
+  - `/api/v1/list` - List files
+  - `/api/v1/delete` - Delete files/directories
 
 ### Upload Image
 
@@ -687,13 +692,13 @@ curlie POST "http://localhost:8080/api/v1/upload?b=birdple&d=bucket/test" \
   format=webp
 ```
 
-### Reprocess Images from URL
+### Update Images from URL
 
-The reprocess endpoint allows you to download an image from an external URL, process it with specified quality and format parameters, and replace an existing image in your storage bucket. This is useful for updating images with optimized versions or changing formats while maintaining the same storage key.
+The update endpoint allows you to download an image from an external URL, process it with specified quality and format parameters, and replace an existing image in your storage bucket. This is useful for updating images with optimized versions or changing formats while maintaining the same storage key.
 
 ```bash
-# cURL - Reprocess external image and replace existing one
-curl -X POST http://localhost:8080/api/v1/reprocess \
+# cURL - Update external image and replace existing one
+curl -X POST http://localhost:8080/api/v1/update \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com/image.jpg",
@@ -703,8 +708,8 @@ curl -X POST http://localhost:8080/api/v1/reprocess \
     "format": "webp"
   }'
 
-# HTTPie - Reprocess external image and replace existing one
-http POST localhost:8080/api/v1/reprocess \
+# HTTPie - Update external image and replace existing one
+http POST localhost:8080/api/v1/update \
   url=https://example.com/image.jpg \
   bucket=my-bucket \
   key=path/to/existing-image.webp \
@@ -712,7 +717,7 @@ http POST localhost:8080/api/v1/reprocess \
   format=webp
 
 # cURL - With API key (if required)
-curl -X POST http://localhost:8080/api/v1/reprocess \
+curl -X POST http://localhost:8080/api/v1/update \
   -H "X-API-Key: your-secret-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -724,7 +729,7 @@ curl -X POST http://localhost:8080/api/v1/reprocess \
   }'
 
 # HTTPie - With API key (if required)
-http POST localhost:8080/api/v1/reprocess \
+http POST localhost:8080/api/v1/update \
   X-API-Key:your-secret-api-key \
   url=https://example.com/image.jpg \
   bucket=birdple \
@@ -745,7 +750,7 @@ http POST localhost:8080/api/v1/reprocess \
 ```json
 {
   "success": true,
-  "processed": [
+  "updated": [
     {
       "key": "board-games/100423/game-image.webp",
       "url_size": 2048576,
@@ -778,6 +783,218 @@ http POST localhost:8080/api/v1/reprocess \
 - If no image exists at the specified key, `bucket_size` will be 0 and savings calculations will show 0
 - The endpoint processes exactly one image per request
 - All standard processing parameters (quality, format) are supported
+
+### List Files in Bucket/Directory
+
+The list endpoint allows you to retrieve a list of all files in a specific bucket and/or directory. This is useful for browsing uploaded images, implementing gallery views, or managing your storage.
+
+```bash
+# cURL - List all files in default bucket
+curl http://localhost:8080/api/v1/list
+
+# HTTPie - List all files in default bucket
+http localhost:8080/api/v1/list
+
+# cURL - List files in specific bucket
+curl "http://localhost:8080/api/v1/list?bucket=my-bucket"
+
+# HTTPie - List files in specific bucket
+http "localhost:8080/api/v1/list?bucket=my-bucket"
+
+# cURL - List files in specific directory (short parameter)
+curl "http://localhost:8080/api/v1/list?b=birdple&p=products/electronics"
+
+# HTTPie - List files in specific directory (short parameter)
+http "localhost:8080/api/v1/list?b=birdple&p=products/electronics"
+
+# cURL - List files with directory parameter variations
+curl "http://localhost:8080/api/v1/list?bucket=my-bucket&dir=avatars/2024"
+
+# HTTPie - List files with directory parameter variations
+http "localhost:8080/api/v1/list?bucket=my-bucket&dir=avatars/2024"
+
+# cURL - With API key (if required)
+curl -H "X-API-Key: your-secret-api-key" \
+  "http://localhost:8080/api/v1/list?b=birdple&p=board-games"
+
+# HTTPie - With API key (if required)
+http "localhost:8080/api/v1/list?b=birdple&p=board-games" \
+  X-API-Key:your-secret-api-key
+```
+
+**Parameters (query string):**
+- `bucket` or `b` (optional) - Bucket name to list from
+- `prefix`, `p`, `dir`, `d`, or `directory` (optional) - Prefix/directory path to filter by
+
+**Response:**
+```json
+{
+  "success": true,
+  "prefix": "events",
+  "count": 54,
+  "files": [
+    {
+      "key": "014c90966fc4ef53",
+      "size": 94424,
+      "modified": "2024-10-15T10:30:00Z"
+    },
+    {
+      "key": "0f68e193c3773354",
+      "size": 122320,
+      "modified": "2024-10-15T11:45:00Z"
+    },
+    {
+      "key": "temp",
+      "size": 189606,
+      "modified": "2024-10-15T12:00:00Z"
+    }
+  ],
+  "directories": [
+    {
+      "name": "dhu9s3yglffwoyrpdknq66ua",
+      "path": "events/dhu9s3yglffwoyrpdknq66ua",
+      "file_count": 1
+    },
+    {
+      "name": "yfv78ihe8d9ta6342v76ikhv",
+      "path": "events/yfv78ihe8d9ta6342v76ikhv",
+      "file_count": 2
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `success` - Whether the operation was successful
+- `prefix` - The prefix/directory that was queried
+- `count` - Total number of items (files + all files in subdirectories)
+- `files` - Array of direct files in this directory (prefix removed from keys)
+  - `key` - File name/key relative to the prefix
+  - `size` - File size in bytes
+  - `modified` - Last modification timestamp
+- `directories` - Array of subdirectories found
+  - `name` - Subdirectory name
+  - `path` - Full path to the subdirectory
+  - `file_count` - Number of files within this subdirectory (including nested files)
+
+**Use Cases:**
+- Browse all uploaded images in a bucket or directory
+- Implement gallery or file manager interfaces
+- Generate image sitemaps
+- Audit storage usage by directory
+- Build administrative dashboards
+
+### Delete Files or Directories
+
+The delete endpoint allows you to delete specific files by their keys or delete entire directories by prefix. This provides flexible cleanup options for managing your storage.
+
+```bash
+# cURL - Delete specific files
+curl -X DELETE http://localhost:8080/api/v1/delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "my-bucket",
+    "keys": [
+      "path/to/image1.webp",
+      "path/to/image2.webp"
+    ]
+  }'
+
+# HTTPie - Delete specific files
+http DELETE localhost:8080/api/v1/delete \
+  bucket=my-bucket \
+  keys:='["path/to/image1.webp", "path/to/image2.webp"]'
+
+# cURL - Delete entire directory (all files with prefix)
+curl -X DELETE http://localhost:8080/api/v1/delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "birdple",
+    "prefix": "board-games/old-images"
+  }'
+
+# HTTPie - Delete entire directory (all files with prefix)
+http DELETE localhost:8080/api/v1/delete \
+  bucket=birdple \
+  prefix=board-games/old-images
+
+# cURL - Delete from default bucket
+curl -X DELETE http://localhost:8080/api/v1/delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keys": ["image1.webp", "image2.webp"]
+  }'
+
+# HTTPie - Delete from default bucket
+http DELETE localhost:8080/api/v1/delete \
+  keys:='["image1.webp", "image2.webp"]'
+
+# cURL - With API key (if required)
+curl -X DELETE http://localhost:8080/api/v1/delete \
+  -H "X-API-Key: your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "my-bucket",
+    "prefix": "temp/"
+  }'
+
+# HTTPie - With API key (if required)
+http DELETE localhost:8080/api/v1/delete \
+  X-API-Key:your-secret-api-key \
+  bucket=my-bucket \
+  prefix=temp/
+```
+
+**Parameters:**
+- JSON Payload:
+  - `bucket` (optional) - Bucket name to delete from
+  - `keys` (optional) - Array of specific file keys to delete
+  - `prefix` (optional) - Directory prefix to delete (deletes all files matching this prefix)
+
+**Note:** Either `keys` or `prefix` must be provided, but not both.
+
+**Response (specific files):**
+```json
+{
+  "success": true,
+  "count": 2,
+  "deleted": [
+    "path/to/image1.webp",
+    "path/to/image2.webp"
+  ]
+}
+```
+
+**Response (directory deletion):**
+```json
+{
+  "success": true,
+  "count": 45,
+  "deleted": [
+    "board-games/old-images/game1.webp",
+    "board-games/old-images/game2.webp",
+    "board-games/old-images/subfolder/game3.webp"
+  ]
+}
+```
+
+**Response Fields:**
+- `success` - Whether the operation was successful
+- `count` - Number of files successfully deleted
+- `deleted` - Array of deleted file keys
+
+**Use Cases:**
+- Clean up temporary or old images
+- Remove entire directories or categories of images
+- Implement user data deletion (GDPR compliance)
+- Batch delete unused assets
+- Manage storage quotas
+
+**Important Notes:**
+- Directory deletion is recursive - it will delete all files with the specified prefix
+- Failed deletions are logged but don't stop the operation
+- Non-existent files are silently skipped
+- The operation returns only successfully deleted files
 
 ### Health Check
 
@@ -823,7 +1040,9 @@ graph TB
     MW --> Handlers[HTTP Handlers]
     Handlers --> Upload[Upload Handler]
     Handlers --> Delivery[Delivery Handler]
-    Handlers --> Reprocess[Reprocess Handler]
+    Handlers --> Update[Update Handler]
+    Handlers --> List[List Handler]
+    Handlers --> Delete[Delete Handler]
     Handlers --> Health[Health Handler]
 
     Upload --> Processor[Image Processor]
@@ -863,7 +1082,7 @@ imagine/
 │   └── main.go                     # Application entry point
 ├── internal/
 │   ├── api/                        # HTTP layer
-│   │   ├── handlers.go             # Request handlers (upload, delivery, reprocess, health)
+│   │   ├── handlers.go             # Request handlers (upload, delivery, update, list, delete, health)
 │   │   ├── server.go               # Server setup and middleware
 │   │   └── middleware/             # HTTP middleware
 │   │       └── security.go         # Auth, rate limiting, security headers
@@ -949,7 +1168,20 @@ imagine/
 - **Rate Limiting** - Per-client request throttling (configurable RPM, applies to all endpoints)
 - **CORS Support** - Configurable cross-origin policies
 - **Secure Headers** - X-Frame-Options, CSP, X-Content-Type-Options, etc.
-- **API Key Authentication** - Optional API key protection for uploads only (images are publicly accessible)
+- **API Key Authentication** - Optional API key protection for management endpoints
+
+### API Key Authentication Endpoints
+
+When `API_KEY_REQUIRED=true`:
+- **Public (no auth required)**:
+  - `GET /health` - Health check
+  - `GET /api/v1/images/{id}` - Image delivery (public CDN-like access)
+
+- **Protected (API key required)**:
+  - `POST /api/v1/upload` - Upload images
+  - `POST /api/v1/update` - Update images from URL
+  - `GET /api/v1/list` - List files in buckets/directories
+  - `DELETE /api/v1/delete` - Delete files or directories
 
 ### Security Best Practices
 - Non-root container execution

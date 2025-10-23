@@ -204,12 +204,29 @@ func (m *MinIOStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 func (m *MinIOStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var results []ListResult
 
+	// Normalize prefix - add trailing slash if prefix is provided and doesn't end with /
+	listPrefix := prefix
+	if prefix != "" && prefix[len(prefix)-1] != '/' {
+		listPrefix = prefix + "/"
+	}
+
 	// List objects with prefix
 	for objectInfo := range m.client.ListObjects(ctx, m.bucket, minio.ListObjectsOptions{
-		Prefix: prefix,
+		Prefix:    listPrefix,
+		Recursive: true, // List all objects recursively, not just top-level
 	}) {
 		if objectInfo.Err != nil {
 			return nil, fmt.Errorf("failed to list objects: %w", objectInfo.Err)
+		}
+
+		// Skip directory markers (objects with size 0 that end with /)
+		if objectInfo.Size == 0 && len(objectInfo.Key) > 0 && objectInfo.Key[len(objectInfo.Key)-1] == '/' {
+			continue
+		}
+
+		// Skip empty keys
+		if objectInfo.Key == "" {
+			continue
 		}
 
 		results = append(results, ListResult{

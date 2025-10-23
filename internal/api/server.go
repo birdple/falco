@@ -78,12 +78,6 @@ func (s *Server) setupRouter() {
 		r.Use(rateLimiter.Handler)
 	}
 
-	// API key authentication
-	if s.config.Security.APIKeyRequired {
-		apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger)
-		r.Use(apiKeyAuth.Handler)
-	}
-
 	// CORS middleware
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   s.config.Security.CORS.Origins,
@@ -99,9 +93,22 @@ func (s *Server) setupRouter() {
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/upload", s.handleUpload)
+		// Public endpoint - no auth required (image delivery)
 		r.Get("/images/{id}", s.handleDelivery)
-		r.Post("/reprocess", s.handleReprocess)
+
+		// Protected endpoints - require API key when enabled
+		r.Group(func(r chi.Router) {
+			// API key authentication for protected endpoints
+			if s.config.Security.APIKeyRequired {
+				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger)
+				r.Use(apiKeyAuth.Handler)
+			}
+
+			r.Post("/upload", s.handleUpload)
+			r.Post("/update", s.handleUpdate)
+			r.Get("/list", s.handleList)
+			r.Delete("/delete", s.handleDelete)
+		})
 	})
 
 	r.NotFound(s.handleNotFound)

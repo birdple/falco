@@ -212,10 +212,16 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var results []ListResult
 
+	// Normalize prefix - add trailing slash if prefix is provided and doesn't end with /
+	listPrefix := prefix
+	if prefix != "" && prefix[len(prefix)-1] != '/' {
+		listPrefix = prefix + "/"
+	}
+
 	// List objects with prefix
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(prefix),
+		Prefix: aws.String(listPrefix),
 	})
 
 	for paginator.HasMorePages() {
@@ -225,9 +231,22 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, erro
 		}
 
 		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			size := *obj.Size
+
+			// Skip directory markers (objects with size 0 that end with /)
+			if size == 0 && len(key) > 0 && key[len(key)-1] == '/' {
+				continue
+			}
+
+			// Skip empty keys
+			if key == "" {
+				continue
+			}
+
 			results = append(results, ListResult{
-				Key:      aws.ToString(obj.Key),
-				Size:     *obj.Size,
+				Key:      key,
+				Size:     size,
 				Modified: *obj.LastModified,
 			})
 		}
