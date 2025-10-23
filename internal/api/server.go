@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/sirupsen/logrus"
 
+	"github.com/birdple/imagine/internal/api/handlers"
 	apimw "github.com/birdple/imagine/internal/api/middleware"
 	"github.com/birdple/imagine/internal/config"
 	"github.com/birdple/imagine/internal/processor"
@@ -26,23 +27,28 @@ type ServerConfig struct {
 
 // Server represents the HTTP server
 type Server struct {
-	config         *config.Config
-	logger         *logrus.Logger
-	router         *chi.Mux
-	server         *http.Server
-	storage        storage.StorageBackend
-	imageProcessor processor.ImageProcessor
-	startTime      time.Time
+	config  *config.Config
+	logger  *logrus.Logger
+	router  *chi.Mux
+	server  *http.Server
+	handler *handlers.Handler
 }
 
 // NewServer creates a new API server
 func NewServer(cfg *ServerConfig) *Server {
+	// Create handler with dependencies
+	h := handlers.NewHandler(
+		cfg.Config,
+		cfg.Logger,
+		cfg.Storage,
+		cfg.ImageProcessor,
+		time.Now(),
+	)
+
 	s := &Server{
-		config:         cfg.Config,
-		logger:         cfg.Logger,
-		storage:        cfg.Storage,
-		imageProcessor: cfg.ImageProcessor,
-		startTime:      time.Now(),
+		config:  cfg.Config,
+		logger:  cfg.Logger,
+		handler: h,
 	}
 
 	s.setupRouter()
@@ -89,12 +95,12 @@ func (s *Server) setupRouter() {
 	}))
 
 	// Health check endpoint (no auth required)
-	r.Get("/health", s.handleHealth)
+	r.Get("/health", s.handler.HandleHealth)
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoint - no auth required (image delivery)
-		r.Get("/images/{id}", s.handleDelivery)
+		r.Get("/images/{id}", s.handler.HandleDelivery)
 
 		// Protected endpoints - require API key when enabled
 		r.Group(func(r chi.Router) {
@@ -104,10 +110,10 @@ func (s *Server) setupRouter() {
 				r.Use(apiKeyAuth.Handler)
 			}
 
-			r.Post("/upload", s.handleUpload)
-			r.Post("/update", s.handleUpdate)
-			r.Get("/list", s.handleList)
-			r.Delete("/delete", s.handleDelete)
+			r.Post("/upload", s.handler.HandleUpload)
+			r.Post("/update", s.handler.HandleUpdate)
+			r.Get("/list", s.handler.HandleList)
+			r.Delete("/delete", s.handler.HandleDelete)
 		})
 	})
 
