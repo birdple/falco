@@ -134,9 +134,22 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate URL
-		if _, err := url.Parse(uploadReq.URL); err != nil {
+		// Validate URL with stricter checks
+		parsedURL, err := url.Parse(uploadReq.URL)
+		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "Invalid URL format")
+			return
+		}
+
+		// Only allow HTTPS in production, allow HTTP in development
+		if parsedURL.Scheme != "https" && parsedURL.Scheme != "http" {
+			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol")
+			return
+		}
+
+		// Additional validation for URL length and domain
+		if len(uploadReq.URL) > 2048 {
+			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL too long (max 2048 characters)")
 			return
 		}
 

@@ -50,6 +50,11 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Support both short (w) and long (width) parameter names
 	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
+			// Validate minimum dimensions
+			if widthVal < 16 {
+				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
+				return
+			}
 			params.Width = widthVal
 		} else {
 			h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Invalid width parameter")
@@ -59,6 +64,11 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
+			// Validate minimum dimensions
+			if heightVal < 16 {
+				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
+				return
+			}
 			params.Height = heightVal
 		} else {
 			h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Invalid height parameter")

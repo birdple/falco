@@ -25,7 +25,15 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
 		// Content Security Policy
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; script-src 'self'")
+		// Allow external resources for ReDoc documentation page
+		csp := "default-src 'self' https://cdn.redoc.ly; " +
+			"script-src 'self' https://cdn.redoc.ly blob: 'unsafe-eval'; " +
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+			"font-src 'self' https://fonts.gstatic.com; " +
+			"img-src 'self' data: https://cdn.redoc.ly; " +
+			"worker-src 'self' blob:; " +
+			"connect-src 'self' https://cdn.redoc.ly"
+		w.Header().Set("Content-Security-Policy", csp)
 
 		// Referrer Policy
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -39,9 +47,9 @@ func SecurityHeaders(next http.Handler) http.Handler {
 
 // APIKeyAuth provides API key authentication
 type APIKeyAuth struct {
-	apiKey            string
-	logger            *logrus.Logger
-	exemptPaths       map[string]bool
+	apiKey             string
+	logger             *logrus.Logger
+	exemptPaths        map[string]bool
 	exemptPathPrefixes []string
 }
 
@@ -58,9 +66,9 @@ func NewAPIKeyAuth(apiKey string, logger *logrus.Logger) *APIKeyAuth {
 	}
 
 	return &APIKeyAuth{
-		apiKey:            apiKey,
-		logger:            logger,
-		exemptPaths:       exemptPaths,
+		apiKey:             apiKey,
+		logger:             logger,
+		exemptPaths:        exemptPaths,
 		exemptPathPrefixes: exemptPathPrefixes,
 	}
 }

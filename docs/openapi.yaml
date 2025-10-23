@@ -1,0 +1,1061 @@
+openapi: 3.1.0
+info:
+  title: Imagine API
+  description: A high-performance image processing and storage API with advanced transformations, multi-backend storage support, and comprehensive documentation.
+  version: "1.0.0"
+  contact:
+    name: API Support
+    email: support@imagine-api.com
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+  - url: https://api.imagine.com/v1
+    description: Production server
+paths:
+  /upload:
+    post:
+      summary: Upload an image
+      description: Uploads a new image from a file, a URL, or binary data. The image can be processed and stored with optional quality and format parameters.
+      parameters:
+        - name: b
+          in: query
+          description: "Bucket name (alias: bucket)"
+          required: false
+          schema:
+            type: string
+        - name: d
+          in: query
+          description: "Directory path (alias: dir, directory)"
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: Image to upload. Can be multipart/form-data, image/*, or application/json with a URL.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: "Image file to upload"
+                quality:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 80
+                  description: "Quality for the processed image (1-100)"
+                format:
+                  type: string
+                  enum: [webp, jpeg, png, avif]
+                  default: webp
+                  description: "Target format for the processed image"
+                id:
+                  type: string
+                  pattern: '^[a-zA-Z0-9_-]+$'
+                  description: "Optional custom ID for the image (alphanumeric, hyphens, underscores only)"
+            examples:
+              upload-file:
+                summary: Upload image file
+                value:
+                  file: "binary image data"
+                  quality: 80
+                  format: webp
+          image/*:
+            schema:
+              type: string
+              format: binary
+              description: "Raw image data"
+            examples:
+              raw-image:
+                summary: Upload raw image
+                value: "binary image data"
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: "URL of the image to download and process"
+                quality:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 80
+                  description: "Quality for the processed image (1-100)"
+                format:
+                  type: string
+                  enum: [webp, jpeg, png, avif]
+                  default: webp
+                  description: "Target format for the processed image"
+                id:
+                  type: string
+                  pattern: '^[a-zA-Z0-9_-]+$'
+                  description: "Optional custom ID for the image"
+            examples:
+              upload-url:
+                summary: Upload from URL
+                value:
+                  url: "https://example.com/image.jpg"
+                  quality: 85
+                  format: webp
+      responses:
+        '201':
+          description: Image uploaded and processed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+              examples:
+                success:
+                  summary: Successful upload
+                  value:
+                    success: true
+                    data:
+                      id: "abc123def456"
+                      url: "http://localhost:8080/api/v1/images/abc123def456"
+                      original_name: "image.jpg"
+                      format: "webp"
+                      size: 245760
+                      dimensions:
+                        width: 1024
+                        height: 768
+                      created_at: "2024-01-15T10:30:00Z"
+        '200':
+          description: Image already exists (duplicate upload).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        '400':
+          description: Bad request (e.g., missing file, invalid parameters).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid-format:
+                  summary: Invalid format parameter
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_FORMAT"
+                      message: "Unsupported format"
+        '413':
+          description: Request entity too large.
+        '429':
+          description: Too many requests (rate limited).
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /update:
+    post:
+      summary: Update an existing image
+      description: Downloads an image from a URL, processes it with the specified quality and format, and overwrites an existing image at the specified key. Useful for updating images with better compression or different formats while preserving the same storage location.
+      parameters:
+        - name: b
+          in: query
+          description: "Bucket name override (optional, will use request body bucket if not specified)"
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: Details for the image update operation.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+                - bucket
+                - key
+                - quality
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: "URL of the new image to download and process"
+                  example: "https://example.com/new-image.jpg"
+                bucket:
+                  type: string
+                  description: "The storage bucket where the image resides"
+                  example: "images"
+                key:
+                  type: string
+                  description: "The key (path/filename) of the image to overwrite"
+                  example: "products/shirt-001.jpg"
+                quality:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 80
+                  description: "Quality for the processed image (1-100, higher = better quality)"
+                  example: 85
+                format:
+                  type: string
+                  enum: [webp, jpeg, png, avif]
+                  default: webp
+                  description: "Target format for the processed image"
+                  example: webp
+            examples:
+              update-product-image:
+                summary: Update product image with better compression
+                value:
+                  url: "https://cdn.example.com/products/new-shirt-design.jpg"
+                  bucket: "products"
+                  key: "shirts/red-shirt-2024.jpg"
+                  quality: 90
+                  format: webp
+              optimize-existing-image:
+                summary: Convert existing image to modern format
+                value:
+                  url: "https://old-cdn.example.com/images/photo.png"
+                  bucket: "gallery"
+                  key: "vacation-2023/beach.jpg"
+                  quality: 80
+                  format: avif
+      responses:
+        '200':
+          description: Image updated successfully with compression savings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateResponse'
+              examples:
+                successful-update:
+                  summary: Successful image update with savings
+                  value:
+                    success: true
+                    updated:
+                      - key: "products/shirt-001.jpg"
+                        url_size: 2048576
+                        bucket_size: 512000
+                        new_size: 184320
+                        saved_bytes: 327680
+                        saved_percent: 63.9
+                        format: webp
+                        quality: 85
+        '400':
+          description: Bad request (e.g., invalid JSON, missing parameters, invalid URL).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing-parameters:
+                  summary: Missing required parameters
+                  value:
+                    success: false
+                    error:
+                      code: "MISSING_BUCKET"
+                      message: "Bucket is required"
+                invalid-url:
+                  summary: Invalid URL format
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_URL"
+                      message: "Invalid URL format"
+                invalid-quality:
+                  summary: Quality out of range
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_QUALITY"
+                      message: "Quality must be between 1 and 100"
+        '404':
+          description: Image key not found in storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                image-not-found:
+                  summary: Image key does not exist
+                  value:
+                    success: false
+                    error:
+                      code: "NOT_FOUND"
+                      message: "Image not found"
+        '413':
+          description: Downloaded image too large.
+        '429':
+          description: Too many requests (rate limited).
+        '500':
+          description: Internal server error (e.g., download failed, processing error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                download-failed:
+                  summary: Failed to download image from URL
+                  value:
+                    success: false
+                    error:
+                      code: "DOWNLOAD_FAILED"
+                      message: "Failed to download image from URL"
+                processing-failed:
+                  summary: Image processing error
+                  value:
+                    success: false
+                    error:
+                      code: "PROCESSING_FAILED"
+                      message: "Failed to process image"
+  /list:
+    get:
+      summary: List files and directories
+      description: Lists files and directories within a specified bucket and prefix. Supports hierarchical browsing with file metadata including size and modification dates.
+      parameters:
+        - name: b
+          in: query
+          description: "Bucket name (alias: bucket)"
+          required: false
+          schema:
+            type: string
+            example: "images"
+        - name: p
+          in: query
+          description: "Path prefix to list (alias: prefix, d, dir, directory)"
+          required: false
+          schema:
+            type: string
+            example: "products/"
+        - name: d
+          in: query
+          description: "Directory path (alias: dir, directory)"
+          required: false
+          schema:
+            type: string
+            example: "products/shirts"
+      responses:
+        '200':
+          description: A list of files and directories with metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListResponse'
+              examples:
+                directory-listing:
+                  summary: List directory contents
+                  value:
+                    success: true
+                    prefix: "products/"
+                    count: 15
+                    files:
+                      - key: "shirt-red.jpg"
+                        size: 245760
+                        modified: "2024-01-15T10:30:00Z"
+                      - key: "shirt-blue.jpg"
+                        size: 198656
+                        modified: "2024-01-15T09:15:00Z"
+                    directories:
+                      - name: "shirts"
+                        path: "products/shirts"
+                        file_count: 8
+                      - name: "pants"
+                        path: "products/pants"
+                        file_count: 5
+                root-directory:
+                  summary: List root directory
+                  value:
+                    success: true
+                    prefix: ""
+                    count: 3
+                    files: []
+                    directories:
+                      - name: "products"
+                        path: "products"
+                        file_count: 15
+                      - name: "gallery"
+                        path: "gallery"
+                        file_count: 42
+                      - name: "thumbnails"
+                        path: "thumbnails"
+                        file_count: 128
+        '400':
+          description: Invalid parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid-bucket:
+                  summary: Invalid bucket name
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_BUCKET"
+                      message: "Bucket not found or access denied"
+        '500':
+          description: Internal server error (e.g., storage backend error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                storage-error:
+                  summary: Storage backend error
+                  value:
+                    success: false
+                    error:
+                      code: "STORAGE_ERROR"
+                      message: "Failed to list files"
+  /delete:
+    delete:
+      summary: Delete images or directories
+      description: Deletes one or more images by their keys, or all images within a directory prefix. Supports both individual file deletion and bulk directory deletion.
+      parameters:
+        - name: b
+          in: query
+          description: "Bucket name (alias: bucket)"
+          required: false
+          schema:
+            type: string
+            example: "images"
+      requestBody:
+        description: Deletion parameters - either specific keys or a prefix for bulk deletion.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keys:
+                  type: array
+                  items:
+                    type: string
+                  description: "Array of image keys to delete"
+                  example: ["abc123def456", "products/shirt-001.jpg"]
+                prefix:
+                  type: string
+                  description: "Directory prefix to delete all files within (alternative to keys)"
+                  example: "temp/"
+                bucket:
+                  type: string
+                  description: "Bucket name override (if not specified in query parameter)"
+                  example: "images"
+            examples:
+              delete-single-file:
+                summary: Delete a single image
+                value:
+                  keys: ["abc123def456"]
+              delete-multiple-files:
+                summary: Delete multiple images
+                value:
+                  keys: ["abc123def456", "def789ghi012", "products/old-shirt.jpg"]
+              delete-directory:
+                summary: Delete all files in a directory
+                value:
+                  prefix: "temp/"
+      responses:
+        '200':
+          description: Images deleted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+              examples:
+                single-file-deleted:
+                  summary: Single file deletion
+                  value:
+                    success: true
+                    deleted: ["abc123def456"]
+                    count: 1
+                multiple-files-deleted:
+                  summary: Multiple files deletion
+                  value:
+                    success: true
+                    deleted: ["abc123def456", "def789ghi012", "products/old-shirt.jpg"]
+                    count: 3
+                directory-deleted:
+                  summary: Directory bulk deletion
+                  value:
+                    success: true
+                    deleted: ["temp/cache1.jpg", "temp/cache2.jpg", "temp/cache3.jpg"]
+                    count: 3
+        '400':
+          description: Bad request (e.g., missing parameters, invalid keys).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing-parameters:
+                  summary: No keys or prefix provided
+                  value:
+                    success: false
+                    error:
+                      code: "MISSING_PARAMETERS"
+                      message: "Either 'keys' or 'prefix' must be provided"
+                invalid-keys:
+                  summary: Invalid key format
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_KEY"
+                      message: "Invalid key format"
+        '404':
+          description: One or more images not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                partial-not-found:
+                  summary: Some files not found
+                  value:
+                    success: false
+                    error:
+                      code: "PARTIAL_NOT_FOUND"
+                      message: "Some files were not found and could not be deleted"
+        '500':
+          description: Internal server error (e.g., storage backend error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                storage-error:
+                  summary: Storage backend error
+                  value:
+                    success: false
+                    error:
+                      code: "STORAGE_ERROR"
+                      message: "Failed to delete files"
+  /images/{id}:
+    get:
+      summary: Retrieve and transform an image
+      description: Delivers the processed image by its ID with optional real-time transformations. Supports resizing, cropping, format conversion, and various filters.
+      parameters:
+        - name: id
+          in: path
+          description: The ID of the image to retrieve.
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+        - name: w
+          in: query
+          description: "Width in pixels (alias: width)"
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 4096
+        - name: h
+          in: query
+          description: "Height in pixels (alias: height)"
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 4096
+        - name: q
+          in: query
+          description: "Quality (1-100, alias: quality)"
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 80
+        - name: f
+          in: query
+          description: "Format (alias: format)"
+          required: false
+          schema:
+            type: string
+            enum: [webp, jpeg, png, avif]
+            default: webp
+        - name: fit
+          in: query
+          description: "Resize fit mode"
+          required: false
+          schema:
+            type: string
+            enum: [cover, contain, fill]
+            default: cover
+        - name: crop_x
+          in: query
+          description: "Crop X offset"
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - name: crop_y
+          in: query
+          description: "Crop Y offset"
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - name: crop_w
+          in: query
+          description: "Crop width"
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: crop_h
+          in: query
+          description: "Crop height"
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: rotate
+          in: query
+          description: "Rotation angle in degrees"
+          required: false
+          schema:
+            type: number
+        - name: flip
+          in: query
+          description: "Flip direction"
+          required: false
+          schema:
+            type: string
+            enum: [horizontal, vertical]
+        - name: brightness
+          in: query
+          description: "Brightness adjustment (-100 to 100)"
+          required: false
+          schema:
+            type: number
+            minimum: -100
+            maximum: 100
+        - name: contrast
+          in: query
+          description: "Contrast adjustment (-100 to 100)"
+          required: false
+          schema:
+            type: number
+            minimum: -100
+            maximum: 100
+        - name: saturation
+          in: query
+          description: "Saturation adjustment (-100 to 500)"
+          required: false
+          schema:
+            type: number
+            minimum: -100
+            maximum: 500
+        - name: blur
+          in: query
+          description: "Blur amount (0-100)"
+          required: false
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+        - name: sharpen
+          in: query
+          description: "Sharpen amount (0-100)"
+          required: false
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+      responses:
+        '200':
+          description: The processed image file.
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: "Cache control directives"
+            ETag:
+              schema:
+                type: string
+              description: "Entity tag for caching"
+            Content-Type:
+              schema:
+                type: string
+              description: "MIME type of the image"
+        '400':
+          description: Invalid transformation parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid-width:
+                  summary: Invalid width parameter
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_WIDTH"
+                      message: "Invalid width parameter"
+                invalid-format:
+                  summary: Unsupported format
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_FORMAT"
+                      message: "Unsupported format"
+        '404':
+          description: Image not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                image-not-found:
+                  summary: Image ID does not exist
+                  value:
+                    success: false
+                    error:
+                      code: "IMAGE_NOT_FOUND"
+                      message: "Image not found"
+        '413':
+          description: Transformation result too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                too-large:
+                  summary: Result exceeds size limits
+                  value:
+                    success: false
+                    error:
+                      code: "RESULT_TOO_LARGE"
+                      message: "Transformation result exceeds maximum allowed size"
+        '429':
+          description: Too many requests (rate limited).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                rate-limited:
+                  summary: Rate limit exceeded
+                  value:
+                    success: false
+                    error:
+                      code: "RATE_LIMIT_EXCEEDED"
+                      message: "Too many requests"
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                processing-error:
+                  summary: Image processing failed
+                  value:
+                    success: false
+                    error:
+                      code: "PROCESSING_FAILED"
+                      message: "Failed to process image"
+/health:
+  get:
+    summary: Health check
+    description: Returns the health status of the API and its components including storage backend and system metrics.
+    responses:
+      '200':
+        description: Service is healthy.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthResponse'
+            examples:
+              healthy:
+                summary: All services healthy
+                value:
+                  status: "healthy"
+                  timestamp: "2024-01-15T10:30:00Z"
+                  version: "1.0.0"
+                  uptime: "2h30m45s"
+                  services:
+                    storage:
+                      status: "healthy"
+                      total_images: 15432
+                      total_size_bytes: 2147483648
+                      total_size_mb: 2048.0
+                      avg_image_size_bytes: 139264
+                    processor:
+                      status: "healthy"
+                      supported_formats: ["webp", "jpeg", "png", "avif"]
+                  system:
+                    go_version: "1.21+"
+                    max_file_size_mb: 10.0
+                    max_dimensions:
+                      width: 4096
+                      height: 4096
+              degraded:
+                summary: Some services unhealthy
+                value:
+                  status: "degraded"
+                  timestamp: "2024-01-15T10:30:00Z"
+                  version: "1.0.0"
+                  uptime: "2h30m45s"
+                  services:
+                    storage:
+                      status: "unhealthy"
+                      error: "Connection timeout"
+                    processor:
+                      status: "healthy"
+                      supported_formats: ["webp", "jpeg", "png", "avif"]
+      '503':
+        description: Service is unhealthy or degraded.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthResponse'
+            examples:
+              unhealthy:
+                summary: Service completely unhealthy
+                value:
+                  status: "unhealthy"
+                  timestamp: "2024-01-15T10:30:00Z"
+                  version: "1.0.0"
+                  uptime: "0s"
+                  services:
+                    storage:
+                      status: "unhealthy"
+                      error: "Database connection failed"
+                    processor:
+                      status: "unhealthy"
+                      error: "Image processor not initialized"
+/docs:
+  get:
+    summary: API Documentation
+    description: Serves the interactive API documentation using ReDoc.
+    responses:
+      '200':
+        description: HTML page with API documentation.
+        content:
+          text/html:
+            schema:
+              type: string
+              example: "<!DOCTYPE html><html><head><title>Imagine API Docs</title>...</html>"
+/docs/openapi.yaml:
+  get:
+    summary: OpenAPI Specification
+    description: Returns the OpenAPI 3.1.0 specification in YAML format.
+    responses:
+      '200':
+        description: OpenAPI specification file.
+        content:
+          application/yaml:
+            schema:
+              type: string
+              description: "OpenAPI 3.1.0 specification in YAML format"
+components:
+  schemas:
+    UploadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/ImageData'
+        error:
+          $ref: '#/components/schemas/Error'
+    ImageData:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "abc123def456"
+        url:
+          type: string
+          format: uri
+          example: "http://localhost:8080/api/v1/images/abc123def456"
+        original_name:
+          type: string
+          example: "image.jpg"
+        format:
+          type: string
+          enum: [webp, jpeg, png, avif]
+          example: "webp"
+        size:
+          type: integer
+          example: 245760
+        dimensions:
+          $ref: '#/components/schemas/Dimensions'
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+    Dimensions:
+      type: object
+      properties:
+        width:
+          type: integer
+          example: 1024
+        height:
+          type: integer
+          example: 768
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+          example: "INVALID_FORMAT"
+        message:
+          type: string
+          example: "Unsupported format"
+    UpdateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        updated:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpdateResult'
+    UpdateResult:
+      type: object
+      properties:
+        key:
+          type: string
+          example: "images/photo.jpg"
+        url_size:
+          type: integer
+          example: 512000
+        bucket_size:
+          type: integer
+          example: 245760
+        new_size:
+          type: integer
+          example: 184320
+        saved_bytes:
+          type: integer
+          example: 61440
+        saved_percent:
+          type: number
+          example: 25.0
+        format:
+          type: string
+          enum: [webp, jpeg, png, avif]
+          example: "webp"
+        quality:
+          type: integer
+          example: 80
+    ListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        prefix:
+          type: string
+          example: "images/"
+        count:
+          type: integer
+          example: 25
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListItem'
+        directories:
+          type: array
+          items:
+            $ref: '#/components/schemas/DirectoryInfo'
+    ListItem:
+      type: object
+      properties:
+        key:
+          type: string
+          example: "photo.jpg"
+        size:
+          type: integer
+          example: 245760
+        modified:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+    DirectoryInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "thumbnails"
+        path:
+          type: string
+          example: "images/thumbnails"
+        file_count:
+          type: integer
+          example: 12
+    DeleteResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        deleted:
+          type: array
+          items:
+            type: string
+          example: ["abc123def456", "def789ghi012"]
+        count:
+          type: integer
+          example: 2
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          example: "healthy"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+        version:
+          type: string
+          example: "1.0.0"
+        uptime:
+          type: string
+          example: "2h30m45s"
+        storage:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [healthy, unhealthy]
+              example: "healthy"
+            total_images:
+              type: integer
+              example: 15432
+            total_size:
+              type: integer
+              example: 2147483648
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "API key for authentication. Can be provided in X-API-Key header or Authorization header as 'Bearer <key>'"
+security:
+  - ApiKeyAuth: []

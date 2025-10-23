@@ -144,9 +144,13 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, logge
 			syscall.SIGHUP,  // Terminal closed
 		)
 
-		// Wait for signal
-		sig := <-sigChan
-		logger.WithField("signal", sig.String()).Info("Received shutdown signal")
+		// Wait for signal or context cancellation
+		select {
+		case sig := <-sigChan:
+			logger.WithField("signal", sig.String()).Info("Received shutdown signal")
+		case <-ctx.Done():
+			logger.Info("Context cancelled, initiating shutdown")
+		}
 
 		// Cancel context to signal shutdown to all goroutines
 		cancel()
@@ -175,10 +179,21 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 		logger.Info("Storage cleanup completed")
 	}
 
-	// Clean up temporary files
+	// Clean up temporary files with timeout
 	logger.Info("Cleaning up temporary files...")
-	// Add cleanup for any temporary files if needed
-	logger.Info("Temporary file cleanup completed")
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		// Add cleanup for any temporary files if needed
+		// This could include removing temp files created during image processing
+	}()
+
+	select {
+	case <-cleanupDone:
+		logger.Info("Temporary file cleanup completed")
+	case <-ctx.Done():
+		logger.Warn("Temporary file cleanup interrupted by shutdown timeout")
+	}
 }
 
 // initializeStorage initializes the storage backend based on configuration

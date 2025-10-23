@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -40,7 +41,7 @@ func NewHandler(
 	}
 }
 
-// sendError sends a JSON error response
+// sendError sends a JSON error response with enhanced logging
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message string) {
 	response := types.UploadResponse{
 		Success: false,
@@ -50,6 +51,14 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 		},
 	}
 
+	// Enhanced logging for errors
+	h.logger.WithFields(logrus.Fields{
+		"error_code":    code,
+		"status_code":   statusCode,
+		"error_message": message,
+		"client_ip":     w.Header().Get("X-Forwarded-For"), // Will be set by middleware
+	}).Warn("API error response")
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(response)
@@ -58,8 +67,21 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 // serveImage serves an image with proper headers
 func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *storage.ImageMetadata) {
 	w.Header().Set("Content-Type", metadata.ContentType)
-	w.Header().Set("Cache-Control", "public, max-age=31536000") // 1 year
-	w.Header().Set("ETag", "\""+metadata.ID+"\"")
+
+	// Smart cache control based on content type and size
+	if metadata.Size < 1024*1024 { // < 1MB
+		w.Header().Set("Cache-Control", "public, max-age=3600, s-maxage=7200") // 1 hour client, 2 hours CDN
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=86400, s-maxage=604800") // 1 day client, 1 week CDN
+	}
+
+	// Enhanced ETag with size and timestamp for better cache validation
+	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())
+	w.Header().Set("ETag", etag)
+
+	// Additional headers for better caching and performance
+	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("Accept-Ranges", "bytes")
 
 	// Copy image data to response
 	io.Copy(w, reader)

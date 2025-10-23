@@ -74,6 +74,9 @@ func (s *Server) setupRouter() {
 	sizeLimiter := apimw.NewRequestSizeLimiter(maxRequestSize, s.logger)
 	r.Use(sizeLimiter.Handler)
 
+	// Compression middleware
+	r.Use(middleware.Compress(5))
+
 	// Rate limiting
 	if s.config.Security.RateLimit.RequestsPerMinute > 0 {
 		rateLimiter := apimw.NewRateLimiter(
@@ -96,6 +99,12 @@ func (s *Server) setupRouter() {
 
 	// Health check endpoint (no auth required)
 	r.Get("/health", s.handler.HandleHealth)
+
+	// Docs endpoint
+	r.Get("/docs", s.handler.HandleDocs)
+	r.Get("/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./docs/openapi.yaml")
+	})
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
