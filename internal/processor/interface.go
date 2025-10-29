@@ -112,12 +112,14 @@ const (
 	FormatJPEG ImageFormat = "jpeg"
 	FormatPNG  ImageFormat = "png"
 	FormatWebP ImageFormat = "webp"
+	FormatHEIC ImageFormat = "heic"
+	FormatAVIF ImageFormat = "avif"
 )
 
 // IsValidFormat checks if a format string is valid
 func IsValidFormat(format string) bool {
 	switch ImageFormat(format) {
-	case FormatJPEG, FormatPNG, FormatWebP:
+	case FormatJPEG, FormatPNG, FormatWebP, FormatHEIC, FormatAVIF:
 		return true
 	default:
 		return false
@@ -133,6 +135,10 @@ func GetDefaultQuality(format ImageFormat) int {
 		return 100 // PNG is lossless
 	case FormatWebP:
 		return 85 // WebP quality (0-100)
+	case FormatHEIC:
+		return 85 // HEIC quality (0-100)
+	case FormatAVIF:
+		return 85 // AVIF quality (0-100)
 	default:
 		return 85
 	}
@@ -147,6 +153,10 @@ func GetContentType(format ImageFormat) string {
 		return "image/png"
 	case FormatWebP:
 		return "image/webp"
+	case FormatHEIC:
+		return "image/heic"
+	case FormatAVIF:
+		return "image/avif"
 	default:
 		return "application/octet-stream"
 	}

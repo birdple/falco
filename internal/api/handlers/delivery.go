@@ -240,5 +240,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    processedImage.Metadata.CreatedAt,
 	}
 
+	// Fallback: Ensure ContentType is set based on format if empty
+	if storageMetadata.ContentType == "" {
+		storageMetadata.ContentType = h.imageProcessor.GetContentType(storageMetadata.Format)
+	}
+
 	h.serveImage(w, processedImage.Data, storageMetadata)
 }

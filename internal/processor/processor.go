@@ -24,16 +24,9 @@ type ImageProcessorImpl struct {
 }
 
 // NewImageProcessor creates a new image processor
-func NewImageProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageFormat, maxWidth, maxHeight int) *ImageProcessorImpl {
-	return &ImageProcessorImpl{
-		maxFileSizeMB:    maxFileSizeMB,
-		defaultQuality:   defaultQuality,
-		defaultFormat:    defaultFormat,
-		supportedFormats: []ImageFormat{FormatJPEG, FormatPNG, FormatWebP},
-		maxDimensions:    image.Point{X: maxWidth, Y: maxHeight},
-		decoder:          NewImageDecoder(maxFileSizeMB),
-		encoder:          NewImageEncoder(),
-	}
+func NewImageProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageFormat, maxWidth, maxHeight int) ImageProcessor {
+	// Use VipsProcessor which supports JPEG, PNG, WebP, HEIC, and AVIF
+	return NewVipsProcessor(maxFileSizeMB, defaultQuality, defaultFormat, maxWidth, maxHeight)
 }
 
 // Process processes an image with the given parameters

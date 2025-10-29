@@ -68,7 +68,9 @@ func TestImageProcessor_SupportedFormats(t *testing.T) {
 	assert.Contains(t, formats, "jpeg")
 	assert.Contains(t, formats, "png")
 	assert.Contains(t, formats, "webp")
-	assert.Len(t, formats, 3)
+	assert.Contains(t, formats, "heic")
+	assert.Contains(t, formats, "avif")
+	assert.Len(t, formats, 5)
 }
 
 func TestProcessingParams_Advanced(t *testing.T) {
