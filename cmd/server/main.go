@@ -166,7 +166,9 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, logge
 func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, lruCache *cache.LRUCache, logger *logrus.Logger) {
 	// Clean up cache
 	if lruCache != nil {
-		logger.Info("Cleaning up cache...")
+		logger.Info("Stopping cache cleanup goroutine...")
+		lruCache.Stop()
+		logger.Info("Clearing cache...")
 		lruCache.Clear()
 		logger.Info("Cache cleanup completed")
 	}

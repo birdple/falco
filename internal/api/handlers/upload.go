@@ -13,6 +13,7 @@ import (
 	"github.com/birdple/imagine/internal/api/types"
 	"github.com/birdple/imagine/internal/api/utils"
 	"github.com/birdple/imagine/internal/pkg/hashutil"
+	"github.com/birdple/imagine/internal/pkg/httputil"
 	"github.com/birdple/imagine/internal/processor"
 	"github.com/birdple/imagine/internal/storage"
 )
@@ -35,8 +36,12 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		directory = r.URL.Query().Get("directory")
 	}
 
-	// Normalize directory path
+	// Normalize and validate directory path
 	directory = utils.NormalizeDirectoryPath(directory)
+	if err := utils.ValidateDirectoryPath(directory); err != nil {
+		h.sendError(w, http.StatusBadRequest, "INVALID_DIRECTORY", fmt.Sprintf("Invalid directory path: %v", err))
+		return
+	}
 
 	// Check content type
 	contentType := r.Header.Get("Content-Type")
@@ -48,6 +53,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	var imageData []byte
 	var err error
+	var contentTypeFromURL string
 
 	// Handle direct binary upload (image/*)
 	if strings.HasPrefix(contentType, "image/") {
@@ -153,26 +159,17 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Download image from URL
-		resp, err := http.Get(uploadReq.URL)
+		// Download image from URL with timeout and validation
+		maxSize := h.config.GetMaxFileSizeBytes()
+		imageData, contentTypeFromURL, err = httputil.DownloadURL(ctx, h.httpClient, uploadReq.URL, maxSize)
 		if err != nil {
 			h.logger.WithError(err).Error("Failed to download image from URL")
-			h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", "Failed to download image from URL")
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", "Failed to download image from URL")
+			h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
 			return
 		}
 
-		// Read downloaded data
-		imageData, err = io.ReadAll(resp.Body)
-		if err != nil {
-			h.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
-			return
-		}
+		// Update content type from downloaded file
+		_ = contentTypeFromURL // Content type already validated by DownloadURL
 		filename = utils.ExtractFilenameFromURL(uploadReq.URL)
 		quality = uploadReq.Quality
 		format = uploadReq.Format

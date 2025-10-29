@@ -11,6 +11,7 @@ import (
 
 	"github.com/birdple/imagine/internal/api/types"
 	"github.com/birdple/imagine/internal/config"
+	"github.com/birdple/imagine/internal/pkg/httputil"
 	"github.com/birdple/imagine/internal/processor"
 	"github.com/birdple/imagine/internal/storage"
 )
@@ -22,6 +23,7 @@ type Handler struct {
 	storage        storage.StorageBackend
 	imageProcessor processor.ImageProcessor
 	startTime      time.Time
+	httpClient     *http.Client
 }
 
 // NewHandler creates a new handler instance
@@ -38,6 +40,7 @@ func NewHandler(
 		storage:        storageBackend,
 		imageProcessor: imageProc,
 		startTime:      startTime,
+		httpClient:     httputil.NewHTTPClient(30 * time.Second), // 30s timeout for URL downloads
 	}
 }
 
@@ -83,8 +86,15 @@ func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *
 	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
 
-	// Copy image data to response
-	io.Copy(w, reader)
+	// Copy image data to response with error handling
+	if _, err := io.Copy(w, reader); err != nil {
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"image_id":     metadata.ID,
+			"content_type": metadata.ContentType,
+		}).Error("Failed to write image to response")
+		// Note: Cannot send error response here as headers are already written
+		// Client will detect incomplete response
+	}
 }
 
 // getStorageForBucket returns a storage backend instance for the specified bucket

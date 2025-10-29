@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -28,8 +29,9 @@ func NewMinIOStorage(cfg *MinIOConfig) (*MinIOStorage, error) {
 		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
 	}
 
-	// Try to create bucket (similar to user's working example)
-	ctx := context.Background()
+	// Try to create bucket with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	location := "us-east-1" // Default location
 
 	err = minioClient.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{Region: location})
@@ -57,8 +59,10 @@ func (m *MinIOStorage) WithBucket(bucket string) StorageBackend {
 		bucket = m.defaultBucket
 	}
 
-	// Ensure bucket exists
-	ctx := context.Background()
+	// Ensure bucket exists with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	err := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"})
 	if err != nil {
 		// Check if bucket already exists

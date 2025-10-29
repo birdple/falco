@@ -67,7 +67,7 @@ func (s *Server) setupRouter() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(60 * time.Second))
+	r.Use(middleware.Timeout(30 * time.Second)) // Reduced from 60s to prevent slowloris attacks
 
 	// Request size limiting
 	maxRequestSize := s.config.GetMaxFileSizeBytes() * 2 // Allow some overhead

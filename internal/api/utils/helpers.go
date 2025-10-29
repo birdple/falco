@@ -1,9 +1,11 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,7 +54,7 @@ func ExtractFilenameFromURL(rawURL string) string {
 }
 
 // NormalizeDirectoryPath normalizes and validates the directory path
-// Removes leading/trailing slashes and validates characters
+// Removes leading/trailing slashes and validates against path traversal
 func NormalizeDirectoryPath(path string) string {
 	if path == "" {
 		return ""
@@ -67,6 +69,60 @@ func NormalizeDirectoryPath(path string) string {
 	}
 
 	return path
+}
+
+// ValidateDirectoryPath validates a directory path against path traversal attacks
+// Returns an error if the path is invalid or contains malicious patterns
+func ValidateDirectoryPath(path string) error {
+	if path == "" {
+		return nil // Empty path is valid
+	}
+
+	// Check for path traversal patterns
+	if strings.Contains(path, "..") {
+		return errors.New("path traversal detected: .. not allowed")
+	}
+
+	// Check for absolute paths
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return errors.New("absolute paths not allowed")
+	}
+
+	// Check for Windows drive letters
+	if len(path) >= 2 && path[1] == ':' {
+		return errors.New("drive letters not allowed")
+	}
+
+	// Check for null bytes
+	if strings.Contains(path, "\x00") {
+		return errors.New("null bytes not allowed")
+	}
+
+	// Clean the path using filepath.Clean and verify it hasn't changed significantly
+	cleaned := filepath.Clean(path)
+	if strings.Contains(cleaned, "..") {
+		return errors.New("path traversal detected after cleaning")
+	}
+
+	// Ensure path doesn't try to escape using special characters
+	forbidden := []string{"\x00", "\r", "\n", "\t"}
+	for _, char := range forbidden {
+		if strings.Contains(path, char) {
+			return fmt.Errorf("forbidden character detected: %q", char)
+		}
+	}
+
+	// Validate characters (allow alphanumeric, hyphens, underscores, forward slashes)
+	for _, char := range path {
+		if !((char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '-' || char == '_' || char == '/' || char == '.') {
+			return fmt.Errorf("invalid character in path: %q", char)
+		}
+	}
+
+	return nil
 }
 
 // BuildStorageKey combines directory path and image ID to create full storage key

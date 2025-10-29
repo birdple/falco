@@ -35,6 +35,9 @@ type LRUCache struct {
 	mutex           sync.RWMutex
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
+	// Statistics
+	hits   int64
+	misses int64
 }
 
 // NewLRUCache creates a new LRU cache
@@ -61,17 +64,20 @@ func (c *LRUCache) Get(key string) ([]byte, bool) {
 
 	item, exists := c.items[key]
 	if !exists {
+		c.misses++
 		return nil, false
 	}
 
 	// Check if item has expired
 	if item.ttl > 0 && time.Since(item.createdAt) > item.ttl {
 		c.removeItem(item)
+		c.misses++
 		return nil, false
 	}
 
 	// Move item to front (most recently used)
 	c.evictList.MoveToFront(item.element)
+	c.hits++
 
 	return item.value, true
 }
@@ -134,20 +140,30 @@ func (c *LRUCache) Clear() {
 	c.currentSize = 0
 }
 
+// Stop gracefully stops the cache cleanup goroutine
+func (c *LRUCache) Stop() {
+	select {
+	case c.stopCleanup <- struct{}{}:
+		// Successfully sent stop signal
+	default:
+		// Channel already closed or stop signal already sent
+	}
+}
+
 // Stats returns cache statistics
 func (c *LRUCache) Stats() interface{} {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	totalRequests := float64(c.evictList.Len())
+	totalRequests := c.hits + c.misses
 	hitRatio := 0.0
 	if totalRequests > 0 {
-		hitRatio = float64(c.evictList.Len()-len(c.items)) / totalRequests
+		hitRatio = float64(c.hits) / float64(totalRequests)
 	}
 
 	return CacheStats{
-		Hits:      int64(c.evictList.Len() - len(c.items)), // Approximation
-		Misses:    int64(len(c.items)),                     // Approximation
+		Hits:      c.hits,
+		Misses:    c.misses,
 		Size:      c.currentSize,
 		MaxSize:   c.maxSize,
 		ItemCount: len(c.items),
@@ -207,11 +223,6 @@ func (c *LRUCache) Len() int {
 	return len(c.items)
 }
 
-// Stop stops the cleanup goroutine
-func (c *LRUCache) Stop() {
-	close(c.stopCleanup)
-}
-
 // evictOldest removes the least recently used item
 func (c *LRUCache) evictOldest() {
 	element := c.evictList.Back()
@@ -228,8 +239,18 @@ func (c *LRUCache) removeItem(item *CacheItem) {
 	c.currentSize -= item.size
 }
 
-// cleanup periodically removes expired items
+// cleanup periodically removes expired items with panic recovery
 func (c *LRUCache) cleanup() {
+	defer func() {
+		if r := recover(); r != nil {
+			// Log panic and restart cleanup goroutine
+			// In production, this should use proper logging
+			println("Cache cleanup panic recovered:", r)
+			// Restart cleanup goroutine
+			go c.cleanup()
+		}
+	}()
+
 	ticker := time.NewTicker(c.cleanupInterval)
 	defer ticker.Stop()
 

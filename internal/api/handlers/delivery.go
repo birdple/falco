@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -35,8 +36,12 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		directory = r.URL.Query().Get("directory")
 	}
 
-	// Normalize directory path
+	// Normalize and validate directory path
 	directory = utils.NormalizeDirectoryPath(directory)
+	if err := utils.ValidateDirectoryPath(directory); err != nil {
+		h.sendError(w, http.StatusBadRequest, "INVALID_DIRECTORY", fmt.Sprintf("Invalid directory path: %v", err))
+		return
+	}
 
 	// Build full storage key
 	storageKey := utils.BuildStorageKey(directory, imageID)
@@ -103,28 +108,45 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Parse advanced transformation parameters
+	// Parse advanced transformation parameters with limits
+	maxDim := h.config.Processing.MaxDimensions.Width
+	if h.config.Processing.MaxDimensions.Height > maxDim {
+		maxDim = h.config.Processing.MaxDimensions.Height
+	}
+
 	if cropX := r.URL.Query().Get("crop_x"); cropX != "" {
-		if x, err := strconv.Atoi(cropX); err == nil && x >= 0 {
+		if x, err := strconv.Atoi(cropX); err == nil && x >= 0 && x <= maxDim {
 			params.CropX = x
+		} else {
+			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_X", fmt.Sprintf("crop_x must be between 0 and %d", maxDim))
+			return
 		}
 	}
 
 	if cropY := r.URL.Query().Get("crop_y"); cropY != "" {
-		if y, err := strconv.Atoi(cropY); err == nil && y >= 0 {
+		if y, err := strconv.Atoi(cropY); err == nil && y >= 0 && y <= maxDim {
 			params.CropY = y
+		} else {
+			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_Y", fmt.Sprintf("crop_y must be between 0 and %d", maxDim))
+			return
 		}
 	}
 
 	if cropW := r.URL.Query().Get("crop_w"); cropW != "" {
-		if w, err := strconv.Atoi(cropW); err == nil && w > 0 {
-			params.CropW = w
+		if cropWidth, err := strconv.Atoi(cropW); err == nil && cropWidth > 0 && cropWidth <= maxDim {
+			params.CropW = cropWidth
+		} else {
+			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_W", fmt.Sprintf("crop_w must be between 1 and %d", maxDim))
+			return
 		}
 	}
 
 	if cropH := r.URL.Query().Get("crop_h"); cropH != "" {
-		if h, err := strconv.Atoi(cropH); err == nil && h > 0 {
-			params.CropH = h
+		if cropHeight, err := strconv.Atoi(cropH); err == nil && cropHeight > 0 && cropHeight <= maxDim {
+			params.CropH = cropHeight
+		} else {
+			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_H", fmt.Sprintf("crop_h must be between 1 and %d", maxDim))
+			return
 		}
 	}
 

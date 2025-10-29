@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/birdple/imagine/internal/api/types"
@@ -33,8 +34,12 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	// If prefix is provided, list all files with that prefix and delete them
 	if req.Prefix != "" {
-		// Normalize prefix path
+		// Normalize and validate prefix path
 		prefix := utils.NormalizeDirectoryPath(req.Prefix)
+		if err := utils.ValidateDirectoryPath(prefix); err != nil {
+			h.sendError(w, http.StatusBadRequest, "INVALID_PREFIX", fmt.Sprintf("Invalid prefix path: %v", err))
+			return
+		}
 
 		// List all files with this prefix
 		results, err := storageBackend.List(ctx, prefix)

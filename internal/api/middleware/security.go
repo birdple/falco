@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/birdple/imagine/internal/pkg/httputil"
@@ -133,21 +134,57 @@ type RateLimiter struct {
 	burst             int
 	clients           map[string]*clientLimiter
 	logger            *logrus.Logger
+	mu                sync.RWMutex
+	cleanupInterval   time.Duration
+	maxClientAge      time.Duration
 }
 
 // clientLimiter tracks requests for a specific client
 type clientLimiter struct {
 	requests    []time.Time
 	lastCleanup time.Time
+	lastSeen    time.Time
 }
 
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(requestsPerMinute, burst int, logger *logrus.Logger) *RateLimiter {
-	return &RateLimiter{
+	rl := &RateLimiter{
 		requestsPerMinute: requestsPerMinute,
 		burst:             burst,
 		clients:           make(map[string]*clientLimiter),
 		logger:            logger,
+		cleanupInterval:   5 * time.Minute,
+		maxClientAge:      15 * time.Minute, // Remove clients inactive for 15 minutes
+	}
+
+	// Start background cleanup goroutine with panic recovery
+	go rl.backgroundCleanup()
+
+	return rl
+}
+
+// backgroundCleanup periodically removes inactive clients to prevent memory leak
+func (rl *RateLimiter) backgroundCleanup() {
+	defer func() {
+		if r := recover(); r != nil {
+			rl.logger.WithField("panic", r).Error("RateLimiter cleanup panic recovered")
+			// Restart cleanup goroutine
+			go rl.backgroundCleanup()
+		}
+	}()
+
+	ticker := time.NewTicker(rl.cleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		rl.mu.Lock()
+		now := time.Now()
+		for ip, limiter := range rl.clients {
+			if now.Sub(limiter.lastSeen) > rl.maxClientAge {
+				delete(rl.clients, ip)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
 
@@ -155,22 +192,31 @@ func NewRateLimiter(requestsPerMinute, burst int, logger *logrus.Logger) *RateLi
 func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientIP := httputil.GetClientIP(r)
+		now := time.Now()
 
-		// Get or create client limiter
+		// Acquire write lock to get/create client limiter
+		rl.mu.Lock()
 		limiter, exists := rl.clients[clientIP]
 		if !exists {
 			limiter = &clientLimiter{
 				requests:    make([]time.Time, 0),
-				lastCleanup: time.Now(),
+				lastCleanup: now,
+				lastSeen:    now,
 			}
 			rl.clients[clientIP] = limiter
 		}
+		limiter.lastSeen = now
+		rl.mu.Unlock()
 
-		// Clean up old requests
+		// Clean up old requests (no lock needed, single-threaded per client IP)
 		rl.cleanupOldRequests(limiter)
 
 		// Check rate limit
-		if len(limiter.requests) >= rl.requestsPerMinute+rl.burst {
+		rl.mu.RLock()
+		requestCount := len(limiter.requests)
+		rl.mu.RUnlock()
+
+		if requestCount >= rl.requestsPerMinute+rl.burst {
 			rl.logger.WithFields(logrus.Fields{
 				"ip":         clientIP,
 				"user_agent": httputil.GetUserAgent(r),
@@ -185,11 +231,12 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add current request
-		limiter.requests = append(limiter.requests, time.Now())
-
-		// Set rate limit headers
+		// Add current request with lock
+		rl.mu.Lock()
+		limiter.requests = append(limiter.requests, now)
 		remaining := rl.requestsPerMinute + rl.burst - len(limiter.requests)
+		rl.mu.Unlock()
+
 		if remaining < 0 {
 			remaining = 0
 		}

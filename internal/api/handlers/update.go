@@ -3,13 +3,14 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 	"net/url"
 
 	"github.com/birdple/imagine/internal/api/types"
 	"github.com/birdple/imagine/internal/api/utils"
 	"github.com/birdple/imagine/internal/pkg/hashutil"
+	"github.com/birdple/imagine/internal/pkg/httputil"
 	"github.com/birdple/imagine/internal/processor"
 	"github.com/birdple/imagine/internal/storage"
 )
@@ -70,25 +71,12 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Download image from URL
-	resp, err := http.Get(req.URL)
+	// Download image from URL with timeout and validation
+	maxSize := h.config.GetMaxFileSizeBytes()
+	imageData, _, err := httputil.DownloadURL(ctx, h.httpClient, req.URL, maxSize)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to download image from URL")
-		h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", "Failed to download image from URL")
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", "Failed to download image from URL")
-		return
-	}
-
-	// Read downloaded data
-	imageData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to read image data")
-		h.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
+		h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
 		return
 	}
 

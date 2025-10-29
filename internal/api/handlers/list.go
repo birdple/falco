@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -34,8 +35,12 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		prefix = r.URL.Query().Get("directory")
 	}
 
-	// Normalize prefix path
+	// Normalize and validate prefix path
 	prefix = utils.NormalizeDirectoryPath(prefix)
+	if err := utils.ValidateDirectoryPath(prefix); err != nil {
+		h.sendError(w, http.StatusBadRequest, "INVALID_PREFIX", fmt.Sprintf("Invalid prefix path: %v", err))
+		return
+	}
 
 	// Get bucket-aware storage instance
 	storageBackend := h.getStorageForBucket(bucket)

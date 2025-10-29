@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,7 +24,10 @@ type S3Storage struct {
 
 // NewS3Storage creates a new S3 storage backend
 func NewS3Storage(cfg *S3Config) (*S3Storage, error) {
-	awsCfg, err := config.LoadDefaultConfig(context.Background(),
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	awsCfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(cfg.Region),
 	)
 	if err != nil {
