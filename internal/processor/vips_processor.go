@@ -105,22 +105,15 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 
 // applyTransformations applies all transformations to the image
 func (p *VipsProcessor) applyTransformations(img *vips.Image, params *ProcessingParams) error {
-	// Debug log
-	fmt.Printf("[DEBUG] Applying transformations: Rotate=%.0f, Flip=%s, Crop=%dx%d, Width=%d, Height=%d\n",
-		params.Rotate, params.Flip, params.CropW, params.CropH, params.Width, params.Height)
-
 	// Crop
 	if params.CropW > 0 && params.CropH > 0 {
-		fmt.Printf("[DEBUG] Applying crop: %d,%d %dx%d\n", params.CropX, params.CropY, params.CropW, params.CropH)
 		if err := img.ExtractArea(params.CropX, params.CropY, params.CropW, params.CropH); err != nil {
 			return fmt.Errorf("crop failed: %w", err)
 		}
-		fmt.Printf("[DEBUG] After crop: %dx%d\n", img.Width(), img.Height())
 	}
 
 	// Flip
 	if params.Flip != "" {
-		fmt.Printf("[DEBUG] Applying flip: %s\n", params.Flip)
 		switch params.Flip {
 		case "horizontal":
 			if err := img.Flip(vips.DirectionHorizontal); err != nil {
@@ -131,16 +124,13 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 				return fmt.Errorf("flip vertical failed: %w", err)
 			}
 		}
-		fmt.Printf("[DEBUG] After flip: %dx%d\n", img.Width(), img.Height())
 	}
 
 	// Rotate
 	if params.Rotate != 0 {
-		fmt.Printf("[DEBUG] Applying rotate: %.0f degrees\n", params.Rotate)
 		if err := img.Rotate(params.Rotate, nil); err != nil {
 			return fmt.Errorf("rotate failed: %w", err)
 		}
-		fmt.Printf("[DEBUG] After rotate: %dx%d\n", img.Width(), img.Height())
 	}
 
 	// Resize with upscaling protection
