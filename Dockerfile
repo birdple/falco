@@ -30,6 +30,9 @@ RUN go mod download
 # Copia el código fuente completo (¡Necesario para que CGO encuentre todo!)
 COPY . .
 
+# Copia el archivo OpenAPI (excluido por .dockerignore pero necesario para /docs)
+COPY docs/openapi.yaml ./docs/openapi.yaml
+
 # Compila el binario con optimizaciones
 # Build tags:
 #   - netgo: Usa DNS resolver nativo de Go (portable en Alpine)
@@ -60,14 +63,10 @@ RUN apk add --no-cache \
     tzdata \
     vips \
     wget \
-    && rm -rf /var/cache/apk/*
-
-# Crea un usuario sin privilegios
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
-
-# Crea los directorios necesarios
-RUN mkdir -p /app/data /app/logs && \
+    && rm -rf /var/cache/apk/* && \
+    addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup && \
+    mkdir -p /app/data /app/logs && \
     chown -R appuser:appgroup /app
 
 # Establece el directorio de trabajo
@@ -79,7 +78,10 @@ COPY --from=builder /app/imagine-server .
 # Copia los archivos de configuración
 COPY --from=builder /app/configs ./configs
 
-# Cambia la propiedad del binario y configs
+# Copia la documentación de la API
+COPY --from=builder /app/docs ./docs
+
+# Cambia la propiedad de todos los archivos copiados
 RUN chown -R appuser:appgroup /app
 
 # Cambia al usuario sin privilegios

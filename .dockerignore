@@ -5,7 +5,6 @@
 
 # Documentation
 *.md
-docs/
 ARCHITECTURE.md
 TECHNICAL_SPEC.md
 DEPLOYMENT_GUIDE.md
