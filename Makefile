@@ -72,6 +72,71 @@ docker-compose-up:
 docker-compose-down:
 	docker-compose down
 
+# Monitoring commands
+.PHONY: monitoring-up
+monitoring-up:
+	docker-compose --profile monitoring up -d
+	@echo "Prometheus: http://localhost:9090"
+	@echo "Grafana: http://localhost:3001 (admin/imagine123)"
+
+.PHONY: monitoring-down
+monitoring-down:
+	docker-compose --profile monitoring down
+
+.PHONY: monitoring-logs
+monitoring-logs:
+	docker-compose --profile monitoring logs -f
+
+# Docker profile commands
+.PHONY: docker-app
+docker-app:
+	docker-compose --profile app up -d
+	@echo "Imagine Service: http://localhost:8080"
+
+.PHONY: docker-app-with-monitoring
+docker-app-with-monitoring:
+	docker-compose --profile app --profile monitoring up -d
+	@echo "Imagine Service: http://localhost:8080"
+	@echo "Prometheus: http://localhost:9090"
+	@echo "Grafana: http://localhost:3001 (admin/imagine123)"
+
+.PHONY: docker-app-with-cache
+docker-app-with-cache:
+	docker-compose --profile app --profile with-cache up -d
+	@echo "Imagine Service: http://localhost:8080"
+	@echo "Valkey (Redis): localhost:6379"
+
+.PHONY: docker-app-with-db
+docker-app-with-db:
+	docker-compose --profile app --profile with-db up -d
+	@echo "Imagine Service: http://localhost:8080"
+	@echo "PostgreSQL: localhost:5432"
+
+.PHONY: docker-app-with-nginx
+docker-app-with-nginx:
+	docker-compose --profile app --profile with-nginx up -d
+	@echo "Nginx: http://localhost:80"
+	@echo "Imagine Service (backend): http://localhost:8080"
+
+.PHONY: docker-full
+docker-full:
+	docker-compose --profile app --profile monitoring --profile with-cache --profile with-db --profile with-nginx up -d
+	@echo "=== Full Stack Started ==="
+	@echo "Nginx: http://localhost:80"
+	@echo "Imagine Service: http://localhost:8080"
+	@echo "Prometheus: http://localhost:9090"
+	@echo "Grafana: http://localhost:3001 (admin/imagine123)"
+	@echo "Valkey (Redis): localhost:6379"
+	@echo "PostgreSQL: localhost:5432"
+
+.PHONY: docker-all-down
+docker-all-down:
+	docker-compose --profile app --profile monitoring --profile with-cache --profile with-db --profile with-nginx down
+
+.PHONY: docker-logs
+docker-logs:
+	docker-compose logs -f
+
 # Development setup
 .PHONY: setup
 setup:
@@ -110,26 +175,61 @@ deploy-production:
 health:
 	curl -f http://localhost:8080/health || exit 1
 
+# Load test for metrics
+.PHONY: load-test
+load-test:
+	@chmod +x scripts/load-test.sh
+	@./scripts/load-test.sh
+
 # Help
 .PHONY: help
 help:
 	@echo "Available commands:"
-	@echo "  build              Build the binary for Linux"
-	@echo "  build-local        Build the binary for local OS"
-	@echo "  run                Run the application locally"
-	@echo "  dev                Run with hot reload (requires air)"
-	@echo "  test               Run all tests"
-	@echo "  test-coverage      Run tests with coverage report"
-	@echo "  test-integration   Run integration tests"
-	@echo "  test-performance   Run performance benchmarks"
-	@echo "  lint               Run linter"
-	@echo "  fmt                Format code"
-	@echo "  vet                Run go vet"
-	@echo "  docker-build       Build Docker image"
-	@echo "  docker-run         Build and run Docker container"
-	@echo "  docker-compose-up  Run with docker-compose"
-	@echo "  setup              Install development dependencies"
-	@echo "  dev-setup          Complete development environment setup"
-	@echo "  clean              Clean build artifacts and data"
-	@echo "  health             Check service health"
-	@echo "  help               Show this help message"
+	@echo ""
+	@echo "  Build:"
+	@echo "    build              Build the binary for Linux"
+	@echo "    build-local        Build the binary for local OS"
+	@echo ""
+	@echo "  Run:"
+	@echo "    run                Run the application locally"
+	@echo "    dev                Run with hot reload (requires air)"
+	@echo ""
+	@echo "  Test:"
+	@echo "    test               Run all tests"
+	@echo "    test-coverage      Run tests with coverage report"
+	@echo "    test-integration   Run integration tests"
+	@echo "    test-performance   Run performance benchmarks"
+	@echo ""
+	@echo "  Code Quality:"
+	@echo "    lint               Run linter"
+	@echo "    fmt                Format code"
+	@echo "    vet                Run go vet"
+	@echo ""
+	@echo "  Docker:"
+	@echo "    docker-build       Build Docker image"
+	@echo "    docker-run         Build and run Docker container"
+	@echo "    docker-compose-up  Run with docker-compose (default)"
+	@echo "    docker-app         Run imagine-service in Docker"
+	@echo "    docker-full        Run ALL services (app, monitoring, cache, db, nginx)"
+	@echo "    docker-all-down    Stop ALL Docker services"
+	@echo "    docker-logs        View all Docker logs"
+	@echo ""
+	@echo "  Docker Profiles:"
+	@echo "    docker-app-with-monitoring   App + Prometheus + Grafana"
+	@echo "    docker-app-with-cache        App + Valkey (Redis)"
+	@echo "    docker-app-with-db           App + PostgreSQL"
+	@echo "    docker-app-with-nginx        App + Nginx reverse proxy"
+	@echo ""
+	@echo "  Monitoring:"
+	@echo "    monitoring-up      Start Prometheus + Grafana (for local dev)"
+	@echo "    monitoring-down    Stop monitoring stack"
+	@echo "    monitoring-logs    View monitoring logs"
+	@echo ""
+	@echo "  Setup:"
+	@echo "    setup              Install development dependencies"
+	@echo "    dev-setup          Complete development environment setup"
+	@echo "    clean              Clean build artifacts and data"
+	@echo ""
+	@echo "  Other:"
+	@echo "    health             Check service health"
+	@echo "    help               Show this help message"

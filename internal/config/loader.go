@@ -126,6 +126,7 @@ func (l *loader) getEnvMappings() map[string]string {
 		"LOG_OUTPUT":               "logging.output",
 		"DEBUG":                    "development.debug",
 		"ENABLE_PPROF":             "development.enable_pprof",
+		"ENABLE_METRICS":           "development.enable_metrics",
 	}
 }
 

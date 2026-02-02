@@ -8,11 +8,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 
 	"github.com/birdple/imagine/internal/api/handlers"
 	apimw "github.com/birdple/imagine/internal/api/middleware"
 	"github.com/birdple/imagine/internal/config"
+	"github.com/birdple/imagine/internal/pkg/metrics"
 	"github.com/birdple/imagine/internal/processor"
 	"github.com/birdple/imagine/internal/storage"
 )
@@ -32,6 +34,7 @@ type Server struct {
 	router  *chi.Mux
 	server  *http.Server
 	handler *handlers.Handler
+	metrics *metrics.Metrics
 }
 
 // NewServer creates a new API server
@@ -45,10 +48,14 @@ func NewServer(cfg *ServerConfig) *Server {
 		time.Now(),
 	)
 
+	// Create metrics instance
+	m := metrics.New()
+
 	s := &Server{
 		config:  cfg.Config,
 		logger:  cfg.Logger,
 		handler: h,
+		metrics: m,
 	}
 
 	s.setupRouter()
@@ -76,6 +83,12 @@ func (s *Server) setupRouter() {
 
 	// Compression middleware
 	r.Use(middleware.Compress(5))
+
+	// Metrics middleware (when metrics are enabled)
+	if s.config.Development.EnableMetrics {
+		metricsMiddleware := apimw.NewMetricsMiddleware(s.metrics)
+		r.Use(metricsMiddleware.Handler)
+	}
 
 	// Rate limiting
 	if s.config.Security.RateLimit.RequestsPerMinute > 0 {
@@ -105,6 +118,11 @@ func (s *Server) setupRouter() {
 	r.Get("/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./docs/openapi.yaml")
 	})
+
+	// Prometheus metrics endpoint (enabled via development.enable_metrics)
+	if s.config.Development.EnableMetrics {
+		r.Handle("/metrics", promhttp.Handler())
+	}
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {

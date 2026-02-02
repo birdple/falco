@@ -2,12 +2,15 @@ package handlers
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/birdple/imagine/internal/api/utils"
+	"github.com/birdple/imagine/internal/pkg/metrics"
 	"github.com/birdple/imagine/internal/processor"
 	"github.com/birdple/imagine/internal/storage"
 )
@@ -56,7 +59,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
 			// Validate minimum dimensions
-			if widthVal < 16 {
+			if widthVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
 				return
 			}
@@ -70,7 +73,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
 			// Validate minimum dimensions
-			if heightVal < 16 {
+			if heightVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
 				return
 			}
@@ -100,7 +103,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if fit := r.URL.Query().Get("fit"); fit != "" {
-		if fit == "cover" || fit == "contain" || fit == "fill" {
+		if fit == FitCover || fit == FitContain || fit == FitFill {
 			params.Fit = fit
 		} else {
 			h.sendError(w, http.StatusBadRequest, "INVALID_FIT", "Invalid fit parameter")
@@ -157,7 +160,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if flip := r.URL.Query().Get("flip"); flip != "" {
-		if flip == "horizontal" || flip == "vertical" {
+		if flip == FlipHorizontal || flip == FlipVertical {
 			params.Flip = flip
 		}
 	}
@@ -170,43 +173,43 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	// Parse filter parameters
 	if brightness := r.URL.Query().Get("brightness"); brightness != "" {
-		if b, err := strconv.ParseFloat(brightness, 64); err == nil && b >= -100 && b <= 100 {
+		if b, err := strconv.ParseFloat(brightness, 64); err == nil && b >= MinBrightnessValue && b <= MaxBrightnessValue {
 			params.Brightness = b
 		}
 	}
 
 	if contrast := r.URL.Query().Get("contrast"); contrast != "" {
-		if c, err := strconv.ParseFloat(contrast, 64); err == nil && c >= -100 && c <= 100 {
+		if c, err := strconv.ParseFloat(contrast, 64); err == nil && c >= MinContrastValue && c <= MaxContrastValue {
 			params.Contrast = c
 		}
 	}
 
 	if gamma := r.URL.Query().Get("gamma"); gamma != "" {
-		if g, err := strconv.ParseFloat(gamma, 64); err == nil && g >= 0 && g <= 3 {
+		if g, err := strconv.ParseFloat(gamma, 64); err == nil && g >= MinGammaValue && g <= MaxGammaValue {
 			params.Gamma = g
 		}
 	}
 
 	if saturation := r.URL.Query().Get("saturation"); saturation != "" {
-		if s, err := strconv.ParseFloat(saturation, 64); err == nil && s >= -100 && s <= 500 {
+		if s, err := strconv.ParseFloat(saturation, 64); err == nil && s >= MinSaturationValue && s <= MaxSaturationValue {
 			params.Saturation = s
 		}
 	}
 
 	if hue := r.URL.Query().Get("hue"); hue != "" {
-		if h, err := strconv.Atoi(hue); err == nil && h >= -180 && h <= 180 {
+		if h, err := strconv.Atoi(hue); err == nil && h >= MinHueValue && h <= MaxHueValue {
 			params.Hue = h
 		}
 	}
 
 	if blur := r.URL.Query().Get("blur"); blur != "" {
-		if b, err := strconv.ParseFloat(blur, 64); err == nil && b >= 0 && b <= 100 {
+		if b, err := strconv.ParseFloat(blur, 64); err == nil && b >= 0 && b <= MaxBlurValue {
 			params.Blur = b
 		}
 	}
 
 	if sharpen := r.URL.Query().Get("sharpen"); sharpen != "" {
-		if s, err := strconv.ParseFloat(sharpen, 64); err == nil && s >= 0 && s <= 100 {
+		if s, err := strconv.ParseFloat(sharpen, 64); err == nil && s >= 0 && s <= MaxSharpenValue {
 			params.Sharpen = s
 		}
 	}
@@ -217,8 +220,15 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retrieve original image using full storage key
+	storageStart := time.Now()
 	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
+	storageDuration := time.Since(storageStart).Seconds()
+
+	// Track storage metrics
+	m := metrics.Default()
 	if err != nil {
+		m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "error").Inc()
+		m.CacheMisses.Inc()
 		if storage.IsNotFound(err) {
 			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
 			return
@@ -227,6 +237,9 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
 		return
 	}
+	m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "success").Inc()
+	m.StorageOperationDuration.WithLabelValues("retrieve", "minio").Observe(storageDuration)
+	m.CacheHits.Inc()
 	defer reader.Close()
 
 	// If no transformations requested except format, still process for format conversion
@@ -242,12 +255,26 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process image with transformations
+	processStart := time.Now()
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params)
+	processDuration := time.Since(processStart).Seconds()
+
+	// Track processing metrics
 	if err != nil {
+		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
 		h.logger.WithError(err).Error("Failed to process image")
 		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
 		return
 	}
+	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
+	m.ImageProcessingDuration.WithLabelValues("transform").Observe(processDuration)
+
+	// Track image sizes
+	if inputData, err := io.ReadAll(reader); err == nil {
+		m.ImageProcessingSize.WithLabelValues("input").Observe(float64(len(inputData)))
+	}
+	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(processedImage.Metadata.Size))
+
 	defer processedImage.Data.Close()
 
 	// Convert processor metadata to storage metadata
