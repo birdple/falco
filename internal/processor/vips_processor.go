@@ -3,14 +3,25 @@ package processor
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cshum/vipsgen/vips"
 )
+
+// bufferPool is a pool of byte buffers to reduce allocations during image encoding.
+// Pre-allocated at 2MB to accommodate typical processed image sizes (up to 10MB max input).
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		// Pre-allocate 2MB buffer - a good balance for images up to 10MB
+		// Smaller than max to avoid over-allocation, larger than typical output
+		return bytes.NewBuffer(make([]byte, 0, 2*1024*1024))
+	},
+}
 
 // VipsProcessor implements ImageProcessor using libvips
 type VipsProcessor struct {
@@ -222,7 +233,7 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 
 	// Gamma
 	if params.Gamma != 0 && params.Gamma != 1.0 {
-		if err := img.Gamma(nil); err != nil {
+		if err := img.Gamma(&vips.GammaOptions{Exponent: params.Gamma}); err != nil {
 			return fmt.Errorf("gamma failed: %w", err)
 		}
 	}
@@ -291,8 +302,12 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		quality = 100
 	}
 
-	var buf bytes.Buffer
-	target := vips.NewTarget(nopWriteCloser{&buf})
+	// Get buffer from pool
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	target := vips.NewTarget(nopWriteCloser{buf})
 	defer target.Close()
 
 	var err error
@@ -300,12 +315,12 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 	case FormatJPEG:
 		// JPEG with progressive encoding and optimization
 		err = img.JpegsaveTarget(target, &vips.JpegsaveTargetOptions{
-			Q:              quality,
-			Interlace:      true,                 // Progressive JPEG for better web loading
-			OptimizeCoding: true,                 // Optimize Huffman tables
-			TrellisQuant:   quality >= 80,        // Better compression for high quality
-			OvershootDeringing: quality >= 80,    // Reduce compression artifacts
-			OptimizeScans:  true,                 // Optimize progressive scan order
+			Q:                  quality,
+			Interlace:          true,          // Progressive JPEG for better web loading
+			OptimizeCoding:     true,          // Optimize Huffman tables
+			TrellisQuant:       quality >= 80, // Better compression for high quality
+			OvershootDeringing: quality >= 80, // Reduce compression artifacts
+			OptimizeScans:      true,          // Optimize progressive scan order
 		})
 	case FormatPNG:
 		// PNG compression level (0-9)
@@ -330,27 +345,27 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		// WebP with advanced compression options
 		err = img.WebpsaveTarget(target, &vips.WebpsaveTargetOptions{
 			Q:              quality,
-			Lossless:       quality == 100,       // Lossless if quality is 100
+			Lossless:       quality == 100,                 // Lossless if quality is 100
 			NearLossless:   quality >= 95 && quality < 100, // Near-lossless for very high quality
-			Effort:         6,                    // Compression effort (0-6, higher=better compression)
-			SmartSubsample: quality >= 80,        // Better chroma subsampling for high quality
-			MinSize:        true,                 // Enable extra optimizations for smaller file size
-			Mixed:          quality >= 80,        // Allow mixed lossy/lossless encoding
+			Effort:         6,                              // Compression effort (0-6, higher=better compression)
+			SmartSubsample: quality >= 80,                  // Better chroma subsampling for high quality
+			MinSize:        true,                           // Enable extra optimizations for smaller file size
+			Mixed:          quality >= 80,                  // Allow mixed lossy/lossless encoding
 		})
 	case FormatHEIC:
 		// HEIC with optimization
 		err = img.HeifsaveTarget(target, &vips.HeifsaveTargetOptions{
 			Q:        quality,
-			Lossless: quality == 100,             // Lossless if quality is 100
-			Effort:   8,                          // Encoding effort (0-9, higher=slower but better)
+			Lossless: quality == 100, // Lossless if quality is 100
+			Effort:   8,              // Encoding effort (0-9, higher=slower but better)
 			// Note: Chroma subsampling is handled automatically by libvips
 		})
 	case FormatAVIF:
 		// AVIF with optimization (uses HEIF encoder with AV1 codec)
 		err = img.HeifsaveTarget(target, &vips.HeifsaveTargetOptions{
 			Q:        quality,
-			Lossless: quality == 100,             // Lossless if quality is 100
-			Effort:   8,                          // Higher effort for better compression
+			Lossless: quality == 100, // Lossless if quality is 100
+			Effort:   8,              // Higher effort for better compression
 			// Note: AVIF support depends on libvips being compiled with HEIF/AV1 support
 		})
 	default:
@@ -361,7 +376,10 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		return nil, err
 	}
 
-	return buf.Bytes(), nil
+	// Copy buffer data before returning to pool
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 // GetMetadata extracts metadata from an image
@@ -467,9 +485,11 @@ func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams, inputFor
 	return p.defaultFormat
 }
 
-// generateCacheKey generates a cache key including ALL transformation parameters
+// generateCacheKey generates a cache key including ALL transformation parameters.
+// Uses SHA-256 (truncated to 32 chars / 128 bits) for better collision resistance than MD5.
 func (p *VipsProcessor) generateCacheKey(inputData []byte, params *ProcessingParams) string {
-	inputHash := fmt.Sprintf("%x", md5.Sum(inputData))[:16]
+	// Use SHA-256 for better collision resistance (128 bits vs 64 bits with MD5)
+	inputHash := fmt.Sprintf("%x", sha256.Sum256(inputData))[:32]
 
 	var parts []string
 	parts = append(parts, inputHash)
