@@ -206,17 +206,16 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 			rl.clients[clientIP] = limiter
 		}
 		limiter.lastSeen = now
-		rl.mu.Unlock()
 
-		// Clean up old requests (no lock needed, single-threaded per client IP)
+		// Clean up old requests while still holding the lock
 		rl.cleanupOldRequests(limiter)
 
-		// Check rate limit
-		rl.mu.RLock()
+		// Check rate limit (still under lock)
 		requestCount := len(limiter.requests)
-		rl.mu.RUnlock()
 
 		if requestCount >= rl.requestsPerMinute+rl.burst {
+			// Unlock before logging and sending error response
+			rl.mu.Unlock() // Explicit unlock here as defer would unlock later
 			rl.logger.WithFields(logrus.Fields{
 				"ip":         clientIP,
 				"user_agent": httputil.GetUserAgent(r),
@@ -231,8 +230,7 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add current request with lock
-		rl.mu.Lock()
+		// Add current request (still under lock)
 		limiter.requests = append(limiter.requests, now)
 		remaining := rl.requestsPerMinute + rl.burst - len(limiter.requests)
 		rl.mu.Unlock()
@@ -248,7 +246,8 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 	})
 }
 
-// cleanupOldRequests removes requests older than 1 minute
+// cleanupOldRequests removes requests older than 1 minute.
+// IMPORTANT: Caller MUST hold rl.mu lock before calling this function.
 func (rl *RateLimiter) cleanupOldRequests(limiter *clientLimiter) {
 	now := time.Now()
 	oneMinuteAgo := now.Add(-time.Minute)
