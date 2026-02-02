@@ -10,6 +10,9 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+// Default timeout for MinIO storage operations
+const minioOperationTimeout = 30 * time.Second
+
 // MinIOStorage implements StorageBackend for MinIO object storage
 type MinIOStorage struct {
 	client          *minio.Client
@@ -20,7 +23,7 @@ type MinIOStorage struct {
 
 // NewMinIOStorage creates a new MinIO storage backend
 func NewMinIOStorage(cfg *MinIOConfig) (*MinIOStorage, error) {
-	// Initialize MinIO client object (EXACTLY like user's working example)
+	// Initialize MinIO client object
 	minioClient, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.Secure,
@@ -32,11 +35,15 @@ func NewMinIOStorage(cfg *MinIOConfig) (*MinIOStorage, error) {
 	// Try to create bucket with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	location := "us-east-1" // Default location
+
+	location := cfg.Region
+	if location == "" {
+		location = "us-east-1" // Default fallback
+	}
 
 	err = minioClient.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{Region: location})
 	if err != nil {
-		// Check to see if we already own this bucket (which happens if you run this twice)
+		// Check to see if we already own this bucket
 		exists, errBucketExists := minioClient.BucketExists(ctx, cfg.Bucket)
 		if errBucketExists == nil && exists {
 			// Bucket already exists, this is fine
@@ -63,12 +70,18 @@ func (m *MinIOStorage) WithBucket(bucket string) StorageBackend {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"})
+	exists, err := m.client.BucketExists(ctx, bucket)
 	if err != nil {
-		// Check if bucket already exists
-		exists, errBucketExists := m.client.BucketExists(ctx, bucket)
-		if errBucketExists != nil || !exists {
-			// If we can't create or verify bucket, return original storage
+		// If we can't verify bucket existence, log and return original storage
+		fmt.Printf("Warning: failed to check existence of bucket '%s': %v\n", bucket, err)
+		return m
+	}
+
+	if !exists {
+		err = m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"})
+		if err != nil {
+			// If we can't create bucket, return original storage
+			fmt.Printf("Warning: failed to create bucket '%s': %v\n", bucket, err)
 			return m
 		}
 	}
@@ -88,6 +101,10 @@ func (m *MinIOStorage) GetCurrentBucket() string {
 
 // Store stores an image with the given key and metadata
 func (m *MinIOStorage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, minioOperationTimeout)
+	defer cancel()
+
 	// Encode metadata
 	userMetadata, err := m.metadataEncoder.Encode(metadata)
 	if err != nil {
@@ -112,6 +129,10 @@ func (m *MinIOStorage) Store(ctx context.Context, key string, data io.Reader, me
 
 // Retrieve retrieves an image by key
 func (m *MinIOStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, minioOperationTimeout)
+	defer cancel()
+
 	// Get object
 	object, err := m.client.GetObject(ctx, m.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
@@ -148,6 +169,10 @@ func (m *MinIOStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser,
 
 // Delete deletes an image by key
 func (m *MinIOStorage) Delete(ctx context.Context, key string) error {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, minioOperationTimeout)
+	defer cancel()
+
 	err := m.client.RemoveObject(ctx, m.bucket, key, minio.RemoveObjectOptions{})
 	if err != nil {
 		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
@@ -161,6 +186,10 @@ func (m *MinIOStorage) Delete(ctx context.Context, key string) error {
 
 // Exists checks if an image exists by key
 func (m *MinIOStorage) Exists(ctx context.Context, key string) (bool, error) {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, minioOperationTimeout)
+	defer cancel()
+
 	_, err := m.client.StatObject(ctx, m.bucket, key, minio.StatObjectOptions{})
 	if err != nil {
 		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
@@ -178,9 +207,15 @@ func (m *MinIOStorage) Health(ctx context.Context) error {
 		return fmt.Errorf("MinIO client is not initialized")
 	}
 
-	// Try to list objects with max 1 result
-	for range m.client.ListObjects(ctx, m.bucket, minio.ListObjectsOptions{MaxKeys: 1}) {
-		// Just iterate to check if connection works
+	// Try to list objects with max 1 result to verify connection and bucket existence
+	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	for objectInfo := range m.client.ListObjects(listCtx, m.bucket, minio.ListObjectsOptions{MaxKeys: 1}) {
+		if objectInfo.Err != nil {
+			return fmt.Errorf("storage health check failed: %w", objectInfo.Err)
+		}
+		// If we get an object or the loop terminates without error, we consider it healthy
 		break
 	}
 

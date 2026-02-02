@@ -14,6 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// Default timeout for S3 storage operations
+const s3OperationTimeout = 30 * time.Second
+
 // S3Storage implements StorageBackend for Amazon S3 storage
 type S3Storage struct {
 	client          *s3.Client
@@ -87,6 +90,10 @@ func (s *S3Storage) GetCurrentBucket() string {
 
 // Store stores an image with the given key and metadata
 func (s *S3Storage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
+	defer cancel()
+
 	// Encode metadata
 	s3Metadata, err := s.metadataEncoder.Encode(metadata)
 	if err != nil {
@@ -111,6 +118,10 @@ func (s *S3Storage) Store(ctx context.Context, key string, data io.Reader, metad
 
 // Retrieve retrieves an image by key
 func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
+	defer cancel()
+
 	// Get object
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -141,6 +152,10 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 
 // Delete deletes an image by key
 func (s *S3Storage) Delete(ctx context.Context, key string) error {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
+	defer cancel()
+
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -158,6 +173,10 @@ func (s *S3Storage) Delete(ctx context.Context, key string) error {
 
 // Exists checks if an image exists by key
 func (s *S3Storage) Exists(ctx context.Context, key string) (bool, error) {
+	// Apply operation timeout
+	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
+	defer cancel()
+
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
