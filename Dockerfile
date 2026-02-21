@@ -1,7 +1,7 @@
 # ----------------------------------------
 # Build stage (Etapa de Compilación)
 # ----------------------------------------
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 # Instala las dependencias necesarias para compilar con vips
 # - gcc, g++, musl-dev: Compilador C/C++ para CGO
