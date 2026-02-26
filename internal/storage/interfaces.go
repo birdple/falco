@@ -15,6 +15,8 @@ type ImageMetadata struct {
 	Width        int       `json:"width"`
 	Height       int       `json:"height"`
 	ContentType  string    `json:"content_type"`
+	MaxAge       int       `json:"maxage,omitempty"`
+	SMaxAge      int       `json:"smaxage,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	ETag         string    `json:"etag,omitempty"`
 }

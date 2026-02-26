@@ -65,12 +65,28 @@ func main() {
 	)
 
 	// Initialize cache
-	var lruCache *cache.LRUCache
-	cacheSize := cfg.GetCacheSizeBytes()
-	if cacheSize > 0 {
-		lruCache = cache.NewLRUCache(cacheSize, cfg.GetCacheTTL())
-		imageProcessor.SetCache(lruCache)
-		logger.WithField("cache_size_mb", cfg.Cache.SizeMB).Info("Cache initialized")
+	var appCache processor.Cache
+	if cfg.Cache.EnableRedis && cfg.Cache.RedisURL != "" {
+		redisCache, err := cache.NewRedisCache(cfg.Cache.RedisURL, cfg.GetCacheTTL())
+		if err != nil {
+			logger.WithError(err).Warn("Failed to initialize Redis cache, falling back to LRU cache")
+		} else {
+			appCache = redisCache
+			logger.WithField("redis_url", cfg.Cache.RedisURL).Info("Redis cache initialized")
+		}
+	}
+
+	if appCache == nil {
+		cacheSize := cfg.GetCacheSizeBytes()
+		if cacheSize > 0 {
+			lruCache := cache.NewLRUCache(cacheSize, cfg.GetCacheTTL())
+			appCache = lruCache
+			logger.WithField("cache_size_mb", cfg.Cache.SizeMB).Info("LRU cache initialized")
+		}
+	}
+
+	if appCache != nil {
+		imageProcessor.SetCache(appCache)
 	}
 
 	// Initialize API server
@@ -120,7 +136,7 @@ func main() {
 
 	// Phase 2: Clean up resources
 	logger.Info("Phase 2: Cleaning up resources")
-	cleanupResources(ctx, storageBackend, lruCache, logger)
+	cleanupResources(ctx, storageBackend, appCache, logger)
 
 	// Phase 3: Final cleanup
 	logger.Info("Phase 3: Final cleanup")
@@ -163,13 +179,17 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, logge
 }
 
 // cleanupResources performs cleanup of application resources
-func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, lruCache *cache.LRUCache, logger *logrus.Logger) {
+func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, appCache processor.Cache, logger *logrus.Logger) {
 	// Clean up cache
-	if lruCache != nil {
-		logger.Info("Stopping cache cleanup goroutine...")
-		lruCache.Stop()
+	if appCache != nil {
+		logger.Info("Stopping cache...")
+		if lru, ok := appCache.(*cache.LRUCache); ok {
+			lru.Stop()
+		} else if redis, ok := appCache.(*cache.RedisCache); ok {
+			redis.Stop()
+		}
 		logger.Info("Clearing cache...")
-		lruCache.Clear()
+		appCache.Clear()
 		logger.Info("Cache cleanup completed")
 	}
 

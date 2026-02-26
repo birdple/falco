@@ -102,6 +102,18 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if maxAge := r.URL.Query().Get("maxage"); maxAge != "" {
+		if ma, err := strconv.Atoi(maxAge); err == nil && ma >= 0 {
+			params.MaxAge = ma
+		}
+	}
+
+	if sMaxAge := r.URL.Query().Get("smaxage"); sMaxAge != "" {
+		if sma, err := strconv.Atoi(sMaxAge); err == nil && sma >= 0 {
+			params.SMaxAge = sma
+		}
+	}
+
 	if fit := r.URL.Query().Get("fit"); fit != "" {
 		if fit == FitCover || fit == FitContain || fit == FitFill {
 			params.Fit = fit

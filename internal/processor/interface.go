@@ -13,6 +13,8 @@ type ProcessingParams struct {
 	Quality int    `json:"quality,omitempty"`
 	Format  string `json:"format,omitempty"`
 	Fit     string `json:"fit,omitempty"` // "cover", "contain", "fill"
+	MaxAge  int    `json:"maxage,omitempty"`
+	SMaxAge int    `json:"smaxage,omitempty"`
 
 	// Advanced transformations
 	CropX  int     `json:"crop_x,omitempty"` // Crop start X position

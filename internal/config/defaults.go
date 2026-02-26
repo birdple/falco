@@ -53,6 +53,8 @@ func (d *defaultsProvider) setCacheDefaults(v *viper.Viper) {
 	v.SetDefault("cache.size_mb", 256)
 	v.SetDefault("cache.ttl_hours", 24)
 	v.SetDefault("cache.cleanup_interval", "10m")
+	v.SetDefault("cache.default_max_age", 3600)
+	v.SetDefault("cache.default_smax_age", 7200)
 }
 
 // setProcessingDefaults sets processing default values

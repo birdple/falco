@@ -62,6 +62,10 @@ type CacheConfig struct {
 	SizeMB          int           `mapstructure:"size_mb"`
 	TTLHrs          int           `mapstructure:"ttl_hours"`
 	CleanupInterval time.Duration `mapstructure:"cleanup_interval"`
+	DefaultMaxAge   int           `mapstructure:"default_max_age"`
+	DefaultSMaxAge  int           `mapstructure:"default_smax_age"`
+	EnableRedis     bool          `mapstructure:"enable_redis"`
+	RedisURL        string        `mapstructure:"redis_url"`
 }
 
 // ProcessingConfig holds image processing configuration

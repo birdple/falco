@@ -71,12 +71,31 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *storage.ImageMetadata) {
 	w.Header().Set("Content-Type", metadata.ContentType)
 
-	// Smart cache control based on content type and size
-	if metadata.Size < 1024*1024 { // < 1MB
-		w.Header().Set("Cache-Control", "public, max-age=3600, s-maxage=7200") // 1 hour client, 2 hours CDN
-	} else {
-		w.Header().Set("Cache-Control", "public, max-age=86400, s-maxage=604800") // 1 day client, 1 week CDN
+	// Smart cache control based on metadata if available, otherwise defaults from config
+	maxAge := h.config.Cache.DefaultMaxAge
+	sMaxAge := h.config.Cache.DefaultSMaxAge
+
+	if metadata.MaxAge > 0 {
+		maxAge = metadata.MaxAge
 	}
+	if metadata.SMaxAge > 0 {
+		sMaxAge = metadata.SMaxAge
+	}
+
+	// Dynamic override for large images if no explicit TTL was requested
+	if metadata.MaxAge == 0 && metadata.SMaxAge == 0 {
+		if metadata.Size >= 1024*1024 { // >= 1MB
+			// For large images, we boost the cache time if the defaults are low
+			if maxAge < 86400 {
+				maxAge = 86400
+			}
+			if sMaxAge < 604800 {
+				sMaxAge = 604800
+			}
+		}
+	}
+
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", maxAge, sMaxAge))
 
 	// Enhanced ETag with size and timestamp for better cache validation
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())

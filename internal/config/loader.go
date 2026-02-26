@@ -113,6 +113,10 @@ func (l *loader) getEnvMappings() map[string]string {
 		"STORAGE_MINIO_SECURE":     "storage.minio.secure",
 		"CACHE_SIZE_MB":            "cache.size_mb",
 		"CACHE_TTL_HOURS":          "cache.ttl_hours",
+		"CACHE_DEFAULT_MAX_AGE":    "cache.default_max_age",
+		"CACHE_DEFAULT_SMAX_AGE":   "cache.default_smax_age",
+		"ENABLE_REDIS":             "cache.enable_redis",
+		"REDIS_URL":                "cache.redis_url",
 		"MAX_FILE_SIZE_MB":         "processing.max_file_size_mb",
 		"DEFAULT_QUALITY":          "processing.default_quality",
 		"DEFAULT_FORMAT":           "processing.default_format",
@@ -142,6 +146,8 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 		"security.rate_limit.requests_per_minute": true,
 		"processing.max_dimensions.width":         true,
 		"processing.max_dimensions.height":        true,
+		"cache.default_max_age":                   true,
+		"cache.default_smax_age":                  true,
 	}
 
 	boolKeys := map[string]bool{
@@ -150,6 +156,7 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 		"development.enable_pprof":   true,
 		"development.enable_metrics": true,
 		"storage.minio.secure":       true,
+		"cache.enable_redis":         true,
 	}
 
 	switch {
