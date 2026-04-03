@@ -89,6 +89,16 @@ const (
 	StorageTypeFilesystem StorageType = "filesystem"
 	StorageTypeS3         StorageType = "s3"
 	StorageTypeMinIO      StorageType = "minio"
+	StorageTypeR2         StorageType = "r2"
+)
+
+// ReplicationMode defines how primary and secondary storage interact
+type ReplicationMode string
+
+const (
+	ReplicationSync        ReplicationMode = "sync"
+	ReplicationAsync       ReplicationMode = "async"
+	ReplicationReadFallback ReplicationMode = "read-fallback"
 )
 
 // StorageConfig holds configuration for storage backends
@@ -105,6 +115,11 @@ type StorageConfig struct {
 	MinIOBucket   string
 	MinIORegion   string
 	MinIOSecure   bool
+	// R2 specific fields
+	R2Bucket    string
+	R2AccountID string
+	R2AccessKey string
+	R2SecretKey string
 }
 
 // MinIOConfig holds MinIO storage configuration
@@ -122,6 +137,14 @@ type S3Config struct {
 	Bucket    string
 	Region    string
 	Endpoint  string
+	AccessKey string
+	SecretKey string
+}
+
+// R2Config holds Cloudflare R2 storage configuration
+type R2Config struct {
+	Bucket    string
+	AccountID string
 	AccessKey string
 	SecretKey string
 }

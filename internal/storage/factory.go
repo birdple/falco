@@ -15,6 +15,7 @@ func init() {
 	})
 	Register(StorageTypeS3, newS3StorageFromConfig)
 	Register(StorageTypeMinIO, newMinIOStorageFromConfig)
+	Register(StorageTypeR2, newR2StorageFromConfig)
 }
 
 // Register registers a new storage backend factory
@@ -52,5 +53,15 @@ func newMinIOStorageFromConfig(config *StorageConfig) (StorageBackend, error) {
 		AccessKey: config.AccessKey,
 		SecretKey: config.SecretKey,
 		Secure:    config.MinIOSecure,
+	})
+}
+
+// newR2StorageFromConfig adapter for Cloudflare R2 storage creation
+func newR2StorageFromConfig(config *StorageConfig) (StorageBackend, error) {
+	return NewR2Storage(&R2Config{
+		Bucket:    config.R2Bucket,
+		AccountID: config.R2AccountID,
+		AccessKey: config.R2AccessKey,
+		SecretKey: config.R2SecretKey,
 	})
 }

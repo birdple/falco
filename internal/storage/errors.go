@@ -16,6 +16,7 @@ var (
 	ErrTimeout                = errors.New("operation timeout")
 	ErrInvalidKey             = errors.New("invalid storage key")
 	ErrCorruptedData          = errors.New("corrupted data")
+	ErrBackendNotFound        = errors.New("storage backend not found")
 )
 
 // IsNotFound returns true if the error indicates that an image was not found
