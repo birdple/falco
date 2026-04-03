@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -10,15 +11,16 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/birdple/falco/docs"
 	"github.com/birdple/falco/internal/api/handlers"
 	"github.com/birdple/falco/internal/api/handlers/ui"
 	apimw "github.com/birdple/falco/internal/api/middleware"
-	"github.com/birdple/falco/internal/api/views"
 	"github.com/birdple/falco/internal/config"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/web"
 )
 
 // ServerConfig holds configuration for the API server
@@ -37,6 +39,7 @@ type Server struct {
 	handler   *handlers.Handler
 	uiHandler *ui.Handler
 	metrics   *metrics.Metrics
+	registry  *storage.Registry
 }
 
 // NewServer creates a new API server
@@ -54,16 +57,12 @@ func NewServer(cfg *ServerConfig) *Server {
 
 	m := metrics.New()
 
-	renderer, err := views.NewRenderer()
-	if err != nil {
-		logger.Error().Err(err).Msg("Failed to initialize UI renderer")
-	}
-
 	s := &Server{
 		config:    cfg.Config,
 		handler:   h,
-		uiHandler: ui.NewHandler(renderer, cfg.Storage),
+		uiHandler: ui.NewHandler(cfg.Config, cfg.StorageRegistry),
 		metrics:   m,
+		registry:  cfg.StorageRegistry,
 	}
 
 	s.setupRouter()
@@ -117,11 +116,15 @@ func (s *Server) setupRouter() {
 		MaxAge:           300,
 	}))
 
-	// UI Routes
-	r.Get("/", s.uiHandler.Index)
+	// UI Routes (public - auth handled internally via cookie/key)
+	r.Get("/", s.uiHandler.Login)
+	r.Get("/dashboard", s.uiHandler.Dashboard)
+	r.Post("/ui/auth", s.uiHandler.AuthPost)
+	r.Get("/ui/content", s.uiHandler.Content)
 
-	// Static files - restrict to known extensions
-	r.Handle("/static/*", http.StripPrefix("/static/", apimw.RestrictedFileServer(http.Dir("web/static"))))
+	// Static files (embedded in binary)
+	staticFS, _ := fs.Sub(web.StaticFS, "static")
+	r.Handle("/static/*", http.StripPrefix("/static/", apimw.RestrictedFileServer(http.FS(staticFS))))
 
 	// Health check endpoint (no auth required)
 	r.Get("/health", s.handler.HandleHealth)
@@ -129,7 +132,13 @@ func (s *Server) setupRouter() {
 	// Docs endpoint
 	r.Get("/docs", s.handler.HandleDocs)
 	r.Get("/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./docs/openapi.yaml")
+		data, err := docs.FS.ReadFile("openapi.yaml")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Write(data)
 	})
 
 	// Prometheus metrics endpoint (protected by API key when auth is enabled)
