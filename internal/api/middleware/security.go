@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/birdple/imagine/internal/pkg/httputil"
+	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/sirupsen/logrus"
 )
 

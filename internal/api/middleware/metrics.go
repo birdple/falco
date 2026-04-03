@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/birdple/imagine/internal/pkg/metrics"
+	"github.com/birdple/falco/internal/pkg/metrics"
 )
 
 // MetricsMiddleware provides HTTP metrics collection using Prometheus

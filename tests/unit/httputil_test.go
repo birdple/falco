@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/pkg/httputil"
+	"github.com/birdple/falco/internal/pkg/httputil"
 )
 
 func TestWriteJSON(t *testing.T) {

@@ -1,11 +1,11 @@
 packages:
-  github.com/birdple/imagine/internal/storage:
+  github.com/birdple/falco/internal/storage:
     config:
       filename: "mock_{{.InterfaceName}}.go"
       dir: "tests/mocks"
     interfaces:
       StorageBackend:
-  github.com/birdple/imagine/internal/processor:
+  github.com/birdple/falco/internal/processor:
     config:
       filename: "mock_{{.InterfaceName}}.go"
       dir: "tests/mocks"

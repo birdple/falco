@@ -17,12 +17,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
-	"github.com/birdple/imagine/internal/api/handlers"
-	"github.com/birdple/imagine/internal/api/types"
-	"github.com/birdple/imagine/internal/config"
-	"github.com/birdple/imagine/internal/processor"
-	"github.com/birdple/imagine/internal/storage"
-	"github.com/birdple/imagine/tests/mocks"
+	"github.com/birdple/falco/internal/api/handlers"
+	"github.com/birdple/falco/internal/api/types"
+	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/tests/mocks"
 )
 
 // Additional Upload tests

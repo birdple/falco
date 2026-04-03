@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/api/utils"
+	"github.com/birdple/falco/internal/api/utils"
 )
 
 // Tests for GetQueryParam

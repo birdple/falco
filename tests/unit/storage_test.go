@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // Test error helper functions

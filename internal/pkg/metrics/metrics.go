@@ -32,7 +32,7 @@ type Metrics struct {
 }
 
 // namespace is the Prometheus namespace for all metrics
-const namespace = "imagine"
+const namespace = "falco"
 
 // Singleton pattern to prevent duplicate metric registration
 var (

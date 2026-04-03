@@ -11,12 +11,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 
-	"github.com/birdple/imagine/internal/api/handlers"
-	apimw "github.com/birdple/imagine/internal/api/middleware"
-	"github.com/birdple/imagine/internal/config"
-	"github.com/birdple/imagine/internal/pkg/metrics"
-	"github.com/birdple/imagine/internal/processor"
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/api/handlers"
+	apimw "github.com/birdple/falco/internal/api/middleware"
+	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/pkg/metrics"
+	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // ServerConfig holds configuration for the API server

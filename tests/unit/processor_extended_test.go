@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/processor"
+	"github.com/birdple/falco/internal/processor"
 )
 
 // Test ResizeMode constants

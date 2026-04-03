@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/processor"
+	"github.com/birdple/falco/internal/processor"
 )
 
 func TestNewPipeline(t *testing.T) {

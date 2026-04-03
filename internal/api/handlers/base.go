@@ -9,11 +9,11 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/birdple/imagine/internal/api/types"
-	"github.com/birdple/imagine/internal/config"
-	"github.com/birdple/imagine/internal/pkg/httputil"
-	"github.com/birdple/imagine/internal/processor"
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/api/types"
+	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/pkg/httputil"
+	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // Handler contains dependencies for all API handlers

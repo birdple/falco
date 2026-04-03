@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/birdple/imagine/internal/api/types"
-	"github.com/birdple/imagine/internal/api/utils"
+	"github.com/birdple/falco/internal/api/types"
+	"github.com/birdple/falco/internal/api/utils"
 )
 
 // HandleList handles listing files in a bucket/directory

@@ -1,4 +1,4 @@
-module github.com/birdple/imagine
+module github.com/birdple/falco
 
 go 1.26
 

@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/storage"
 )
 
 func getMinIOConfig() (*storage.MinIOConfig, error) {

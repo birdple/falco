@@ -8,7 +8,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/storage"
 	mock "github.com/stretchr/testify/mock"
 )
 

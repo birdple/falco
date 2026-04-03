@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/birdple/imagine/internal/api/types"
-	"github.com/birdple/imagine/internal/api/utils"
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/api/types"
+	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // HandleDelete handles deleting files or entire directories

@@ -10,11 +10,11 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/birdple/imagine/internal/api"
-	"github.com/birdple/imagine/internal/cache"
-	"github.com/birdple/imagine/internal/config"
-	"github.com/birdple/imagine/internal/processor"
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/api"
+	"github.com/birdple/falco/internal/cache"
+	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/storage"
 )
 
 func main() {

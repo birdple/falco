@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/cache"
+	"github.com/birdple/falco/internal/cache"
 )
 
 func TestLRUCache_BasicOperations(t *testing.T) {

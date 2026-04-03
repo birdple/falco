@@ -9,10 +9,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/birdple/imagine/internal/api/utils"
-	"github.com/birdple/imagine/internal/pkg/metrics"
-	"github.com/birdple/imagine/internal/processor"
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/pkg/metrics"
+	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // HandleDelivery handles image delivery requests with optional transformations

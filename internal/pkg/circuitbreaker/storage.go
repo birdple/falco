@@ -8,7 +8,7 @@ import (
 
 	"github.com/sony/gobreaker"
 
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // CircuitBreakerSettings holds configuration for the circuit breaker

@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/birdple/imagine/internal/api/types"
-	"github.com/birdple/imagine/internal/api/utils"
-	"github.com/birdple/imagine/internal/pkg/hashutil"
-	"github.com/birdple/imagine/internal/pkg/httputil"
-	"github.com/birdple/imagine/internal/processor"
-	"github.com/birdple/imagine/internal/storage"
+	"github.com/birdple/falco/internal/api/types"
+	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/pkg/hashutil"
+	"github.com/birdple/falco/internal/pkg/httputil"
+	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // HandleUpdate handles image update requests

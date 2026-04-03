@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/birdple/imagine/internal/pkg/hashutil"
+	"github.com/birdple/falco/internal/pkg/hashutil"
 )
 
 func TestGenerateSHA256(t *testing.T) {
