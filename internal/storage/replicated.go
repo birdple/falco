@@ -7,27 +7,30 @@ import (
 	"github.com/birdple/falco/internal/pkg/logger"
 )
 
-// ReplicatedStorage wraps a primary and secondary StorageBackend
-// to provide replication with configurable modes.
+// BackupTarget pairs a storage backend with a replication mode.
+type BackupTarget struct {
+	Backend StorageBackend
+	Mode    ReplicationMode
+}
+
+// ReplicatedStorage wraps a primary StorageBackend with N backup targets,
+// each with its own replication mode (sync, async, read-fallback).
 type ReplicatedStorage struct {
-	primary   StorageBackend
-	secondary StorageBackend
-	mode      ReplicationMode
+	primary StorageBackend
+	backups []BackupTarget
 }
 
 // NewReplicatedStorage creates a new replicated storage wrapper.
-func NewReplicatedStorage(primary, secondary StorageBackend, mode ReplicationMode) *ReplicatedStorage {
+func NewReplicatedStorage(primary StorageBackend, backups []BackupTarget) *ReplicatedStorage {
 	return &ReplicatedStorage{
-		primary:   primary,
-		secondary: secondary,
-		mode:      mode,
+		primary: primary,
+		backups: backups,
 	}
 }
 
-// Store writes data to the primary backend and replicates to the secondary
-// based on the configured replication mode.
+// Store writes data to the primary backend and replicates to backup targets
+// based on each target's replication mode.
 func (rs *ReplicatedStorage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
-	// For sync and async modes, we need to buffer the data so both backends can read it
 	buf, err := io.ReadAll(data)
 	if err != nil {
 		return err
@@ -38,78 +41,105 @@ func (rs *ReplicatedStorage) Store(ctx context.Context, key string, data io.Read
 		return err
 	}
 
-	switch rs.mode {
-	case ReplicationSync:
-		if err := rs.secondary.Store(ctx, key, newBytesReader(buf), metadata); err != nil {
-			logger.Error().Err(err).Str("key", key).Msg("Failed to replicate to secondary storage (sync)")
-			return err
-		}
-	case ReplicationAsync:
-		go func() {
-			if err := rs.secondary.Store(context.Background(), key, newBytesReader(buf), metadata); err != nil {
-				logger.Error().Err(err).Str("key", key).Msg("Failed to replicate to secondary storage (async)")
+	for i, target := range rs.backups {
+		switch target.Mode {
+		case ReplicationSync:
+			if err := target.Backend.Store(ctx, key, newBytesReader(buf), metadata); err != nil {
+				logger.Error().Err(err).
+					Str("key", key).
+					Int("backup_index", i).
+					Msg("Failed to replicate to backup (sync)")
+				return err
 			}
-		}()
-	case ReplicationReadFallback:
-		// In read-fallback mode, we only write to the primary
+		case ReplicationAsync:
+			go func(t BackupTarget, idx int) {
+				if err := t.Backend.Store(context.Background(), key, newBytesReader(buf), metadata); err != nil {
+					logger.Error().Err(err).
+						Str("key", key).
+						Int("backup_index", idx).
+						Msg("Failed to replicate to backup (async)")
+				}
+			}(target, i)
+		case ReplicationReadFallback:
+			// In read-fallback mode, we only write to the primary
+		}
 	}
 
 	return nil
 }
 
-// Retrieve reads from the primary backend. In read-fallback mode,
-// falls back to the secondary if the primary returns not found.
+// Retrieve reads from the primary backend. Falls back to read-fallback targets
+// if the primary returns not found.
 func (rs *ReplicatedStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
 	reader, metadata, err := rs.primary.Retrieve(ctx, key)
 	if err == nil {
 		return reader, metadata, nil
 	}
 
-	if rs.mode == ReplicationReadFallback && IsNotFound(err) {
-		logger.Debug().Str("key", key).Msg("Primary not found, falling back to secondary")
-		return rs.secondary.Retrieve(ctx, key)
+	if IsNotFound(err) {
+		for _, target := range rs.backups {
+			if target.Mode == ReplicationReadFallback {
+				logger.Debug().Str("key", key).Msg("Primary not found, trying read-fallback backup")
+				r, m, e := target.Backend.Retrieve(ctx, key)
+				if e == nil {
+					return r, m, nil
+				}
+			}
+		}
 	}
 
 	return nil, nil, err
 }
 
-// Delete removes from the primary and, in sync/async modes, from the secondary.
+// Delete removes from the primary and replicates deletion to backup targets.
 func (rs *ReplicatedStorage) Delete(ctx context.Context, key string) error {
 	if err := rs.primary.Delete(ctx, key); err != nil {
 		return err
 	}
 
-	switch rs.mode {
-	case ReplicationSync:
-		if err := rs.secondary.Delete(ctx, key); err != nil && !IsNotFound(err) {
-			logger.Error().Err(err).Str("key", key).Msg("Failed to delete from secondary storage (sync)")
-			return err
-		}
-	case ReplicationAsync:
-		go func() {
-			if err := rs.secondary.Delete(context.Background(), key); err != nil && !IsNotFound(err) {
-				logger.Error().Err(err).Str("key", key).Msg("Failed to delete from secondary storage (async)")
+	for i, target := range rs.backups {
+		switch target.Mode {
+		case ReplicationSync:
+			if err := target.Backend.Delete(ctx, key); err != nil && !IsNotFound(err) {
+				logger.Error().Err(err).
+					Str("key", key).
+					Int("backup_index", i).
+					Msg("Failed to delete from backup (sync)")
+				return err
 			}
-		}()
-	case ReplicationReadFallback:
-		// Best-effort delete from secondary
-		go func() {
-			_ = rs.secondary.Delete(context.Background(), key)
-		}()
+		case ReplicationAsync:
+			go func(t BackupTarget, idx int) {
+				if err := t.Backend.Delete(context.Background(), key); err != nil && !IsNotFound(err) {
+					logger.Error().Err(err).
+						Str("key", key).
+						Int("backup_index", idx).
+						Msg("Failed to delete from backup (async)")
+				}
+			}(target, i)
+		case ReplicationReadFallback:
+			// Best-effort delete
+			go func(t BackupTarget) {
+				_ = t.Backend.Delete(context.Background(), key)
+			}(target)
+		}
 	}
 
 	return nil
 }
 
-// Exists checks the primary, falls back to secondary in read-fallback mode.
+// Exists checks the primary, falls back to read-fallback targets.
 func (rs *ReplicatedStorage) Exists(ctx context.Context, key string) (bool, error) {
 	exists, err := rs.primary.Exists(ctx, key)
 	if err == nil && exists {
 		return true, nil
 	}
 
-	if rs.mode == ReplicationReadFallback {
-		return rs.secondary.Exists(ctx, key)
+	for _, target := range rs.backups {
+		if target.Mode == ReplicationReadFallback {
+			if e, err2 := target.Backend.Exists(ctx, key); err2 == nil && e {
+				return true, nil
+			}
+		}
 	}
 
 	return exists, err
@@ -120,14 +150,16 @@ func (rs *ReplicatedStorage) List(ctx context.Context, prefix string) ([]ListRes
 	return rs.primary.List(ctx, prefix)
 }
 
-// Health checks both backends. Returns error if primary is unhealthy.
+// Health checks the primary and all backup backends.
+// Returns error if primary is unhealthy; logs warnings for unhealthy backups.
 func (rs *ReplicatedStorage) Health(ctx context.Context) error {
 	if err := rs.primary.Health(ctx); err != nil {
 		return err
 	}
-	// Log secondary health issues but don't fail the health check
-	if err := rs.secondary.Health(ctx); err != nil {
-		logger.Warn().Err(err).Msg("Secondary storage health check failed")
+	for i, target := range rs.backups {
+		if err := target.Backend.Health(ctx); err != nil {
+			logger.Warn().Err(err).Int("backup_index", i).Msg("Backup health check failed")
+		}
 	}
 	return nil
 }
@@ -137,22 +169,25 @@ func (rs *ReplicatedStorage) GetStats(ctx context.Context) (*StorageStats, error
 	return rs.primary.GetStats(ctx)
 }
 
-// WithBucket delegates to both backends if they support it.
+// WithBucket delegates to all backends that support it.
 func (rs *ReplicatedStorage) WithBucket(bucket string) StorageBackend {
 	primary := rs.primary
-	secondary := rs.secondary
-
 	if ba, ok := rs.primary.(BucketAware); ok {
 		primary = ba.WithBucket(bucket)
 	}
-	if ba, ok := rs.secondary.(BucketAware); ok {
-		secondary = ba.WithBucket(bucket)
+
+	newBackups := make([]BackupTarget, len(rs.backups))
+	for i, t := range rs.backups {
+		backend := t.Backend
+		if ba, ok := t.Backend.(BucketAware); ok {
+			backend = ba.WithBucket(bucket)
+		}
+		newBackups[i] = BackupTarget{Backend: backend, Mode: t.Mode}
 	}
 
 	return &ReplicatedStorage{
-		primary:   primary,
-		secondary: secondary,
-		mode:      rs.mode,
+		primary: primary,
+		backups: newBackups,
 	}
 }
 
@@ -169,14 +204,9 @@ func (rs *ReplicatedStorage) Primary() StorageBackend {
 	return rs.primary
 }
 
-// Secondary returns the underlying secondary backend.
-func (rs *ReplicatedStorage) Secondary() StorageBackend {
-	return rs.secondary
-}
-
-// Mode returns the replication mode.
-func (rs *ReplicatedStorage) Mode() ReplicationMode {
-	return rs.mode
+// Backups returns the backup targets.
+func (rs *ReplicatedStorage) Backups() []BackupTarget {
+	return rs.backups
 }
 
 // newBytesReader creates a new bytes reader (helper to avoid import in callers)
