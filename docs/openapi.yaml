@@ -5,13 +5,13 @@ info:
   version: "1.0.0"
   contact:
     name: API Support
-    email: support@imagine-api.com
+    email: support@falco-api.com
   license:
     name: MIT
 servers:
   - url: http://localhost:8080/api/v1
     description: Local development server
-  - url: https://api.imagine.com/v1
+  - url: https://api.falco.dev/v1
     description: Production server
 paths:
   /upload:

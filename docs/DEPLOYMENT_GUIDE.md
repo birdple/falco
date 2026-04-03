@@ -14,7 +14,7 @@
 1. **Clone and Setup**
 ```bash
 git clone <repository-url>
-cd imagine
+cd falco
 make setup
 ```
 
@@ -49,16 +49,16 @@ docker-compose up --build
 #### Single Container
 ```bash
 # Build production image
-docker build -t imagine-service:latest .
+docker build -t falco-service:latest .
 
 # Run container
 docker run -d \
-  --name imagine-service \
+  --name falco-service \
   -p 8080:8080 \
   -v /host/data:/app/data \
   -e STORAGE_LOCAL_PATH=/app/data/images \
   -e CACHE_SIZE_MB=512 \
-  imagine-service:latest
+  falco-service:latest
 ```
 
 #### Docker Compose Production
@@ -67,7 +67,7 @@ docker run -d \
 version: '3.8'
 
 services:
-  imagine-service:
+  falco-service:
     build:
       context: .
       dockerfile: Dockerfile
@@ -101,7 +101,7 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf
       - ./ssl:/etc/nginx/ssl
     depends_on:
-      - imagine-service
+      - falco-service
     restart: unless-stopped
 ```
 
@@ -113,15 +113,15 @@ services:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: imagine-service
+  name: falco-service
 
 ---
 # k8s/configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: imagine-config
-  namespace: imagine-service
+  name: falco-config
+  namespace: falco-service
 data:
   PORT: "8080"
   ENV: "production"
@@ -139,28 +139,28 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: imagine-service
-  namespace: imagine-service
+  name: falco-service
+  namespace: falco-service
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: imagine-service
+      app: falco-service
   template:
     metadata:
       labels:
-        app: imagine-service
+        app: falco-service
     spec:
       containers:
-      - name: imagine-service
-        image: imagine-service:latest
+      - name: falco-service
+        image: falco-service:latest
         ports:
         - containerPort: 8080
         envFrom:
         - configMapRef:
-            name: imagine-config
+            name: falco-config
         - secretRef:
-            name: imagine-secrets
+            name: falco-secrets
         resources:
           requests:
             memory: "256Mi"
@@ -186,18 +186,18 @@ spec:
       volumes:
       - name: image-storage
         persistentVolumeClaim:
-          claimName: imagine-pvc
+          claimName: falco-pvc
 
 ---
 # k8s/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: imagine-service
-  namespace: imagine-service
+  name: falco-service
+  namespace: falco-service
 spec:
   selector:
-    app: imagine-service
+    app: falco-service
   ports:
   - port: 80
     targetPort: 8080
@@ -210,8 +210,8 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: imagine-pvc
-  namespace: imagine-service
+  name: falco-pvc
+  namespace: falco-service
 spec:
   accessModes:
     - ReadWriteOnce
@@ -225,8 +225,8 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: imagine-ingress
-  namespace: imagine-service
+  name: falco-ingress
+  namespace: falco-service
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
@@ -235,7 +235,7 @@ spec:
   tls:
   - hosts:
     - images.yourdomain.com
-    secretName: imagine-tls
+    secretName: falco-tls
   rules:
   - host: images.yourdomain.com
     http:
@@ -244,7 +244,7 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: imagine-service
+            name: falco-service
             port:
               number: 80
 ```
@@ -254,7 +254,7 @@ spec:
 #### Task Definition
 ```json
 {
-  "family": "imagine-service",
+  "family": "falco-service",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
@@ -263,8 +263,8 @@ spec:
   "taskRoleArn": "arn:aws:iam::account:role/ecsTaskRole",
   "containerDefinitions": [
     {
-      "name": "imagine-service",
-      "image": "your-account.dkr.ecr.region.amazonaws.com/imagine-service:latest",
+      "name": "falco-service",
+      "image": "your-account.dkr.ecr.region.amazonaws.com/falco-service:latest",
       "portMappings": [
         {
           "containerPort": 8080,
@@ -281,17 +281,17 @@ spec:
       "secrets": [
         {
           "name": "STORAGE_S3_ACCESS_KEY",
-          "valueFrom": "arn:aws:secretsmanager:region:account:secret:imagine/s3-access-key"
+          "valueFrom": "arn:aws:secretsmanager:region:account:secret:falco/s3-access-key"
         },
         {
           "name": "STORAGE_S3_SECRET_KEY",
-          "valueFrom": "arn:aws:secretsmanager:region:account:secret:imagine/s3-secret-key"
+          "valueFrom": "arn:aws:secretsmanager:region:account:secret:falco/s3-secret-key"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/imagine-service",
+          "awslogs-group": "/ecs/falco-service",
           "awslogs-region": "us-west-2",
           "awslogs-stream-prefix": "ecs"
         }
@@ -333,7 +333,7 @@ services:
       timeout: 20s
       retries: 3
 
-  imagine-service:
+  falco-service:
     build:
       context: .
       dockerfile: Dockerfile
@@ -376,8 +376,8 @@ docker-compose -f docker-compose.minio.yml exec minio mc version enable local/im
 apiVersion: minio.min.io/v2
 kind: Tenant
 metadata:
-  name: imagine-storage
-  namespace: imagine-service
+  name: falco-storage
+  namespace: falco-service
 spec:
   pools:
   - servers: 4
@@ -539,7 +539,7 @@ services:
 ```yaml
 # alerts.yml
 groups:
-- name: imagine-service
+- name: falco-service
   rules:
   - alert: HighErrorRate
     expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
@@ -608,12 +608,12 @@ server {
     
     location /api/v1/upload {
         limit_req zone=upload burst=5 nodelay;
-        proxy_pass http://imagine-service:8080;
+        proxy_pass http://falco-service:8080;
     }
     
     location /api/v1/ {
         limit_req zone=api burst=20 nodelay;
-        proxy_pass http://imagine-service:8080;
+        proxy_pass http://falco-service:8080;
     }
 }
 ```
@@ -637,7 +637,7 @@ fi
 cp /app/config.yaml $BACKUP_DIR/
 
 # Upload to S3
-aws s3 sync $BACKUP_DIR s3://backup-bucket/imagine-service/$(date +%Y%m%d)/
+aws s3 sync $BACKUP_DIR s3://backup-bucket/falco-service/$(date +%Y%m%d)/
 
 # Cleanup old backups (keep 30 days)
 find /backups -type d -mtime +30 -exec rm -rf {} \;
@@ -652,7 +652,7 @@ RESTORE_DATE=$1
 BACKUP_DIR="/backups/$RESTORE_DATE"
 
 # Download from S3
-aws s3 sync s3://backup-bucket/imagine-service/$RESTORE_DATE/ $BACKUP_DIR/
+aws s3 sync s3://backup-bucket/falco-service/$RESTORE_DATE/ $BACKUP_DIR/
 
 # Restore images
 tar -xzf $BACKUP_DIR/images.tar.gz -C /
@@ -661,7 +661,7 @@ tar -xzf $BACKUP_DIR/images.tar.gz -C /
 cp $BACKUP_DIR/config.yaml /app/
 
 # Restart service
-systemctl restart imagine-service
+systemctl restart falco-service
 ```
 
 ## Performance Tuning
@@ -692,7 +692,7 @@ net.ipv4.tcp_keepalive_probes = 10
 #### High Memory Usage
 ```bash
 # Check memory usage
-docker stats imagine-service
+docker stats falco-service
 
 # Analyze heap dump
 go tool pprof http://localhost:8080/debug/pprof/heap
@@ -710,7 +710,7 @@ aws s3 ls s3://your-bucket --region us-west-2
 #### Performance Issues
 ```bash
 # Check CPU usage
-docker exec imagine-service top
+docker exec falco-service top
 
 # Analyze CPU profile
 go tool pprof http://localhost:8080/debug/pprof/profile

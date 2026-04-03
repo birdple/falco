@@ -124,7 +124,7 @@ Response:
 ## Project Structure
 
 ```
-imagine/
+falco/
 ├── cmd/
 │   └── server/
 │       └── main.go                 # Application entry point

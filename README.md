@@ -1,6 +1,6 @@
 # Imagine - High-Performance Image Processing Service
 
-![Imagine Service](imagine.webp)
+![Imagine Service](falco.webp)
 
 A blazing-fast image processing service built in Go that serves as a simplified Cloudinary alternative. Designed for maximum performance, scalability, and ease of deployment.
 
@@ -38,8 +38,8 @@ A blazing-fast image processing service built in Go that serves as a simplified 
 
 ```bash
 # Clone the repository
-git clone https://github.com/birdple/imagine.git
-cd imagine
+git clone https://github.com/birdple/falco.git
+cd falco
 
 # Install dependencies
 go mod download
@@ -52,8 +52,8 @@ go run cmd/server/main.go
 
 ```bash
 # Build and run with Docker
-docker build -t imagine-service .
-docker run -p 8080:8080 imagine-service
+docker build -t falco-service .
+docker run -p 8080:8080 falco-service
 
 # Or use Docker Compose (recommended)
 docker-compose up --build
@@ -1077,7 +1077,7 @@ graph TB
 ### Project Structure
 
 ```
-imagine/
+falco/
 ├── cmd/server/
 │   └── main.go                     # Application entry point
 ├── internal/
@@ -1231,7 +1231,7 @@ Too Many Requests
 
 ```bash
 # Build production image
-docker build -t imagine-service .
+docker build -t falco-service .
 
 # Run container
 docker run -d \
@@ -1240,8 +1240,8 @@ docker run -d \
   -e STORAGE_PRIMARY=filesystem \
   -e API_KEY_REQUIRED=true \
   -e API_KEY=your-secret-key \
-  --name imagine \
-  imagine-service
+  --name falco \
+  falco-service
 ```
 
 ### Docker Compose Deployment
@@ -1266,20 +1266,20 @@ docker-compose --profile with-nginx up -d
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: imagine-service
+  name: falco-service
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: imagine-service
+      app: falco-service
   template:
     metadata:
       labels:
-        app: imagine-service
+        app: falco-service
     spec:
       containers:
-      - name: imagine
-        image: imagine-service:latest
+      - name: falco
+        image: falco-service:latest
         ports:
         - containerPort: 8080
         env:
@@ -1290,7 +1290,7 @@ spec:
         - name: API_KEY
           valueFrom:
             secretKeyRef:
-              name: imagine-secrets
+              name: falco-secrets
               key: api-key
         resources:
           requests:
@@ -1355,8 +1355,8 @@ make test-performance    # Run performance benchmarks
 
 ```bash
 # Using Go commands
-go build -o bin/imagine-server cmd/server/main.go           # Build for current OS
-CGO_ENABLED=0 GOOS=linux go build -o bin/imagine cmd/...    # Build for Linux
+go build -o bin/falco-server cmd/server/main.go           # Build for current OS
+CGO_ENABLED=0 GOOS=linux go build -o bin/falco cmd/...    # Build for Linux
 go run cmd/server/main.go                                   # Run without building
 
 # Using Make commands
@@ -1385,8 +1385,8 @@ make lint                # Run golangci-lint
 
 ```bash
 # Using Docker commands
-docker build -t imagine-service .
-docker run -p 8080:8080 --env-file .env imagine-service
+docker build -t falco-service .
+docker run -p 8080:8080 --env-file .env falco-service
 docker-compose up --build
 docker-compose down
 
@@ -1481,10 +1481,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- 📧 Email: support@imagine-service.com
-- 🐛 Issues: [GitHub Issues](https://github.com/birdple/imagine/issues)
-- 📖 Documentation: [Wiki](https://github.com/birdple/imagine/wiki)
-- 💬 Discussions: [GitHub Discussions](https://github.com/birdple/imagine/discussions)
+- 📧 Email: support@falco-service.com
+- 🐛 Issues: [GitHub Issues](https://github.com/birdple/falco/issues)
+- 📖 Documentation: [Wiki](https://github.com/birdple/falco/wiki)
+- 💬 Discussions: [GitHub Discussions](https://github.com/birdple/falco/discussions)
 
 ---
 
