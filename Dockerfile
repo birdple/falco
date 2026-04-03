@@ -43,7 +43,7 @@ COPY docs/openapi.yaml ./docs/openapi.yaml
 RUN CGO_ENABLED=1 go build \
     -tags 'netgo osusergo' \
     -ldflags="-w -s" \
-    -o imagine-server \
+    -o falco-server \
     cmd/server/main.go
 
 # ----------------------------------------
@@ -73,7 +73,7 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # Copia el binario desde la etapa 'builder'
-COPY --from=builder /app/imagine-server .
+COPY --from=builder /app/falco-server .
 
 # Copia los archivos de configuración
 COPY --from=builder /app/configs ./configs
@@ -95,4 +95,4 @@ EXPOSE 8080
 #     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 # Comando de ejecución
-CMD ["./imagine-server"]
+CMD ["./falco-server"]

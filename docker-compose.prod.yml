@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  imagine-service:
+  falco-service:
     build:
       context: .
       dockerfile: Dockerfile
@@ -77,7 +77,7 @@ services:
         reservations:
           memory: 256M
     networks:
-      - imagine-network
+      - falco-network
 
   # Monitoring with Prometheus metrics
   prometheus:
@@ -96,7 +96,7 @@ services:
       - '--web.enable-lifecycle'
     restart: unless-stopped
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - with-monitoring
 
@@ -115,7 +115,7 @@ services:
     depends_on:
       - prometheus
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - with-monitoring
 
@@ -130,7 +130,7 @@ services:
       - ./deployments/nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
-      - imagine-service
+      - falco-service
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/health"]
@@ -138,7 +138,7 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - imagine-network
+      - falco-network
 
 volumes:
   redis_data:
@@ -147,5 +147,5 @@ volumes:
   nginx_logs:
 
 networks:
-  imagine-network:
+  falco-network:
     driver: bridge

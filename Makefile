@@ -1,8 +1,8 @@
 # Makefile for Imagine Image Processing Service
 
 # Variables
-BINARY_NAME=imagine-server
-DOCKER_IMAGE=imagine-service
+BINARY_NAME=falco-server
+DOCKER_IMAGE=falco-service
 VERSION?=latest
 GO_VERSION=1.21
 
@@ -77,7 +77,7 @@ docker-compose-down:
 monitoring-up:
 	docker-compose --profile monitoring up -d
 	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana: http://localhost:3001 (admin/imagine123)"
+	@echo "Grafana: http://localhost:3001 (admin/falco123)"
 
 .PHONY: monitoring-down
 monitoring-down:
@@ -98,7 +98,7 @@ docker-app-with-monitoring:
 	docker-compose --profile app --profile monitoring up -d
 	@echo "Imagine Service: http://localhost:8080"
 	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana: http://localhost:3001 (admin/imagine123)"
+	@echo "Grafana: http://localhost:3001 (admin/falco123)"
 
 .PHONY: docker-app-with-cache
 docker-app-with-cache:
@@ -125,7 +125,7 @@ docker-full:
 	@echo "Nginx: http://localhost:80"
 	@echo "Imagine Service: http://localhost:8080"
 	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana: http://localhost:3001 (admin/imagine123)"
+	@echo "Grafana: http://localhost:3001 (admin/falco123)"
 	@echo "Valkey (Redis): localhost:6379"
 	@echo "PostgreSQL: localhost:5432"
 
@@ -209,7 +209,7 @@ help:
 	@echo "    docker-build       Build Docker image"
 	@echo "    docker-run         Build and run Docker container"
 	@echo "    docker-compose-up  Run with docker-compose (default)"
-	@echo "    docker-app         Run imagine-service in Docker"
+	@echo "    docker-app         Run falco-service in Docker"
 	@echo "    docker-full        Run ALL services (app, monitoring, cache, db, nginx)"
 	@echo "    docker-all-down    Stop ALL Docker services"
 	@echo "    docker-logs        View all Docker logs"

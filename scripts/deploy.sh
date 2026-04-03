@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 ENVIRONMENT=${ENVIRONMENT:-production}
-IMAGE_NAME="imagine-service"
+IMAGE_NAME="falco-service"
 TAG=${TAG:-latest}
 DOCKER_COMPOSE_FILE="docker-compose.yml"
 

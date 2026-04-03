@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-IMAGE_NAME="imagine-service"
+IMAGE_NAME="falco-service"
 TAG=${TAG:-latest}
 DOCKERFILE=${DOCKERFILE:-Dockerfile}
 BUILD_CONTEXT=${BUILD_CONTEXT:-.}
@@ -166,7 +166,7 @@ while [[ $# -gt 0 ]]; do
             echo
             echo "Options:"
             echo "  --tag=TAG           Docker image tag (default: latest)"
-            echo "  --image=NAME        Docker image name (default: imagine-service)"
+            echo "  --image=NAME        Docker image name (default: falco-service)"
             echo "  --dockerfile=FILE   Dockerfile path (default: Dockerfile)"
             echo "  --context=PATH      Build context path (default: .)"
             echo "  --skip-tests        Skip running tests"

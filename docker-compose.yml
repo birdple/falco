@@ -1,5 +1,5 @@
 services:
-  imagine-service:
+  falco-service:
     build:
       context: .
       dockerfile: Dockerfile
@@ -29,7 +29,7 @@ services:
       retries: 3
       start_period: 40s
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - app
 
@@ -43,7 +43,7 @@ services:
     command: valkey-server --appendonly yes
     restart: unless-stopped
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - with-cache
 
@@ -53,14 +53,14 @@ services:
     ports:
       - "5433:5432"
     environment:
-      - POSTGRES_DB=imagine
-      - POSTGRES_USER=imagine
-      - POSTGRES_PASSWORD=imagine_password
+      - POSTGRES_DB=falco
+      - POSTGRES_USER=falco
+      - POSTGRES_PASSWORD=falco_password
     volumes:
       - postgres_data:/var/lib/postgresql
     restart: unless-stopped
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - with-db
 
@@ -75,10 +75,10 @@ services:
       - ./deployments/nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
-      - imagine-service
+      - falco-service
     restart: unless-stopped
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - with-nginx
 
@@ -100,7 +100,7 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - monitoring
 
@@ -111,7 +111,7 @@ services:
       - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=imagine123
+      - GF_SECURITY_ADMIN_PASSWORD=falco123
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SERVER_ROOT_URL=http://localhost:3001
       - GF_INSTALL_PLUGINS=
@@ -122,7 +122,7 @@ services:
       - prometheus
     restart: unless-stopped
     networks:
-      - imagine-network
+      - falco-network
     profiles:
       - monitoring
 
@@ -134,5 +134,5 @@ volumes:
   grafana_data:
 
 networks:
-  imagine-network:
+  falco-network:
     driver: bridge

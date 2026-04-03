@@ -48,7 +48,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "rate(imagine_http_requests_total[1m])",
+          "expr": "rate(falco_http_requests_total[1m])",
           "legendFormat": "Requests/s",
           "refId": "A"
         }
@@ -87,7 +87,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(imagine_http_request_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(falco_http_request_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "P95 Latency",
           "refId": "A"
         }
@@ -126,7 +126,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "imagine_cache_hits_total / (imagine_cache_hits_total + imagine_cache_misses_total)",
+          "expr": "falco_cache_hits_total / (falco_cache_hits_total + falco_cache_misses_total)",
           "legendFormat": "Hit Ratio",
           "refId": "A"
         }
@@ -165,7 +165,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "imagine_cache_size_bytes",
+          "expr": "falco_cache_size_bytes",
           "legendFormat": "Cache Size",
           "refId": "A"
         }
@@ -219,7 +219,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(imagine_http_requests_total[1m])) by (path)",
+          "expr": "sum(rate(falco_http_requests_total[1m])) by (path)",
           "legendFormat": "{{path}}",
           "refId": "A"
         }
@@ -265,17 +265,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(imagine_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.50, sum(rate(falco_http_request_duration_seconds_bucket[5m])) by (le, path))",
           "legendFormat": "P50 {{path}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(imagine_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.95, sum(rate(falco_http_request_duration_seconds_bucket[5m])) by (le, path))",
           "legendFormat": "P95 {{path}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(imagine_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.99, sum(rate(falco_http_request_duration_seconds_bucket[5m])) by (le, path))",
           "legendFormat": "P99 {{path}}",
           "refId": "C"
         }
@@ -325,7 +325,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(imagine_http_requests_total[5m])) by (status)",
+          "expr": "sum(increase(falco_http_requests_total[5m])) by (status)",
           "legendFormat": "HTTP {{status}}",
           "refId": "A"
         }
@@ -371,7 +371,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(imagine_http_response_size_bytes_sum[5m])) by (path)",
+          "expr": "sum(rate(falco_http_response_size_bytes_sum[5m])) by (path)",
           "legendFormat": "{{path}}",
           "refId": "A"
         }
@@ -425,7 +425,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(imagine_image_processing_total[5m])) by (output_format, status)",
+          "expr": "sum(rate(falco_image_processing_total[5m])) by (output_format, status)",
           "legendFormat": "{{output_format}} - {{status}}",
           "refId": "A"
         }
@@ -471,7 +471,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(imagine_image_processing_duration_seconds_bucket[5m])) by (le, operation))",
+          "expr": "histogram_quantile(0.95, sum(rate(falco_image_processing_duration_seconds_bucket[5m])) by (le, operation))",
           "legendFormat": "P95 {{operation}}",
           "refId": "A"
         }
@@ -528,12 +528,12 @@
       },
       "targets": [
         {
-          "expr": "rate(imagine_cache_hits_total[5m])",
+          "expr": "rate(falco_cache_hits_total[5m])",
           "legendFormat": "Hits",
           "refId": "A"
         },
         {
-          "expr": "rate(imagine_cache_misses_total[5m])",
+          "expr": "rate(falco_cache_misses_total[5m])",
           "legendFormat": "Misses",
           "refId": "B"
         }
@@ -579,7 +579,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(imagine_storage_operations_total[5m])) by (operation, status)",
+          "expr": "sum(rate(falco_storage_operations_total[5m])) by (operation, status)",
           "legendFormat": "{{operation}} - {{status}}",
           "refId": "A"
         }
@@ -591,13 +591,13 @@
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["imagine", "image-processing"],
+  "tags": ["falco", "image-processing"],
   "templating": { "list": [] },
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "🖼️ Imagine - Image Processing Dashboard",
-  "uid": "imagine-dashboard",
+  "uid": "falco-dashboard",
   "version": 1,
   "weekStart": ""
 }
