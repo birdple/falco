@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/cshum/vipsgen/vips"
 )
 
@@ -56,8 +58,10 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	cacheKey := p.generateCacheKey(inputData, params)
 
 	// Check cache
+	m := metrics.Default()
 	if p.cache != nil {
 		if cachedData, found := p.cache.Get(cacheKey); found {
+			m.CacheHits.Inc()
 			return &ProcessedImage{
 				Data:     io.NopCloser(bytes.NewReader(cachedData)),
 				Metadata: &ImageMetadata{CreatedAt: time.Now()},
@@ -65,6 +69,7 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 				Cached:   true,
 			}, nil
 		}
+		m.CacheMisses.Inc()
 	}
 
 	// Load image from buffer
@@ -88,11 +93,16 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	// Determine output format
 	outputFormat := p.determineOutputFormat(params, format)
 
-	// Encode image
-	processedData, err := p.encodeImage(img, outputFormat, params.Quality)
+	// Encode image (actualFormat may differ from outputFormat on fallback, e.g. AVIF→WebP)
+	processedData, actualFormat, err := p.encodeImage(img, outputFormat, params.Quality)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode image: %w", err)
 	}
+	outputFormat = actualFormat
+
+	// Track processing size metrics
+	m.ImageProcessingSize.WithLabelValues("input").Observe(float64(len(inputData)))
+	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(len(processedData)))
 
 	// Cache result
 	if p.cache != nil {
@@ -129,7 +139,9 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		}
 		left, top, width, height, err := img.FindTrim(&vips.FindTrimOptions{Threshold: threshold})
 		if err == nil && width > 0 && height > 0 {
-			_ = img.ExtractArea(left, top, width, height)
+			if err := img.ExtractArea(left, top, width, height); err != nil {
+				return fmt.Errorf("trim extract failed: %w", err)
+			}
 		}
 	}
 
@@ -380,8 +392,9 @@ func (p *VipsProcessor) resizeImage(img *vips.Image, params *ProcessingParams) e
 	}
 }
 
-// encodeImage encodes the image to the specified format
-func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality int) ([]byte, error) {
+// encodeImage encodes the image to the specified format.
+// Returns the encoded bytes and the actual format used (may differ from requested if fallback occurred).
+func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality int) ([]byte, ImageFormat, error) {
 	if quality <= 0 {
 		quality = GetDefaultQuality(format)
 	}
@@ -392,7 +405,12 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 	// Get buffer from pool
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	defer bufferPool.Put(buf)
+	defer func() {
+		// Discard buffers that grew beyond 8MB to prevent memory bloat
+		if buf.Cap() <= 8*1024*1024 {
+			bufferPool.Put(buf)
+		}
+	}()
 
 	target := vips.NewTarget(nopWriteCloser{buf})
 	defer target.Close()
@@ -452,27 +470,30 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		err = img.HeifsaveTarget(target, &vips.HeifsaveTargetOptions{
 			Q:           quality,
 			Lossless:    quality == 100,
-			Effort:      6, // Balanced: 8 is very slow for AVIF
+			Effort:      6,
 			Compression: vips.HeifCompressionAv1,
 		})
-		// Fallback to WebP if libvips lacks AV1 support
 		if err != nil {
+			// Log the fallback so clients can detect AV1 support issues
+			logger.Warn().Err(err).Msg("AVIF encoding failed, falling back to WebP")
+			buf.Reset()
+			format = FormatWebP // Update format so Content-Type is correct
 			err = img.WebpsaveTarget(target, &vips.WebpsaveTargetOptions{
 				Q: quality,
 			})
 		}
 	default:
-		return nil, fmt.Errorf("unsupported format: %s", format)
+		return nil, format, fmt.Errorf("unsupported format: %s", format)
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, format, err
 	}
 
 	// Copy buffer data before returning to pool
 	result := make([]byte, buf.Len())
 	copy(result, buf.Bytes())
-	return result, nil
+	return result, format, nil
 }
 
 // GetMetadata extracts metadata from an image
