@@ -36,19 +36,12 @@ func (d *defaultsProvider) setServerDefaults(v *viper.Viper) {
 	v.SetDefault("server.shutdown_timeout", "30s")
 }
 
-// setStorageDefaults sets storage default values
+// setStorageDefaults sets storage default values.
+// If no buckets are configured, a default filesystem bucket is created.
 func (d *defaultsProvider) setStorageDefaults(v *viper.Viper) {
-	v.SetDefault("storage.primary", "filesystem")
-	v.SetDefault("storage.secondary", "none")
-	v.SetDefault("storage.replication", "sync")
-	v.SetDefault("storage.mode", "single")
-	v.SetDefault("storage.default", "")
-	v.SetDefault("storage.local.path", "./data/images")
-	v.SetDefault("storage.local.create_dirs", true)
-	v.SetDefault("storage.minio.bucket", "your-minio-bucket")
-	v.SetDefault("storage.minio.endpoint", "http://localhost:9000")
-	v.SetDefault("storage.minio.region", "us-east-1")
-	v.SetDefault("storage.minio.secure", false)
+	v.SetDefault("storage.default", "default")
+	v.SetDefault("storage.buckets.default.type", "filesystem")
+	v.SetDefault("storage.buckets.default.path", "./data/images")
 }
 
 // setCacheDefaults sets cache default values
@@ -79,8 +72,6 @@ func (d *defaultsProvider) setSecurityDefaults(v *viper.Viper) {
 	v.SetDefault("security.cors.headers", []string{"Content-Type", "Authorization"})
 	v.SetDefault("security.rate_limit.requests_per_minute", 1000)
 	v.SetDefault("security.rate_limit.burst", 100)
-	v.SetDefault("security.honeypot.db_path", "data/honeypot.db")
-	v.SetDefault("security.honeypot.ban_threshold", 3)
 	v.SetDefault("security.hmac_signature_size", 32)
 	v.SetDefault("security.hmac_required", false)
 }

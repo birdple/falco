@@ -23,64 +23,59 @@ type ServerConfig struct {
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
 }
 
-// StorageConfig holds storage-related configuration
+// StorageConfig holds the unified storage configuration based on bucket groups.
 type StorageConfig struct {
-	Primary     string             `mapstructure:"primary"`
-	Secondary   string             `mapstructure:"secondary"`
-	Replication string             `mapstructure:"replication"`
-	Mode        string             `mapstructure:"mode"`
-	Default     string             `mapstructure:"default"`
-	Local       LocalStorageConfig `mapstructure:"local"`
-	S3          S3StorageConfig    `mapstructure:"s3"`
-	MinIO       MinIOStorageConfig `mapstructure:"minio"`
-	R2          R2StorageConfig    `mapstructure:"r2"`
-	Backends    map[string]BackendConfig `mapstructure:"backends"`
+	Default string                  `mapstructure:"default"`
+	Buckets map[string]BucketConfig `mapstructure:"buckets"`
+	Groups  map[string]GroupConfig  `mapstructure:"groups"`
 }
 
-// LocalStorageConfig holds local filesystem storage configuration
-type LocalStorageConfig struct {
-	Path       string `mapstructure:"path"`
-	CreateDirs bool   `mapstructure:"create_dirs"`
+// BucketConfig holds configuration for a named storage bucket.
+type BucketConfig struct {
+	Type      string            `mapstructure:"type"`       // s3, minio, r2, filesystem
+	Path      string            `mapstructure:"path"`       // filesystem only
+	Bucket    string            `mapstructure:"bucket"`     // s3/minio/r2 bucket name
+	Region    string            `mapstructure:"region"`     // s3/minio
+	Endpoint  string            `mapstructure:"endpoint"`   // s3/minio
+	AccountID string            `mapstructure:"account_id"` // r2
+	AccessKey string            `mapstructure:"access_key"`
+	SecretKey string            `mapstructure:"secret_key"`
+	Secure    bool              `mapstructure:"secure"`  // minio
+	Backups   []BackupRef       `mapstructure:"backups"` // backup targets
+	Keys      []BucketKeyConfig `mapstructure:"keys"`    // bucket-level API keys
 }
 
-// S3StorageConfig holds S3 storage configuration
-type S3StorageConfig struct {
-	Bucket    string `mapstructure:"bucket"`
-	Region    string `mapstructure:"region"`
-	Endpoint  string `mapstructure:"endpoint"`
-	AccessKey string `mapstructure:"access_key"`
-	SecretKey string `mapstructure:"secret_key"`
+// BucketKeyConfig defines an API key scoped to a specific bucket.
+type BucketKeyConfig struct {
+	Name string `mapstructure:"name"`
+	Key  string `mapstructure:"key"`
 }
 
-// MinIOStorageConfig holds MinIO storage configuration
-type MinIOStorageConfig struct {
-	Bucket    string `mapstructure:"bucket"`
-	Endpoint  string `mapstructure:"endpoint"`
-	Region    string `mapstructure:"region"`
-	AccessKey string `mapstructure:"access_key"`
-	SecretKey string `mapstructure:"secret_key"`
-	Secure    bool   `mapstructure:"secure"`
+// BackupRef references another bucket as a backup target.
+type BackupRef struct {
+	Target string `mapstructure:"target"` // name of another bucket
+	Mode   string `mapstructure:"mode"`   // sync, async, read-fallback
 }
 
-// R2StorageConfig holds Cloudflare R2 storage configuration
-type R2StorageConfig struct {
-	Bucket    string `mapstructure:"bucket"`
-	AccountID string `mapstructure:"account_id"`
-	AccessKey string `mapstructure:"access_key"`
-	SecretKey string `mapstructure:"secret_key"`
+// GroupConfig defines a logical group of buckets with shared keys.
+type GroupConfig struct {
+	Buckets   []string                  `mapstructure:"buckets"`
+	Keys      []GroupKeyConfig          `mapstructure:"keys"`
+	Subgroups map[string]SubgroupConfig `mapstructure:"subgroups"`
 }
 
-// BackendConfig holds configuration for a named storage backend (multi mode)
-type BackendConfig struct {
-	Type      string `mapstructure:"type"`
-	Path      string `mapstructure:"path"`
-	Bucket    string `mapstructure:"bucket"`
-	Region    string `mapstructure:"region"`
-	Endpoint  string `mapstructure:"endpoint"`
-	AccountID string `mapstructure:"account_id"`
-	AccessKey string `mapstructure:"access_key"`
-	SecretKey string `mapstructure:"secret_key"`
-	Secure    bool   `mapstructure:"secure"`
+// SubgroupConfig defines a subgroup within a group (max 1 level deep).
+// Inherits keys from the parent group.
+type SubgroupConfig struct {
+	Buckets []string         `mapstructure:"buckets"`
+	Keys    []GroupKeyConfig `mapstructure:"keys"`
+}
+
+// GroupKeyConfig defines an API key scoped to a group or subgroup.
+type GroupKeyConfig struct {
+	Name    string   `mapstructure:"name"`
+	Key     string   `mapstructure:"key"`
+	Buckets []string `mapstructure:"buckets"` // optional: restrict to subset of group buckets
 }
 
 // CacheConfig holds cache-related configuration
@@ -124,18 +119,8 @@ type SecurityConfig struct {
 	// HMAC URL signing
 	HMACKey           string `mapstructure:"hmac_key"`
 	HMACKeySalt       string `mapstructure:"hmac_salt"`
-	HMACSignatureSize int    `mapstructure:"hmac_signature_size"` // bytes, default 32
-	HMACRequired      bool   `mapstructure:"hmac_required"`       // if false, signature is optional
-	// Scoped API keys with restricted access to specific storages/buckets
-	ScopedKeys []ScopedKeyConfig `mapstructure:"scoped_keys"`
-}
-
-// ScopedKeyConfig defines an API key with restricted access scope
-type ScopedKeyConfig struct {
-	Name     string   `mapstructure:"name"`     // Human-readable identifier (e.g. "client-a")
-	Key      string   `mapstructure:"key"`      // The API key value
-	Storages []string `mapstructure:"storages"` // Allowed storage backends (multi mode names)
-	Buckets  []string `mapstructure:"buckets"`  // Allowed buckets
+	HMACSignatureSize int    `mapstructure:"hmac_signature_size"`
+	HMACRequired      bool   `mapstructure:"hmac_required"`
 }
 
 // LoggingConfig holds logging configuration
