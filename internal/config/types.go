@@ -94,6 +94,7 @@ type SecurityConfig struct {
 		RequestsPerMinute int `mapstructure:"requests_per_minute"`
 		Burst             int `mapstructure:"burst"`
 	} `mapstructure:"rate_limit"`
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
 	// HMAC URL signing
 	HMACKey           string `mapstructure:"hmac_key"`
 	HMACKeySalt       string `mapstructure:"hmac_salt"`

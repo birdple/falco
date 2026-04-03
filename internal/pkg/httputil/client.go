@@ -10,32 +10,79 @@ import (
 	"time"
 )
 
-// GetClientIP extracts the client IP address from the request
+// trustedProxyCIDRs holds the parsed trusted proxy networks.
+// Set via SetTrustedProxies at startup. When empty, forwarded headers
+// (X-Forwarded-For, X-Real-IP) are trusted from any source (legacy behavior).
+var trustedProxyCIDRs []*net.IPNet
+
+// SetTrustedProxies parses and stores the list of trusted proxy CIDRs/IPs.
+// Call once at startup. When set, X-Forwarded-For and X-Real-IP headers
+// are only trusted if the direct connection comes from a trusted proxy.
+func SetTrustedProxies(cidrs []string) {
+	trustedProxyCIDRs = nil
+	for _, cidr := range cidrs {
+		if !strings.Contains(cidr, "/") {
+			// Bare IP — make it a /32 or /128
+			if strings.Contains(cidr, ":") {
+				cidr += "/128"
+			} else {
+				cidr += "/32"
+			}
+		}
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		trustedProxyCIDRs = append(trustedProxyCIDRs, network)
+	}
+}
+
+// isTrustedProxy checks if the remote address is from a trusted proxy
+func isTrustedProxy(remoteIP string) bool {
+	if len(trustedProxyCIDRs) == 0 {
+		return true // no trusted proxies configured — trust all (legacy)
+	}
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
+	}
+	for _, network := range trustedProxyCIDRs {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetClientIP extracts the client IP address from the request.
+// Forwarded headers are only trusted when the direct connection is from a trusted proxy.
 func GetClientIP(r *http.Request) string {
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			ip := strings.TrimSpace(ips[0])
-			if net.ParseIP(ip) != nil {
-				return ip
+	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remoteIP = r.RemoteAddr
+	}
+
+	if isTrustedProxy(remoteIP) {
+		xff := r.Header.Get("X-Forwarded-For")
+		if xff != "" {
+			ips := strings.Split(xff, ",")
+			if len(ips) > 0 {
+				ip := strings.TrimSpace(ips[0])
+				if net.ParseIP(ip) != nil {
+					return ip
+				}
+			}
+		}
+
+		xri := r.Header.Get("X-Real-IP")
+		if xri != "" {
+			if net.ParseIP(xri) != nil {
+				return xri
 			}
 		}
 	}
 
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		if net.ParseIP(xri) != nil {
-			return xri
-		}
-	}
-
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-
-	return ip
+	return remoteIP
 }
 
 // GetUserAgent returns the User-Agent header from the request
@@ -138,8 +185,40 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 	return false
 }
 
-// DownloadURL downloads a file from a URL with timeout and size limits
+// DownloadURL downloads a file from a URL with timeout, size limits, and retry.
+// Retries up to 3 times with exponential backoff on transient errors.
 func DownloadURL(ctx context.Context, client *http.Client, url string, maxSize int64) ([]byte, string, error) {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			// Exponential backoff with jitter: 500ms, 1s, 2s base
+			backoff := time.Duration(1<<uint(attempt-1)) * 500 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, "", ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		data, contentType, err := downloadOnce(ctx, client, url, maxSize)
+		if err == nil {
+			return data, contentType, nil
+		}
+
+		// Don't retry on non-transient errors (validation failures, too large, etc.)
+		if !isTransientError(err) {
+			return nil, "", err
+		}
+		lastErr = err
+	}
+
+	return nil, "", fmt.Errorf("download failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// downloadOnce performs a single download attempt
+func downloadOnce(ctx context.Context, client *http.Client, url string, maxSize int64) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create request: %w", err)
@@ -150,6 +229,10 @@ func DownloadURL(ctx context.Context, client *http.Client, url string, maxSize i
 		return nil, "", fmt.Errorf("failed to download: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 500 {
+		return nil, "", fmt.Errorf("server error: status %d", resp.StatusCode)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
@@ -176,4 +259,12 @@ func DownloadURL(ctx context.Context, client *http.Client, url string, maxSize i
 	}
 
 	return data, contentType, nil
+}
+
+// isTransientError checks if an error is likely transient and worth retrying
+func isTransientError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "server error:") ||
+		strings.Contains(msg, "failed to download:") ||
+		strings.Contains(msg, "failed to read response:")
 }
