@@ -151,12 +151,10 @@ func (s *Server) setupRouter() {
 		// Protected endpoints
 		r.Group(func(r chi.Router) {
 			if s.config.Security.APIKeyRequired {
-				if len(s.config.Security.ScopedKeys) > 0 {
-					// Use scoped auth: validates admin key + scoped keys, injects scope into context
-					scopedAuth := apimw.NewScopedAPIKeyAuth(s.config.Security.APIKey, s.config.Security.ScopedKeys)
+				scopedAuth := apimw.NewScopedAPIKeyAuth(s.config.Security.APIKey, s.config)
+				if scopedAuth.HasScopedKeys() {
 					r.Use(scopedAuth.Handler)
 				} else {
-					// Legacy: single admin key only
 					apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
 					r.Use(apiKeyAuth.Handler)
 				}

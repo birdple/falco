@@ -18,21 +18,9 @@ const scopeContextKey contextKey = "api_scope"
 // APIScope holds the access restrictions for the current request.
 // A nil scope (or IsAdmin=true) means unrestricted access.
 type APIScope struct {
-	IsAdmin  bool
-	KeyName  string
-	Storages map[string]bool // allowed storage backend names
-	Buckets  map[string]bool // allowed bucket names
-}
-
-// CanAccessStorage returns true if the scope allows the given storage name.
-func (s *APIScope) CanAccessStorage(name string) bool {
-	if s == nil || s.IsAdmin {
-		return true
-	}
-	if len(s.Storages) == 0 {
-		return true // no storage restriction, only bucket restriction
-	}
-	return s.Storages[name]
+	IsAdmin bool
+	KeyName string
+	Buckets map[string]bool // allowed bucket names
 }
 
 // CanAccessBucket returns true if the scope allows the given bucket name.
@@ -41,7 +29,7 @@ func (s *APIScope) CanAccessBucket(bucket string) bool {
 		return true
 	}
 	if len(s.Buckets) == 0 {
-		return true // no bucket restriction, only storage restriction
+		return true
 	}
 	return s.Buckets[bucket]
 }
@@ -54,7 +42,8 @@ func GetScope(ctx context.Context) *APIScope {
 }
 
 // ScopedAPIKeyAuth provides API key authentication with optional scoped access.
-// It checks the provided key against the admin key and all configured scoped keys.
+// It checks the provided key against the admin key and all collected scoped keys
+// (from bucket-level keys, group keys, and subgroup keys).
 type ScopedAPIKeyAuth struct {
 	adminKey           string
 	scopedKeys         map[string]*APIScope // key value -> scope
@@ -63,21 +52,20 @@ type ScopedAPIKeyAuth struct {
 }
 
 // NewScopedAPIKeyAuth creates a new scoped API key auth middleware.
-func NewScopedAPIKeyAuth(adminKey string, scopedKeys []config.ScopedKeyConfig) *ScopedAPIKeyAuth {
-	skMap := make(map[string]*APIScope, len(scopedKeys))
-	for _, sk := range scopedKeys {
-		storages := make(map[string]bool, len(sk.Storages))
-		for _, s := range sk.Storages {
-			storages[strings.TrimSpace(s)] = true
-		}
-		buckets := make(map[string]bool, len(sk.Buckets))
-		for _, b := range sk.Buckets {
+// It uses Config.CollectAllKeys() to resolve all bucket/group/subgroup keys
+// into a flat key -> scope map.
+func NewScopedAPIKeyAuth(adminKey string, cfg *config.Config) *ScopedAPIKeyAuth {
+	allKeys := cfg.CollectAllKeys()
+
+	skMap := make(map[string]*APIScope, len(allKeys))
+	for keyVal, scope := range allKeys {
+		buckets := make(map[string]bool, len(scope.Buckets))
+		for b := range scope.Buckets {
 			buckets[strings.TrimSpace(b)] = true
 		}
-		skMap[sk.Key] = &APIScope{
-			KeyName:  sk.Name,
-			Storages: storages,
-			Buckets:  buckets,
+		skMap[keyVal] = &APIScope{
+			KeyName: scope.Name,
+			Buckets: buckets,
 		}
 	}
 
@@ -92,6 +80,11 @@ func NewScopedAPIKeyAuth(adminKey string, scopedKeys []config.ScopedKeyConfig) *
 			"/api/v1/images/",
 		},
 	}
+}
+
+// HasScopedKeys returns true if there are any scoped keys configured.
+func (a *ScopedAPIKeyAuth) HasScopedKeys() bool {
+	return len(a.scopedKeys) > 0
 }
 
 // Handler returns the middleware handler.

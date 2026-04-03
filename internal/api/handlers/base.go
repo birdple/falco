@@ -136,12 +136,16 @@ func (h *Handler) getStorageBackend(storageName, bucket string) (storage.Storage
 func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket string) (storage.StorageBackend, error) {
 	scope := apimw.GetScope(r.Context())
 
-	// Enforce storage access
-	if scope != nil && storageName != "" && !scope.CanAccessStorage(storageName) {
-		return nil, fmt.Errorf("access denied to storage %q", storageName)
+	// Enforce bucket access (storageName is now the bucket name in the registry)
+	effectiveBucket := storageName
+	if effectiveBucket == "" {
+		effectiveBucket = bucket
+	}
+	if scope != nil && effectiveBucket != "" && !scope.CanAccessBucket(effectiveBucket) {
+		return nil, fmt.Errorf("access denied to bucket %q", effectiveBucket)
 	}
 
-	// Enforce bucket access
+	// Enforce bucket-level access for the provider bucket override
 	if scope != nil && bucket != "" && !scope.CanAccessBucket(bucket) {
 		return nil, fmt.Errorf("access denied to bucket %q", bucket)
 	}
