@@ -259,7 +259,8 @@ func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListRes
 	return results, nil
 }
 
-// getFilePath returns the file path for a given key
+// getFilePath returns the file path for a given key.
+// The result is guaranteed to be contained within basePath (path traversal safe).
 func (fs *FilesystemStorage) getFilePath(key string) string {
 	// Create hash-based directory structure for better performance
 	hash := md5.Sum([]byte(key))
@@ -269,7 +270,16 @@ func (fs *FilesystemStorage) getFilePath(key string) string {
 	dir := hashStr[:2]
 	filename := hashStr[2:]
 
-	return filepath.Join(fs.basePath, dir, filename)
+	result := filepath.Join(fs.basePath, dir, filename)
+
+	// SECURITY: Ensure path is always within basePath to prevent path traversal
+	result = filepath.Clean(result)
+	if !strings.HasPrefix(result, fs.basePath) {
+		// Fallback to a safe path derived from the hash only
+		return filepath.Join(fs.basePath, hashStr)
+	}
+
+	return result
 }
 
 // getMetadataPath returns the metadata path for a given key
