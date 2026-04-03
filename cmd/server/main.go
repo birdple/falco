@@ -11,6 +11,7 @@ import (
 	"github.com/birdple/falco/internal/api"
 	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
@@ -34,10 +35,17 @@ func main() {
 
 	logger.Info().Msg("Starting Falco Image Processing Service")
 
+	// Configure trusted proxies for X-Forwarded-For / X-Real-IP header trust
+	if len(cfg.Security.TrustedProxies) > 0 {
+		httputil.SetTrustedProxies(cfg.Security.TrustedProxies)
+		logger.Info().Strs("trusted_proxies", cfg.Security.TrustedProxies).Msg("Trusted proxies configured")
+	}
+
 	// Initialize VIPS
 	vips.Startup(nil)
 	defer vips.Shutdown()
 
+	// Log sanitized configuration (no secrets)
 	logger.Info().
 		Str("storage_primary", cfg.Storage.Primary).
 		Str("storage_secondary", cfg.Storage.Secondary).
@@ -45,7 +53,22 @@ func main() {
 		Str("minio_bucket", cfg.Storage.MinIO.Bucket).
 		Str("minio_endpoint", cfg.Storage.MinIO.Endpoint).
 		Str("local_path", cfg.GetLocalStoragePath()).
-		Msg("Storage configuration loaded")
+		Int("port", cfg.Server.Port).
+		Str("host", cfg.Server.Host).
+		Int("cache_size_mb", cfg.Cache.SizeMB).
+		Int("cache_ttl_hours", cfg.Cache.TTLHrs).
+		Bool("redis_enabled", cfg.Cache.EnableRedis).
+		Int("max_file_size_mb", cfg.Processing.MaxFileSizeMB).
+		Int("default_quality", cfg.Processing.DefaultQuality).
+		Str("default_format", cfg.Processing.DefaultFormat).
+		Int("concurrent_workers", cfg.Processing.ConcurrentWorkers).
+		Bool("api_key_required", cfg.Security.APIKeyRequired).
+		Strs("cors_origins", cfg.Security.CORS.Origins).
+		Int("rate_limit_rpm", cfg.Security.RateLimit.RequestsPerMinute).
+		Bool("hmac_required", cfg.Security.HMACRequired).
+		Bool("metrics_enabled", cfg.Development.EnableMetrics).
+		Bool("debug", cfg.Development.Debug).
+		Msg("Configuration loaded")
 
 	// Create application context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -187,22 +210,10 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 		logger.Info().Msg("Cache cleanup completed")
 	}
 
+	// Storage backends (S3, MinIO, filesystem) use pooled HTTP clients
+	// that are cleaned up by the Go runtime. No explicit close needed.
 	if storageBackend != nil {
-		logger.Info().Msg("Cleaning up storage connections...")
-		logger.Info().Msg("Storage cleanup completed")
-	}
-
-	logger.Info().Msg("Cleaning up temporary files...")
-	cleanupDone := make(chan struct{})
-	go func() {
-		defer close(cleanupDone)
-	}()
-
-	select {
-	case <-cleanupDone:
-		logger.Info().Msg("Temporary file cleanup completed")
-	case <-ctx.Done():
-		logger.Warn().Msg("Temporary file cleanup interrupted by shutdown timeout")
+		logger.Info().Msg("Storage connections released")
 	}
 }
 
