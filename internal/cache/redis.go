@@ -10,7 +10,6 @@ import (
 // RedisCache implements a Redis-based cache for persistent storage
 type RedisCache struct {
 	client *redis.Client
-	ctx    context.Context
 	ttl    time.Duration
 }
 
@@ -22,23 +21,25 @@ func NewRedisCache(url string, ttl time.Duration) (*RedisCache, error) {
 	}
 
 	client := redis.NewClient(opts)
-	ctx := context.Background()
 
 	// Test connection
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, err
 	}
 
 	return &RedisCache{
 		client: client,
-		ctx:    ctx,
 		ttl:    ttl,
 	}, nil
 }
 
 // Get retrieves a value from Redis
 func (r *RedisCache) Get(key string) ([]byte, bool) {
-	val, err := r.client.Get(r.ctx, key).Bytes()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	val, err := r.client.Get(ctx, key).Bytes()
 	if err != nil {
 		return nil, false
 	}
@@ -50,17 +51,23 @@ func (r *RedisCache) Set(key string, value []byte, ttl time.Duration) error {
 	if ttl == 0 {
 		ttl = r.ttl
 	}
-	return r.client.Set(r.ctx, key, value, ttl).Err()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return r.client.Set(ctx, key, value, ttl).Err()
 }
 
 // Delete removes an item from Redis
 func (r *RedisCache) Delete(key string) {
-	r.client.Del(r.ctx, key)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r.client.Del(ctx, key)
 }
 
 // Clear removes all items (CAUTION: FLUSHDB)
 func (r *RedisCache) Clear() {
-	r.client.FlushDB(r.ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.client.FlushDB(ctx)
 }
 
 // Stats returns Redis statistics
@@ -80,18 +87,22 @@ func (r *RedisCache) Stats() interface{} {
 
 // Contains checks if a key exists in Redis
 func (r *RedisCache) Contains(key string) bool {
-	n, err := r.client.Exists(r.ctx, key).Result()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	n, err := r.client.Exists(ctx, key).Result()
 	return err == nil && n > 0
 }
 
 // Keys returns all keys in Redis (CAUTION: KEYS * is slow)
 func (r *RedisCache) Keys() []string {
-	return r.client.Keys(r.ctx, "*").Val()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return r.client.Keys(ctx, "*").Val()
 }
 
-// Size returns total used memory in bytes according to info
+// Size returns total used memory in bytes
 func (r *RedisCache) Size() int64 {
-	return 0 // Complex to get accurately without parsing INFO
+	return 0
 }
 
 // MaxSize returns 0 for Redis as it's managed externally
@@ -101,7 +112,9 @@ func (r *RedisCache) MaxSize() int64 {
 
 // Len returns the number of keys in the current DB
 func (r *RedisCache) Len() int {
-	return int(r.client.DBSize(r.ctx).Val())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return int(r.client.DBSize(ctx).Val())
 }
 
 // Stop closes the Redis client
