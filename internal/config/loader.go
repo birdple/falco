@@ -65,7 +65,6 @@ func (l *loader) Load() (*Config, error) {
 func (l *loader) loadFromFile(v *viper.Viper) error {
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
-	v.AddConfigPath("./configs")
 	v.AddConfigPath(".")
 
 	// Config file is optional
