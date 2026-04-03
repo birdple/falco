@@ -9,6 +9,7 @@ import (
 // ImageMetadata holds metadata about stored images
 type ImageMetadata struct {
 	ID           string    `json:"id"`
+	StorageKey   string    `json:"storage_key,omitempty"`
 	OriginalName string    `json:"original_name"`
 	Format       string    `json:"format"`
 	Size         int64     `json:"size"`

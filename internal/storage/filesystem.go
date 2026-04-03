@@ -77,8 +77,9 @@ func (fs *FilesystemStorage) Store(ctx context.Context, key string, data io.Read
 		return fmt.Errorf("failed to write data: %w", err)
 	}
 
-	// Update metadata with actual size
+	// Update metadata with actual size and storage key
 	metadata.Size = size
+	metadata.StorageKey = key
 	metadata.CreatedAt = time.Now()
 
 	// Close temp file before moving
@@ -222,33 +223,49 @@ func (fs *FilesystemStorage) GetStats(ctx context.Context) (*StorageStats, error
 	return stats, nil
 }
 
-// List lists objects with the given prefix
+// List lists objects with the given prefix.
+// It reads each .meta.json to recover the original storage key,
+// since file paths on disk are MD5-hashed and not human-readable.
 func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var results []ListResult
 
-	// Walk the directory to find files matching the prefix
 	err := filepath.Walk(fs.basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip directories and metadata files
-		if info.IsDir() || strings.HasSuffix(path, ".meta.json") {
+		// We only care about metadata files
+		if info.IsDir() || !strings.HasSuffix(path, ".meta.json") {
 			return nil
 		}
 
-		// Get relative path from base path
-		relPath, err := filepath.Rel(fs.basePath, path)
-		if err != nil {
-			return err
+		meta, readErr := fs.readMetadata(path)
+		if readErr != nil {
+			return nil // skip unreadable metadata
 		}
 
-		// Check if the relative path starts with the prefix
-		if prefix == "" || strings.HasPrefix(relPath, prefix) {
+		// Determine the original storage key
+		key := meta.StorageKey
+		if key == "" {
+			// Fallback for old files without StorageKey: use the ID directly
+			key = meta.ID
+		}
+
+		if prefix == "" || strings.HasPrefix(key, prefix) {
+			// Get the actual image file size (not the metadata file)
+			imgPath := strings.TrimSuffix(path, ".meta.json")
+			imgInfo, statErr := os.Stat(imgPath)
+			size := meta.Size
+			modified := meta.CreatedAt
+			if statErr == nil {
+				size = imgInfo.Size()
+				modified = imgInfo.ModTime()
+			}
+
 			results = append(results, ListResult{
-				Key:      relPath,
-				Size:     info.Size(),
-				Modified: info.ModTime(),
+				Key:      key,
+				Size:     size,
+				Modified: modified,
 			})
 		}
 
