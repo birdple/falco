@@ -58,8 +58,8 @@ func TestSetEnvValue_StringKeys(t *testing.T) {
 	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
 	v := viper.New()
 
-	l.setEnvValue(v, "storage.primary", "minio")
-	assert.Equal(t, "minio", v.GetString("storage.primary"))
+	l.setEnvValue(v, "storage.default", "images")
+	assert.Equal(t, "images", v.GetString("storage.default"))
 
 	l.setEnvValue(v, "logging.level", "debug")
 	assert.Equal(t, "debug", v.GetString("logging.level"))
@@ -72,7 +72,7 @@ func TestGetEnvMappings(t *testing.T) {
 	// Verify some key mappings exist
 	assert.Equal(t, "server.port", mappings["PORT"])
 	assert.Equal(t, "server.host", mappings["HOST"])
-	assert.Equal(t, "storage.primary", mappings["STORAGE_PRIMARY"])
+	assert.Equal(t, "storage.default", mappings["STORAGE_DEFAULT"])
 	assert.Equal(t, "security.api_key", mappings["API_KEY"])
 	assert.Equal(t, "logging.level", mappings["LOG_LEVEL"])
 	assert.Equal(t, "security.hmac_key", mappings["HMAC_KEY"])
