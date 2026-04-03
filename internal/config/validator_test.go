@@ -14,8 +14,10 @@ func validConfig() *Config {
 			Host: "0.0.0.0",
 		},
 		Storage: StorageConfig{
-			Primary:   "filesystem",
-			Secondary: "none",
+			Default: "local",
+			Buckets: map[string]BucketConfig{
+				"local": {Type: "filesystem", Path: "./data/images"},
+			},
 		},
 		Cache: CacheConfig{
 			SizeMB: 256,
@@ -67,46 +69,114 @@ func TestValidator_EmptyHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "host cannot be empty")
 }
 
-func TestValidator_InvalidPrimaryStorage(t *testing.T) {
+func TestValidator_NoBuckets(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Storage.Primary = "invalid"
+	cfg.Storage.Buckets = map[string]BucketConfig{}
 	err := v.Validate(cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid primary storage")
+	assert.Contains(t, err.Error(), "at least one bucket")
 }
 
-func TestValidator_ValidPrimaryStorageTypes(t *testing.T) {
+func TestValidator_DefaultBucketMissing(t *testing.T) {
 	v := NewValidator()
-	for _, storageType := range []string{"filesystem", "s3", "minio"} {
-		t.Run(storageType, func(t *testing.T) {
+	cfg := validConfig()
+	cfg.Storage.Default = "nonexistent"
+	err := v.Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "default bucket")
+}
+
+func TestValidator_InvalidBucketType(t *testing.T) {
+	v := NewValidator()
+	cfg := validConfig()
+	cfg.Storage.Buckets["local"] = BucketConfig{Type: "invalid"}
+	err := v.Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid type")
+}
+
+func TestValidator_ValidBucketTypes(t *testing.T) {
+	v := NewValidator()
+	for _, bucketType := range []string{"filesystem", "s3", "minio", "r2"} {
+		t.Run(bucketType, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Storage.Primary = storageType
+			cfg.Storage.Buckets["local"] = BucketConfig{Type: bucketType}
 			err := v.Validate(cfg)
 			assert.NoError(t, err)
 		})
 	}
 }
 
-func TestValidator_InvalidSecondaryStorage(t *testing.T) {
+func TestValidator_BackupTargetNotFound(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Storage.Secondary = "invalid"
+	cfg.Storage.Buckets["local"] = BucketConfig{
+		Type: "filesystem",
+		Backups: []BackupRef{
+			{Target: "nonexistent", Mode: "sync"},
+		},
+	}
 	err := v.Validate(cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid secondary storage")
+	assert.Contains(t, err.Error(), "not found")
 }
 
-func TestValidator_ValidSecondaryStorageTypes(t *testing.T) {
+func TestValidator_BackupSelfReference(t *testing.T) {
 	v := NewValidator()
-	for _, storageType := range []string{"none", "filesystem", "s3", "minio"} {
-		t.Run(storageType, func(t *testing.T) {
-			cfg := validConfig()
-			cfg.Storage.Secondary = storageType
-			err := v.Validate(cfg)
-			assert.NoError(t, err)
-		})
+	cfg := validConfig()
+	cfg.Storage.Buckets["local"] = BucketConfig{
+		Type: "filesystem",
+		Backups: []BackupRef{
+			{Target: "local", Mode: "sync"},
+		},
 	}
+	err := v.Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot reference itself")
+}
+
+func TestValidator_ValidBackup(t *testing.T) {
+	v := NewValidator()
+	cfg := validConfig()
+	cfg.Storage.Buckets["backup"] = BucketConfig{Type: "s3"}
+	cfg.Storage.Buckets["local"] = BucketConfig{
+		Type: "filesystem",
+		Backups: []BackupRef{
+			{Target: "backup", Mode: "sync"},
+			{Target: "backup", Mode: "async"},
+		},
+	}
+	err := v.Validate(cfg)
+	assert.NoError(t, err)
+}
+
+func TestValidator_GroupBucketNotFound(t *testing.T) {
+	v := NewValidator()
+	cfg := validConfig()
+	cfg.Storage.Groups = map[string]GroupConfig{
+		"g": {Buckets: []string{"nonexistent"}},
+	}
+	err := v.Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-existent bucket")
+}
+
+func TestValidator_SubgroupBucketNotInParent(t *testing.T) {
+	v := NewValidator()
+	cfg := validConfig()
+	cfg.Storage.Buckets["other"] = BucketConfig{Type: "s3"}
+	cfg.Storage.Groups = map[string]GroupConfig{
+		"g": {
+			Buckets: []string{"local"},
+			Subgroups: map[string]SubgroupConfig{
+				"sub": {Buckets: []string{"other"}},
+			},
+		},
+	}
+	err := v.Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in parent group")
 }
 
 func TestValidator_InvalidCacheSize(t *testing.T) {

@@ -33,10 +33,6 @@ func (v *validator) Validate(config *Config) error {
 		return fmt.Errorf("processing validation failed: %w", err)
 	}
 
-	if err := v.validateScopedKeys(config); err != nil {
-		return fmt.Errorf("scoped keys validation failed: %w", err)
-	}
-
 	return nil
 }
 
@@ -53,7 +49,7 @@ func (v *validator) validateServer(config *Config) error {
 	return nil
 }
 
-// validateStorage validates storage configuration
+// validateStorage validates the unified storage configuration
 func (v *validator) validateStorage(config *Config) error {
 	validTypes := map[string]bool{
 		"filesystem": true,
@@ -62,53 +58,136 @@ func (v *validator) validateStorage(config *Config) error {
 		"r2":         true,
 	}
 
-	if !validTypes[config.Storage.Primary] {
-		return fmt.Errorf("invalid primary storage: %s (must be filesystem, s3, minio, or r2)", config.Storage.Primary)
-	}
-
-	validSecondary := map[string]bool{
-		"none":       true,
-		"filesystem": true,
-		"s3":         true,
-		"minio":      true,
-		"r2":         true,
-	}
-
-	if !validSecondary[config.Storage.Secondary] {
-		return fmt.Errorf("invalid secondary storage: %s", config.Storage.Secondary)
-	}
-
-	// Validate replication mode
-	validReplication := map[string]bool{
+	validModes := map[string]bool{
 		"sync":          true,
 		"async":         true,
 		"read-fallback": true,
 	}
-	if config.Storage.Replication != "" && !validReplication[config.Storage.Replication] {
-		return fmt.Errorf("invalid replication mode: %s (must be sync, async, or read-fallback)", config.Storage.Replication)
+
+	// Must have at least one bucket
+	if len(config.Storage.Buckets) == 0 {
+		return fmt.Errorf("at least one bucket must be configured")
 	}
 
-	// Validate storage mode
-	validMode := map[string]bool{
-		"single": true,
-		"multi":  true,
+	// Default bucket must exist
+	if config.Storage.Default == "" {
+		return fmt.Errorf("storage.default is required")
 	}
-	if config.Storage.Mode != "" && !validMode[config.Storage.Mode] {
-		return fmt.Errorf("invalid storage mode: %s (must be single or multi)", config.Storage.Mode)
+	if _, ok := config.Storage.Buckets[config.Storage.Default]; !ok {
+		return fmt.Errorf("default bucket %q not found in storage.buckets", config.Storage.Default)
 	}
 
-	// Validate named backends in multi mode
-	if config.Storage.Mode == "multi" {
-		for name, backend := range config.Storage.Backends {
-			if !validTypes[backend.Type] {
-				return fmt.Errorf("invalid type %q for backend %q", backend.Type, name)
+	// Validate each bucket
+	for name, bucket := range config.Storage.Buckets {
+		if !validTypes[bucket.Type] {
+			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, minio, or r2)", bucket.Type, name)
+		}
+
+		// Validate backup refs
+		for i, backup := range bucket.Backups {
+			if backup.Target == "" {
+				return fmt.Errorf("bucket %q: backup[%d] has no target", name, i)
+			}
+			if backup.Target == name {
+				return fmt.Errorf("bucket %q: backup[%d] cannot reference itself", name, i)
+			}
+			if _, ok := config.Storage.Buckets[backup.Target]; !ok {
+				return fmt.Errorf("bucket %q: backup[%d] target %q not found in storage.buckets", name, i, backup.Target)
+			}
+			if backup.Mode != "" && !validModes[backup.Mode] {
+				return fmt.Errorf("bucket %q: backup[%d] invalid mode %q (must be sync, async, or read-fallback)", name, i, backup.Mode)
 			}
 		}
-		// Validate default backend reference
-		if config.Storage.Default != "" {
-			if _, ok := config.Storage.Backends[config.Storage.Default]; !ok {
-				return fmt.Errorf("default backend %q not found in backends", config.Storage.Default)
+
+		// Validate bucket-level keys
+		seenKeys := make(map[string]bool)
+		for i, key := range bucket.Keys {
+			if key.Key == "" {
+				return fmt.Errorf("bucket %q: key[%d] has no key value", name, i)
 			}
+			if key.Name == "" {
+				return fmt.Errorf("bucket %q: key[%d] has no name", name, i)
+			}
+			if seenKeys[key.Name] {
+				return fmt.Errorf("bucket %q: duplicate key name %q", name, key.Name)
+			}
+			seenKeys[key.Name] = true
+		}
+	}
+
+	// Validate groups
+	for groupName, group := range config.Storage.Groups {
+		if err := v.validateGroup(config, groupName, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateGroup validates a group configuration
+func (v *validator) validateGroup(config *Config, groupName string, group GroupConfig) error {
+	if len(group.Buckets) == 0 {
+		return fmt.Errorf("group %q has no buckets", groupName)
+	}
+
+	// All group buckets must exist
+	groupBucketSet := make(map[string]bool)
+	for _, b := range group.Buckets {
+		if _, ok := config.Storage.Buckets[b]; !ok {
+			return fmt.Errorf("group %q references non-existent bucket %q", groupName, b)
+		}
+		groupBucketSet[b] = true
+	}
+
+	// Validate group keys
+	seenKeys := make(map[string]bool)
+	for i, key := range group.Keys {
+		if key.Key == "" {
+			return fmt.Errorf("group %q: key[%d] has no key value", groupName, i)
+		}
+		if key.Name == "" {
+			return fmt.Errorf("group %q: key[%d] has no name", groupName, i)
+		}
+		if seenKeys[key.Name] {
+			return fmt.Errorf("group %q: duplicate key name %q", groupName, key.Name)
+		}
+		seenKeys[key.Name] = true
+
+		// If key restricts to specific buckets, they must be in the group
+		for _, b := range key.Buckets {
+			if !groupBucketSet[b] {
+				return fmt.Errorf("group %q: key %q references bucket %q not in group", groupName, key.Name, b)
+			}
+		}
+	}
+
+	// Validate subgroups
+	for subName, sub := range group.Subgroups {
+		if len(sub.Buckets) == 0 {
+			return fmt.Errorf("group %q: subgroup %q has no buckets", groupName, subName)
+		}
+
+		// Subgroup buckets must be a subset of the parent group's buckets
+		for _, b := range sub.Buckets {
+			if !groupBucketSet[b] {
+				return fmt.Errorf("group %q: subgroup %q references bucket %q not in parent group", groupName, subName, b)
+			}
+		}
+
+		// Validate subgroup keys
+		subSeenKeys := make(map[string]bool)
+		for i, key := range sub.Keys {
+			if key.Key == "" {
+				return fmt.Errorf("group %q: subgroup %q: key[%d] has no key value", groupName, subName, i)
+			}
+			if key.Name == "" {
+				return fmt.Errorf("group %q: subgroup %q: key[%d] has no name", groupName, subName, i)
+			}
+			if subSeenKeys[key.Name] {
+				return fmt.Errorf("group %q: subgroup %q: duplicate key name %q", groupName, subName, key.Name)
+			}
+			subSeenKeys[key.Name] = true
 		}
 	}
 
@@ -142,26 +221,5 @@ func (v *validator) validateProcessing(config *Config) error {
 		}
 	}
 
-	return nil
-}
-
-// validateScopedKeys validates scoped API key configurations
-func (v *validator) validateScopedKeys(config *Config) error {
-	seen := make(map[string]bool)
-	for i, sk := range config.Security.ScopedKeys {
-		if sk.Key == "" {
-			return fmt.Errorf("scoped key at index %d has no key value", i)
-		}
-		if sk.Name == "" {
-			return fmt.Errorf("scoped key at index %d has no name", i)
-		}
-		if seen[sk.Name] {
-			return fmt.Errorf("duplicate scoped key name: %s", sk.Name)
-		}
-		seen[sk.Name] = true
-		if len(sk.Storages) == 0 && len(sk.Buckets) == 0 {
-			return fmt.Errorf("scoped key %q must have at least one storage or bucket", sk.Name)
-		}
-	}
 	return nil
 }

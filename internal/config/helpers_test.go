@@ -53,23 +53,102 @@ func TestIsDevelopment(t *testing.T) {
 	assert.True(t, cfg.IsDevelopment())
 }
 
-func TestGetLocalStoragePath_Absolute(t *testing.T) {
+func TestGetBucketConfig(t *testing.T) {
 	cfg := &Config{
 		Storage: StorageConfig{
-			Local: LocalStorageConfig{Path: "/var/data/images"},
+			Default: "local",
+			Buckets: map[string]BucketConfig{
+				"local": {Type: "filesystem", Path: "./data/images"},
+				"s3":    {Type: "s3", Bucket: "my-bucket"},
+			},
 		},
 	}
-	assert.Equal(t, "/var/data/images", cfg.GetLocalStoragePath())
+
+	// Get by name
+	bc, err := cfg.GetBucketConfig("local")
+	assert.NoError(t, err)
+	assert.Equal(t, "filesystem", bc.Type)
+
+	// Get default (empty name)
+	bc, err = cfg.GetBucketConfig("")
+	assert.NoError(t, err)
+	assert.Equal(t, "filesystem", bc.Type)
+
+	// Not found
+	_, err = cfg.GetBucketConfig("nonexistent")
+	assert.Error(t, err)
 }
 
-func TestGetLocalStoragePath_Relative(t *testing.T) {
+func TestCollectAllKeys(t *testing.T) {
 	cfg := &Config{
 		Storage: StorageConfig{
-			Local: LocalStorageConfig{Path: "./data/images"},
+			Default: "images",
+			Buckets: map[string]BucketConfig{
+				"images": {
+					Type: "s3",
+					Keys: []BucketKeyConfig{
+						{Name: "client-a", Key: "sk-a"},
+					},
+				},
+				"backups": {Type: "minio"},
+			},
+			Groups: map[string]GroupConfig{
+				"media": {
+					Buckets: []string{"images", "backups"},
+					Keys: []GroupKeyConfig{
+						{Name: "media-team", Key: "sk-media"},
+					},
+					Subgroups: map[string]SubgroupConfig{
+						"thumbs": {
+							Buckets: []string{"images"},
+							Keys: []GroupKeyConfig{
+								{Name: "thumb-svc", Key: "sk-thumb"},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
-	path := cfg.GetLocalStoragePath()
-	// Should return an absolute path
-	assert.NotEqual(t, "./data/images", path)
-	assert.True(t, len(path) > 0)
+
+	keys := cfg.CollectAllKeys()
+
+	// Bucket-level key: access to "images" only
+	assert.Contains(t, keys, "sk-a")
+	assert.True(t, keys["sk-a"].Buckets["images"])
+	assert.False(t, keys["sk-a"].Buckets["backups"])
+
+	// Group-level key: access to all group buckets
+	assert.Contains(t, keys, "sk-media")
+	assert.True(t, keys["sk-media"].Buckets["images"])
+	assert.True(t, keys["sk-media"].Buckets["backups"])
+
+	// Subgroup-level key: access to subgroup buckets only
+	assert.Contains(t, keys, "sk-thumb")
+	assert.True(t, keys["sk-thumb"].Buckets["images"])
+	assert.False(t, keys["sk-thumb"].Buckets["backups"])
+}
+
+func TestCollectAllKeys_GroupKeyWithBucketRestriction(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			Default: "images",
+			Buckets: map[string]BucketConfig{
+				"images":  {Type: "s3"},
+				"backups": {Type: "minio"},
+			},
+			Groups: map[string]GroupConfig{
+				"media": {
+					Buckets: []string{"images", "backups"},
+					Keys: []GroupKeyConfig{
+						{Name: "restricted", Key: "sk-restricted", Buckets: []string{"images"}},
+					},
+				},
+			},
+		},
+	}
+
+	keys := cfg.CollectAllKeys()
+	assert.True(t, keys["sk-restricted"].Buckets["images"])
+	assert.False(t, keys["sk-restricted"].Buckets["backups"])
 }
