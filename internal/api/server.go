@@ -12,7 +12,9 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/birdple/falco/internal/api/handlers"
+	"github.com/birdple/falco/internal/api/handlers/ui"
 	apimw "github.com/birdple/falco/internal/api/middleware"
+	"github.com/birdple/falco/internal/api/views"
 	"github.com/birdple/falco/internal/config"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
@@ -29,12 +31,13 @@ type ServerConfig struct {
 
 // Server represents the HTTP server
 type Server struct {
-	config  *config.Config
-	logger  *logrus.Logger
-	router  *chi.Mux
-	server  *http.Server
-	handler *handlers.Handler
-	metrics *metrics.Metrics
+	config    *config.Config
+	logger    *logrus.Logger
+	router    *chi.Mux
+	server    *http.Server
+	handler   *handlers.Handler
+	uiHandler *ui.Handler
+	metrics   *metrics.Metrics
 }
 
 // NewServer creates a new API server
@@ -51,11 +54,18 @@ func NewServer(cfg *ServerConfig) *Server {
 	// Create metrics instance
 	m := metrics.New()
 
+	// Initialize UI renderer
+	renderer, err := views.NewRenderer()
+	if err != nil {
+		cfg.Logger.WithError(err).Error("Failed to initialize UI renderer")
+	}
+
 	s := &Server{
-		config:  cfg.Config,
-		logger:  cfg.Logger,
-		handler: h,
-		metrics: m,
+		config:    cfg.Config,
+		logger:    cfg.Logger,
+		handler:   h,
+		uiHandler: ui.NewHandler(renderer, cfg.Storage),
+		metrics:   m,
 	}
 
 	s.setupRouter()
@@ -110,6 +120,13 @@ func (s *Server) setupRouter() {
 		MaxAge:           300,
 	}))
 
+	// UI Routes
+	r.Get("/", s.uiHandler.Index)
+
+	// Static files
+	staticDir := http.Dir("web/static")
+	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(staticDir)))
+
 	// Health check endpoint (no auth required)
 	r.Get("/health", s.handler.HandleHealth)
 
@@ -127,7 +144,7 @@ func (s *Server) setupRouter() {
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoint - no auth required (image delivery)
-		r.Get("/images/{id}", s.handler.HandleDelivery)
+		r.Get("/images/*", s.handler.HandleDelivery)
 
 		// Protected endpoints - require API key when enabled
 		r.Group(func(r chi.Router) {
@@ -141,6 +158,7 @@ func (s *Server) setupRouter() {
 			r.Post("/update", s.handler.HandleUpdate)
 			r.Get("/list", s.handler.HandleList)
 			r.Delete("/delete", s.handler.HandleDelete)
+			r.Post("/sign", s.handler.HandleSignURL)
 		})
 	})
 

@@ -15,6 +15,7 @@ import (
 	"github.com/birdple/falco/internal/config"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/cshum/vipsgen/vips"
 )
 
 func main() {
@@ -35,6 +36,10 @@ func main() {
 	}
 
 	logger.Info("Starting Imagine Image Processing Service")
+
+	// Initialize VIPS
+	vips.Startup(nil)
+	defer vips.Shutdown()
 
 	// Debug: Show storage configuration
 	logger.WithFields(logrus.Fields{

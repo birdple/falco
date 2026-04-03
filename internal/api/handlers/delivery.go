@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,17 +11,49 @@ import (
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
+	"github.com/birdple/falco/internal/security"
 	"github.com/birdple/falco/internal/storage"
 )
 
 // HandleDelivery handles image delivery requests with optional transformations
 func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	imageID := chi.URLParam(r, "id")
+	imageID := chi.URLParam(r, "*")
+
+	if imageID == "" {
+		// Fallback for old clients or unexpected route match
+		imageID = chi.URLParam(r, "id")
+	}
 
 	if imageID == "" {
 		h.sendError(w, http.StatusBadRequest, "MISSING_ID", "Image ID is required")
 		return
+	}
+
+	// HMAC signature verification
+	if h.config.Security.HMACKey != "" || h.config.Security.HMACRequired {
+		sig := r.URL.Query().Get("sig")
+
+		// Build the signed string: path + query params excluding "sig"
+		q := r.URL.Query()
+		q.Del("sig")
+		signedPath := r.URL.Path
+		if len(q) > 0 {
+			signedPath = r.URL.Path + "?" + q.Encode()
+		}
+
+		if err := security.VerifyURL(
+			sig,
+			signedPath,
+			h.config.Security.HMACKey,
+			h.config.Security.HMACKeySalt,
+			h.config.Security.HMACSignatureSize,
+			h.config.Security.HMACRequired,
+		); err != nil {
+			h.logger.WithField("path", r.URL.Path).Warn("Invalid signature")
+			h.sendError(w, http.StatusForbidden, "INVALID_SIGNATURE", "Invalid or missing URL signature")
+			return
+		}
 	}
 
 	// Get bucket and directory parameters
@@ -58,7 +89,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Support both short (w) and long (width) parameter names
 	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
-			// Validate minimum dimensions
 			if widthVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
 				return
@@ -72,7 +102,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
-			// Validate minimum dimensions
 			if heightVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
 				return
@@ -123,113 +152,65 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Parse advanced transformation parameters with limits
-	maxDim := h.config.Processing.MaxDimensions.Width
-	if h.config.Processing.MaxDimensions.Height > maxDim {
-		maxDim = h.config.Processing.MaxDimensions.Height
-	}
-
-	if cropX := r.URL.Query().Get("crop_x"); cropX != "" {
-		if x, err := strconv.Atoi(cropX); err == nil && x >= 0 && x <= maxDim {
-			params.CropX = x
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_X", fmt.Sprintf("crop_x must be between 0 and %d", maxDim))
-			return
+	// Gravity for smart crop
+	if gravity := r.URL.Query().Get("gravity"); gravity != "" {
+		validGravities := map[string]bool{
+			"center": true, "north": true, "south": true, "east": true, "west": true,
+			"northeast": true, "northwest": true, "southeast": true, "southwest": true,
+			"smart": true, "entropy": true,
+		}
+		if validGravities[gravity] {
+			params.Gravity = gravity
 		}
 	}
 
-	if cropY := r.URL.Query().Get("crop_y"); cropY != "" {
-		if y, err := strconv.Atoi(cropY); err == nil && y >= 0 && y <= maxDim {
-			params.CropY = y
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_Y", fmt.Sprintf("crop_y must be between 0 and %d", maxDim))
-			return
+	// Watermark scale
+	if sc := r.URL.Query().Get("wm_scale"); sc != "" {
+		if v, err := strconv.ParseFloat(sc, 64); err == nil && v > 0 && v <= 1 {
+			params.WatermarkScale = v
 		}
 	}
 
-	if cropW := r.URL.Query().Get("crop_w"); cropW != "" {
-		if cropWidth, err := strconv.Atoi(cropW); err == nil && cropWidth > 0 && cropWidth <= maxDim {
-			params.CropW = cropWidth
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_W", fmt.Sprintf("crop_w must be between 1 and %d", maxDim))
-			return
+	// Trim
+	if r.URL.Query().Get("trim") == "1" {
+		params.TrimEnabled = true
+		if th := r.URL.Query().Get("trim_threshold"); th != "" {
+			if v, err := strconv.ParseFloat(th, 64); err == nil && v >= 0 && v <= 255 {
+				params.TrimThreshold = v
+			}
 		}
 	}
 
-	if cropH := r.URL.Query().Get("crop_h"); cropH != "" {
-		if cropHeight, err := strconv.Atoi(cropH); err == nil && cropHeight > 0 && cropHeight <= maxDim {
-			params.CropH = cropHeight
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_CROP_H", fmt.Sprintf("crop_h must be between 1 and %d", maxDim))
-			return
+	// Padding
+	if pt := r.URL.Query().Get("pad_top"); pt != "" {
+		if v, err := strconv.Atoi(pt); err == nil && v >= 0 {
+			params.PaddingTop = v
 		}
 	}
-
-	if rotate := r.URL.Query().Get("rotate"); rotate != "" {
-		if r, err := strconv.ParseFloat(rotate, 64); err == nil {
-			params.Rotate = r
+	if pr := r.URL.Query().Get("pad_right"); pr != "" {
+		if v, err := strconv.Atoi(pr); err == nil && v >= 0 {
+			params.PaddingRight = v
 		}
 	}
-
-	if flip := r.URL.Query().Get("flip"); flip != "" {
-		if flip == FlipHorizontal || flip == FlipVertical {
-			params.Flip = flip
+	if pb := r.URL.Query().Get("pad_bottom"); pb != "" {
+		if v, err := strconv.Atoi(pb); err == nil && v >= 0 {
+			params.PaddingBottom = v
 		}
 	}
-
-	if flop := r.URL.Query().Get("flop"); flop != "" {
-		if f, err := strconv.ParseBool(flop); err == nil {
-			params.Flop = f
+	if pl := r.URL.Query().Get("pad_left"); pl != "" {
+		if v, err := strconv.Atoi(pl); err == nil && v >= 0 {
+			params.PaddingLeft = v
 		}
 	}
-
-	// Parse filter parameters
-	if brightness := r.URL.Query().Get("brightness"); brightness != "" {
-		if b, err := strconv.ParseFloat(brightness, 64); err == nil && b >= MinBrightnessValue && b <= MaxBrightnessValue {
-			params.Brightness = b
-		}
+	if pc := r.URL.Query().Get("pad_color"); pc != "" {
+		params.PaddingColor = pc
 	}
 
-	if contrast := r.URL.Query().Get("contrast"); contrast != "" {
-		if c, err := strconv.ParseFloat(contrast, 64); err == nil && c >= MinContrastValue && c <= MaxContrastValue {
-			params.Contrast = c
-		}
-	}
+	// Auto-orient from EXIF (default true)
+	params.AutoOrient = r.URL.Query().Get("orient") != "0"
 
-	if gamma := r.URL.Query().Get("gamma"); gamma != "" {
-		if g, err := strconv.ParseFloat(gamma, 64); err == nil && g >= MinGammaValue && g <= MaxGammaValue {
-			params.Gamma = g
-		}
-	}
-
-	if saturation := r.URL.Query().Get("saturation"); saturation != "" {
-		if s, err := strconv.ParseFloat(saturation, 64); err == nil && s >= MinSaturationValue && s <= MaxSaturationValue {
-			params.Saturation = s
-		}
-	}
-
-	if hue := r.URL.Query().Get("hue"); hue != "" {
-		if h, err := strconv.Atoi(hue); err == nil && h >= MinHueValue && h <= MaxHueValue {
-			params.Hue = h
-		}
-	}
-
-	if blur := r.URL.Query().Get("blur"); blur != "" {
-		if b, err := strconv.ParseFloat(blur, 64); err == nil && b >= 0 && b <= MaxBlurValue {
-			params.Blur = b
-		}
-	}
-
-	if sharpen := r.URL.Query().Get("sharpen"); sharpen != "" {
-		if s, err := strconv.ParseFloat(sharpen, 64); err == nil && s >= 0 && s <= MaxSharpenValue {
-			params.Sharpen = s
-		}
-	}
-
-	// Set default format to WebP if not specified
-	if params.Format == "" {
-		params.Format = "webp"
-	}
+	// Strip metadata (default true)
+	params.StripMetadata = r.URL.Query().Get("meta") != "1"
 
 	// Retrieve original image using full storage key
 	storageStart := time.Now()
@@ -240,7 +221,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	m := metrics.Default()
 	if err != nil {
 		m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "error").Inc()
-		m.CacheMisses.Inc()
 		if storage.IsNotFound(err) {
 			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
 			return
@@ -251,22 +231,39 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "success").Inc()
 	m.StorageOperationDuration.WithLabelValues("retrieve", "minio").Observe(storageDuration)
-	m.CacheHits.Inc()
 	defer reader.Close()
 
-	// If no transformations requested except format, still process for format conversion
-	needsProcessing := params.Width != 0 || params.Height != 0 || params.Quality != 0 ||
-		params.Format != "" || params.CropW != 0 || params.CropH != 0 ||
+	// Determine if processing is needed
+	hasTransformations := params.Width != 0 || params.Height != 0 || params.Quality != 0 ||
+		params.CropW != 0 || params.CropH != 0 ||
 		params.Rotate != 0 || params.Flip != "" || params.Flop ||
 		params.Brightness != 0 || params.Contrast != 0 || params.Gamma != 0 ||
-		params.Saturation != 0 || params.Hue != 0 || params.Blur != 0 || params.Sharpen != 0
+		params.Saturation != 0 || params.Hue != 0 || params.Blur != 0 || params.Sharpen != 0 ||
+		params.Gravity != "" || params.TrimEnabled ||
+		params.PaddingTop != 0 || params.PaddingRight != 0 || params.PaddingBottom != 0 || params.PaddingLeft != 0
+
+	// We process if:
+	// 1. There are explicit transformations
+	// 2. A specific format was requested that is different from original
+	// 3. The original format is unknown (we process to detect and set correct Content-Type)
+	needsProcessing := hasTransformations ||
+		(params.Format != "" && params.Format != metadata.Format) ||
+		(metadata.Format == "" || metadata.ContentType == "application/octet-stream")
 
 	if !needsProcessing {
 		h.serveImage(w, reader, metadata)
 		return
 	}
 
-	// Process image with transformations
+	// If we need to process but no format was specified, use the default from config or WebP
+	if params.Format == "" {
+		params.Format = h.config.Processing.DefaultFormat
+		if params.Format == "" {
+			params.Format = "webp"
+		}
+	}
+
+	// Process image with transformations (includes automatic format detection)
 	processStart := time.Now()
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params)
 	processDuration := time.Since(processStart).Seconds()
@@ -280,12 +277,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
 	m.ImageProcessingDuration.WithLabelValues("transform").Observe(processDuration)
-
-	// Track image sizes
-	if inputData, err := io.ReadAll(reader); err == nil {
-		m.ImageProcessingSize.WithLabelValues("input").Observe(float64(len(inputData)))
-	}
-	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(processedImage.Metadata.Size))
 
 	defer processedImage.Data.Close()
 

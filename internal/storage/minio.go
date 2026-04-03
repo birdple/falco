@@ -129,9 +129,9 @@ func (m *MinIOStorage) Store(ctx context.Context, key string, data io.Reader, me
 
 // Retrieve retrieves an image by key
 func (m *MinIOStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
-	// Apply operation timeout
-	ctx, cancel := context.WithTimeout(ctx, minioOperationTimeout)
-	defer cancel()
+	// Note: We use the passed context directly without a local timeout
+	// because the reader returned by GetObject depends on this context.
+	// The caller (HandleDelivery) typically has an overall request timeout.
 
 	// Get object
 	object, err := m.client.GetObject(ctx, m.bucket, key, minio.GetObjectOptions{})
@@ -163,6 +163,7 @@ func (m *MinIOStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser,
 	metadata.ContentType = info.ContentType
 	metadata.Size = info.Size
 	metadata.ETag = info.ETag
+	metadata.CreatedAt = info.LastModified // Set from MinIO last modified
 
 	return object, metadata, nil
 }

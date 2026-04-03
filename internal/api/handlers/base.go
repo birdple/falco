@@ -34,6 +34,7 @@ func NewHandler(
 	imageProc processor.ImageProcessor,
 	startTime time.Time,
 ) *Handler {
+	fmt.Println("!!! NewHandler CALLED !!!")
 	return &Handler{
 		config:         cfg,
 		logger:         logger,
@@ -95,7 +96,7 @@ func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *
 		}
 	}
 
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", maxAge, sMaxAge))
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d, immutable", maxAge, sMaxAge))
 
 	// Enhanced ETag with size and timestamp for better cache validation
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())
@@ -105,14 +106,15 @@ func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *
 	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
 
+	// Vary: Accept for future auto-format selection based on client capabilities
+	w.Header().Set("Vary", "Accept")
+
 	// Copy image data to response with error handling
 	if _, err := io.Copy(w, reader); err != nil {
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"image_id":     metadata.ID,
 			"content_type": metadata.ContentType,
 		}).Error("Failed to write image to response")
-		// Note: Cannot send error response here as headers are already written
-		// Client will detect incomplete response
 	}
 }
 
