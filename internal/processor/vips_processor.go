@@ -33,6 +33,7 @@ type VipsProcessor struct {
 	supportedFormats []ImageFormat
 	maxDimensions    struct{ width, height int }
 	cache            Cache
+	sem              chan struct{} // semaphore limiting concurrent processing
 }
 
 // NewVipsProcessor creates a new vips-based image processor
@@ -43,6 +44,14 @@ func NewVipsProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageForm
 		defaultFormat:    defaultFormat,
 		supportedFormats: []ImageFormat{FormatJPEG, FormatPNG, FormatWebP, FormatHEIC, FormatAVIF},
 		maxDimensions:    struct{ width, height int }{width: maxWidth, height: maxHeight},
+	}
+}
+
+// SetMaxConcurrency sets the maximum number of concurrent processing operations.
+// Must be called before processing starts. A value of 0 means unlimited.
+func (p *VipsProcessor) SetMaxConcurrency(n int) {
+	if n > 0 {
+		p.sem = make(chan struct{}, n)
 	}
 }
 
@@ -73,6 +82,16 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 			}, nil
 		}
 		m.CacheMisses.Inc()
+	}
+
+	// Acquire processing slot (limits concurrent CPU-intensive operations)
+	if p.sem != nil {
+		select {
+		case p.sem <- struct{}{}:
+			defer func() { <-p.sem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	// Load image from buffer

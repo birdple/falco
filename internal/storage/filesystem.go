@@ -15,10 +15,12 @@ import (
 	"time"
 )
 
+const numStripes = 256
+
 // FilesystemStorage implements StorageBackend for local filesystem storage
 type FilesystemStorage struct {
 	basePath string
-	mu       sync.RWMutex
+	stripes  [numStripes]sync.RWMutex // striped locks keyed by hash prefix
 }
 
 // NewFilesystemStorage creates a new filesystem storage backend
@@ -39,10 +41,17 @@ func NewFilesystemStorage(basePath string) (*FilesystemStorage, error) {
 	}, nil
 }
 
+// stripe returns the lock index for a given key
+func (fs *FilesystemStorage) stripe(key string) *sync.RWMutex {
+	hash := md5.Sum([]byte(key))
+	return &fs.stripes[hash[0]]
+}
+
 // Store stores an image with the given key and metadata
 func (fs *FilesystemStorage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
+	mu := fs.stripe(key)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// Generate file path
 	filePath := fs.getFilePath(key)
@@ -92,8 +101,9 @@ func (fs *FilesystemStorage) Store(ctx context.Context, key string, data io.Read
 
 // Retrieve retrieves an image by key
 func (fs *FilesystemStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	mu := fs.stripe(key)
+	mu.RLock()
+	defer mu.RUnlock()
 
 	filePath := fs.getFilePath(key)
 	metaPath := fs.getMetadataPath(key)
@@ -118,8 +128,9 @@ func (fs *FilesystemStorage) Retrieve(ctx context.Context, key string) (io.ReadC
 
 // Delete deletes an image by key
 func (fs *FilesystemStorage) Delete(ctx context.Context, key string) error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
+	mu := fs.stripe(key)
+	mu.Lock()
+	defer mu.Unlock()
 
 	filePath := fs.getFilePath(key)
 	metaPath := fs.getMetadataPath(key)
@@ -138,8 +149,9 @@ func (fs *FilesystemStorage) Delete(ctx context.Context, key string) error {
 
 // Exists checks if an image exists by key
 func (fs *FilesystemStorage) Exists(ctx context.Context, key string) (bool, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	mu := fs.stripe(key)
+	mu.RLock()
+	defer mu.RUnlock()
 
 	filePath := fs.getFilePath(key)
 	_, err := os.Stat(filePath)
@@ -154,9 +166,6 @@ func (fs *FilesystemStorage) Exists(ctx context.Context, key string) (bool, erro
 
 // Health checks the health of the filesystem storage
 func (fs *FilesystemStorage) Health(ctx context.Context) error {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
 	// Check if base directory exists and is writable
 	info, err := os.Stat(fs.basePath)
 	if err != nil {
@@ -182,9 +191,6 @@ func (fs *FilesystemStorage) Health(ctx context.Context) error {
 
 // GetStats returns storage statistics
 func (fs *FilesystemStorage) GetStats(ctx context.Context) (*StorageStats, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
 	stats := &StorageStats{}
 
 	// Count files and calculate total size
@@ -218,9 +224,6 @@ func (fs *FilesystemStorage) GetStats(ctx context.Context) (*StorageStats, error
 
 // List lists objects with the given prefix
 func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
 	var results []ListResult
 
 	// Walk the directory to find files matching the prefix

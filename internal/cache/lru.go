@@ -3,6 +3,7 @@ package cache
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/birdple/falco/internal/pkg/logger"
@@ -38,9 +39,9 @@ type LRUCache struct {
 	mutex           sync.RWMutex
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
-	// Statistics
-	hits   int64
-	misses int64
+	// Statistics (atomic, accessed without mutex)
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 // NewLRUCache creates a new LRU cache
@@ -67,20 +68,20 @@ func (c *LRUCache) Get(key string) ([]byte, bool) {
 
 	item, exists := c.items[key]
 	if !exists {
-		c.misses++
+		c.misses.Add(1)
 		return nil, false
 	}
 
 	// Check if item has expired
 	if item.ttl > 0 && time.Since(item.createdAt) > item.ttl {
 		c.removeItem(item)
-		c.misses++
+		c.misses.Add(1)
 		return nil, false
 	}
 
 	// Move item to front (most recently used)
 	c.evictList.MoveToFront(item.element)
-	c.hits++
+	c.hits.Add(1)
 
 	return item.value, true
 }
@@ -155,21 +156,25 @@ func (c *LRUCache) Stop() {
 
 // Stats returns cache statistics
 func (c *LRUCache) Stats() interface{} {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	totalRequests := c.hits + c.misses
+	hits := c.hits.Load()
+	misses := c.misses.Load()
+	totalRequests := hits + misses
 	hitRatio := 0.0
 	if totalRequests > 0 {
-		hitRatio = float64(c.hits) / float64(totalRequests)
+		hitRatio = float64(hits) / float64(totalRequests)
 	}
 
+	c.mutex.RLock()
+	size := c.currentSize
+	itemCount := len(c.items)
+	c.mutex.RUnlock()
+
 	return CacheStats{
-		Hits:      c.hits,
-		Misses:    c.misses,
-		Size:      c.currentSize,
+		Hits:      hits,
+		Misses:    misses,
+		Size:      size,
 		MaxSize:   c.maxSize,
-		ItemCount: len(c.items),
+		ItemCount: itemCount,
 		HitRatio:  hitRatio,
 	}
 }
