@@ -71,7 +71,7 @@ func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
 // setSecurityDefaults sets security default values
 func (d *defaultsProvider) setSecurityDefaults(v *viper.Viper) {
 	v.SetDefault("security.api_key_required", false)
-	v.SetDefault("security.cors.origins", []string{"*"})
+	v.SetDefault("security.cors.origins", []string{"http://localhost:*", "https://localhost:*"})
 	v.SetDefault("security.cors.methods", []string{"GET", "POST", "OPTIONS"})
 	v.SetDefault("security.cors.headers", []string{"Content-Type", "Authorization"})
 	v.SetDefault("security.rate_limit.requests_per_minute", 1000)
