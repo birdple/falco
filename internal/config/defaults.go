@@ -40,6 +40,9 @@ func (d *defaultsProvider) setServerDefaults(v *viper.Viper) {
 func (d *defaultsProvider) setStorageDefaults(v *viper.Viper) {
 	v.SetDefault("storage.primary", "filesystem")
 	v.SetDefault("storage.secondary", "none")
+	v.SetDefault("storage.replication", "sync")
+	v.SetDefault("storage.mode", "single")
+	v.SetDefault("storage.default", "")
 	v.SetDefault("storage.local.path", "./data/images")
 	v.SetDefault("storage.local.create_dirs", true)
 	v.SetDefault("storage.minio.bucket", "your-minio-bucket")

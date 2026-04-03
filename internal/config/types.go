@@ -25,11 +25,16 @@ type ServerConfig struct {
 
 // StorageConfig holds storage-related configuration
 type StorageConfig struct {
-	Primary   string             `mapstructure:"primary"`
-	Secondary string             `mapstructure:"secondary"`
-	Local     LocalStorageConfig `mapstructure:"local"`
-	S3        S3StorageConfig    `mapstructure:"s3"`
-	MinIO     MinIOStorageConfig `mapstructure:"minio"`
+	Primary     string             `mapstructure:"primary"`
+	Secondary   string             `mapstructure:"secondary"`
+	Replication string             `mapstructure:"replication"`
+	Mode        string             `mapstructure:"mode"`
+	Default     string             `mapstructure:"default"`
+	Local       LocalStorageConfig `mapstructure:"local"`
+	S3          S3StorageConfig    `mapstructure:"s3"`
+	MinIO       MinIOStorageConfig `mapstructure:"minio"`
+	R2          R2StorageConfig    `mapstructure:"r2"`
+	Backends    map[string]BackendConfig `mapstructure:"backends"`
 }
 
 // LocalStorageConfig holds local filesystem storage configuration
@@ -52,6 +57,27 @@ type MinIOStorageConfig struct {
 	Bucket    string `mapstructure:"bucket"`
 	Endpoint  string `mapstructure:"endpoint"`
 	Region    string `mapstructure:"region"`
+	AccessKey string `mapstructure:"access_key"`
+	SecretKey string `mapstructure:"secret_key"`
+	Secure    bool   `mapstructure:"secure"`
+}
+
+// R2StorageConfig holds Cloudflare R2 storage configuration
+type R2StorageConfig struct {
+	Bucket    string `mapstructure:"bucket"`
+	AccountID string `mapstructure:"account_id"`
+	AccessKey string `mapstructure:"access_key"`
+	SecretKey string `mapstructure:"secret_key"`
+}
+
+// BackendConfig holds configuration for a named storage backend (multi mode)
+type BackendConfig struct {
+	Type      string `mapstructure:"type"`
+	Path      string `mapstructure:"path"`
+	Bucket    string `mapstructure:"bucket"`
+	Region    string `mapstructure:"region"`
+	Endpoint  string `mapstructure:"endpoint"`
+	AccountID string `mapstructure:"account_id"`
 	AccessKey string `mapstructure:"access_key"`
 	SecretKey string `mapstructure:"secret_key"`
 	Secure    bool   `mapstructure:"secure"`
@@ -100,6 +126,16 @@ type SecurityConfig struct {
 	HMACKeySalt       string `mapstructure:"hmac_salt"`
 	HMACSignatureSize int    `mapstructure:"hmac_signature_size"` // bytes, default 32
 	HMACRequired      bool   `mapstructure:"hmac_required"`       // if false, signature is optional
+	// Scoped API keys with restricted access to specific storages/buckets
+	ScopedKeys []ScopedKeyConfig `mapstructure:"scoped_keys"`
+}
+
+// ScopedKeyConfig defines an API key with restricted access scope
+type ScopedKeyConfig struct {
+	Name     string   `mapstructure:"name"`     // Human-readable identifier (e.g. "client-a")
+	Key      string   `mapstructure:"key"`      // The API key value
+	Storages []string `mapstructure:"storages"` // Allowed storage backends (multi mode names)
+	Buckets  []string `mapstructure:"buckets"`  // Allowed buckets
 }
 
 // LoggingConfig holds logging configuration

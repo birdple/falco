@@ -33,6 +33,10 @@ func (v *validator) Validate(config *Config) error {
 		return fmt.Errorf("processing validation failed: %w", err)
 	}
 
+	if err := v.validateScopedKeys(config); err != nil {
+		return fmt.Errorf("scoped keys validation failed: %w", err)
+	}
+
 	return nil
 }
 
@@ -51,14 +55,15 @@ func (v *validator) validateServer(config *Config) error {
 
 // validateStorage validates storage configuration
 func (v *validator) validateStorage(config *Config) error {
-	validPrimary := map[string]bool{
+	validTypes := map[string]bool{
 		"filesystem": true,
 		"s3":         true,
 		"minio":      true,
+		"r2":         true,
 	}
 
-	if !validPrimary[config.Storage.Primary] {
-		return fmt.Errorf("invalid primary storage: %s (must be filesystem, s3, or minio)", config.Storage.Primary)
+	if !validTypes[config.Storage.Primary] {
+		return fmt.Errorf("invalid primary storage: %s (must be filesystem, s3, minio, or r2)", config.Storage.Primary)
 	}
 
 	validSecondary := map[string]bool{
@@ -66,10 +71,45 @@ func (v *validator) validateStorage(config *Config) error {
 		"filesystem": true,
 		"s3":         true,
 		"minio":      true,
+		"r2":         true,
 	}
 
 	if !validSecondary[config.Storage.Secondary] {
 		return fmt.Errorf("invalid secondary storage: %s", config.Storage.Secondary)
+	}
+
+	// Validate replication mode
+	validReplication := map[string]bool{
+		"sync":          true,
+		"async":         true,
+		"read-fallback": true,
+	}
+	if config.Storage.Replication != "" && !validReplication[config.Storage.Replication] {
+		return fmt.Errorf("invalid replication mode: %s (must be sync, async, or read-fallback)", config.Storage.Replication)
+	}
+
+	// Validate storage mode
+	validMode := map[string]bool{
+		"single": true,
+		"multi":  true,
+	}
+	if config.Storage.Mode != "" && !validMode[config.Storage.Mode] {
+		return fmt.Errorf("invalid storage mode: %s (must be single or multi)", config.Storage.Mode)
+	}
+
+	// Validate named backends in multi mode
+	if config.Storage.Mode == "multi" {
+		for name, backend := range config.Storage.Backends {
+			if !validTypes[backend.Type] {
+				return fmt.Errorf("invalid type %q for backend %q", backend.Type, name)
+			}
+		}
+		// Validate default backend reference
+		if config.Storage.Default != "" {
+			if _, ok := config.Storage.Backends[config.Storage.Default]; !ok {
+				return fmt.Errorf("default backend %q not found in backends", config.Storage.Default)
+			}
+		}
 	}
 
 	return nil
@@ -102,5 +142,26 @@ func (v *validator) validateProcessing(config *Config) error {
 		}
 	}
 
+	return nil
+}
+
+// validateScopedKeys validates scoped API key configurations
+func (v *validator) validateScopedKeys(config *Config) error {
+	seen := make(map[string]bool)
+	for i, sk := range config.Security.ScopedKeys {
+		if sk.Key == "" {
+			return fmt.Errorf("scoped key at index %d has no key value", i)
+		}
+		if sk.Name == "" {
+			return fmt.Errorf("scoped key at index %d has no name", i)
+		}
+		if seen[sk.Name] {
+			return fmt.Errorf("duplicate scoped key name: %s", sk.Name)
+		}
+		seen[sk.Name] = true
+		if len(sk.Storages) == 0 && len(sk.Buckets) == 0 {
+			return fmt.Errorf("scoped key %q must have at least one storage or bucket", sk.Name)
+		}
+	}
 	return nil
 }

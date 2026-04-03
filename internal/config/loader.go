@@ -87,6 +87,12 @@ func (l *loader) loadFromEnv(v *viper.Viper) {
 			l.setEnvValue(v, configKey, value)
 		}
 	}
+
+	// Auto-discover named backends from STORAGE_BACKEND_<NAME>_TYPE env vars
+	l.discoverBackendsFromEnv(v)
+
+	// Auto-discover scoped API keys from SCOPED_KEY_<NAME>_KEY env vars
+	l.discoverScopedKeysFromEnv(v)
 }
 
 // getEnvMappings returns environment variable to config key mappings
@@ -108,6 +114,13 @@ func (l *loader) getEnvMappings() map[string]string {
 		"STORAGE_MINIO_ACCESS_KEY": "storage.minio.access_key",
 		"STORAGE_MINIO_SECRET_KEY": "storage.minio.secret_key",
 		"STORAGE_MINIO_SECURE":     "storage.minio.secure",
+		"STORAGE_R2_BUCKET":        "storage.r2.bucket",
+		"STORAGE_R2_ACCOUNT_ID":    "storage.r2.account_id",
+		"STORAGE_R2_ACCESS_KEY":    "storage.r2.access_key",
+		"STORAGE_R2_SECRET_KEY":    "storage.r2.secret_key",
+		"STORAGE_REPLICATION":      "storage.replication",
+		"STORAGE_MODE":             "storage.mode",
+		"STORAGE_DEFAULT":          "storage.default",
 		"CACHE_SIZE_MB":            "cache.size_mb",
 		"CACHE_TTL_HOURS":          "cache.ttl_hours",
 		"CACHE_DEFAULT_MAX_AGE":    "cache.default_max_age",
@@ -132,6 +145,127 @@ func (l *loader) getEnvMappings() map[string]string {
 		"DEBUG":                    "development.debug",
 		"ENABLE_PPROF":             "development.enable_pprof",
 		"ENABLE_METRICS":           "development.enable_metrics",
+	}
+}
+
+// discoverBackendsFromEnv scans environment variables for the pattern
+// STORAGE_BACKEND_<NAME>_TYPE and builds named backend configurations.
+// Example: STORAGE_BACKEND_IMAGES_TYPE=minio, STORAGE_BACKEND_IMAGES_BUCKET=prod-images
+func (l *loader) discoverBackendsFromEnv(v *viper.Viper) {
+	const prefix = "STORAGE_BACKEND_"
+	const typeSuffix = "_TYPE"
+
+	discovered := make(map[string]bool)
+
+	// First pass: find all backend names via _TYPE vars
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := parts[0]
+		if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, typeSuffix) {
+			continue
+		}
+		name := strings.ToLower(key[len(prefix) : len(key)-len(typeSuffix)])
+		if name != "" {
+			discovered[name] = true
+		}
+	}
+
+	if len(discovered) == 0 {
+		return
+	}
+
+	// Automatically switch to multi mode when backends are discovered
+	v.Set("storage.mode", "multi")
+
+	// Second pass: read all fields for each discovered backend
+	suffixes := map[string]string{
+		"_TYPE":       "type",
+		"_BUCKET":     "bucket",
+		"_PATH":       "path",
+		"_REGION":     "region",
+		"_ENDPOINT":   "endpoint",
+		"_ACCOUNT_ID": "account_id",
+		"_ACCESS_KEY": "access_key",
+		"_SECRET_KEY": "secret_key",
+		"_SECURE":     "secure",
+	}
+
+	for name := range discovered {
+		envPrefix := prefix + strings.ToUpper(name)
+		for suffix, field := range suffixes {
+			if val := os.Getenv(envPrefix + suffix); val != "" {
+				configKey := fmt.Sprintf("storage.backends.%s.%s", name, field)
+				if field == "secure" {
+					if boolVal, err := strconv.ParseBool(val); err == nil {
+						v.Set(configKey, boolVal)
+					}
+				} else {
+					v.Set(configKey, val)
+				}
+			}
+		}
+	}
+}
+
+// discoverScopedKeysFromEnv scans environment variables for the pattern
+// SCOPED_KEY_<NAME>_KEY and builds scoped API key configurations.
+// Additional vars: SCOPED_KEY_<NAME>_STORAGES (comma-separated), SCOPED_KEY_<NAME>_BUCKETS (comma-separated).
+func (l *loader) discoverScopedKeysFromEnv(v *viper.Viper) {
+	const prefix = "SCOPED_KEY_"
+	const keySuffix = "_KEY"
+
+	discovered := make(map[string]bool)
+
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		varName := parts[0]
+		if !strings.HasPrefix(varName, prefix) || !strings.HasSuffix(varName, keySuffix) {
+			continue
+		}
+		// Exclude SCOPED_KEY_KEY (empty name)
+		name := strings.ToLower(varName[len(prefix) : len(varName)-len(keySuffix)])
+		if name != "" {
+			discovered[name] = true
+		}
+	}
+
+	if len(discovered) == 0 {
+		return
+	}
+
+	// Build scoped key configs
+	var scopedKeys []map[string]interface{}
+	for name := range discovered {
+		envPrefix := prefix + strings.ToUpper(name)
+
+		key := os.Getenv(envPrefix + "_KEY")
+		if key == "" {
+			continue
+		}
+
+		entry := map[string]interface{}{
+			"name": name,
+			"key":  key,
+		}
+
+		if storages := os.Getenv(envPrefix + "_STORAGES"); storages != "" {
+			entry["storages"] = strings.Split(storages, ",")
+		}
+		if buckets := os.Getenv(envPrefix + "_BUCKETS"); buckets != "" {
+			entry["buckets"] = strings.Split(buckets, ",")
+		}
+
+		scopedKeys = append(scopedKeys, entry)
+	}
+
+	if len(scopedKeys) > 0 {
+		v.Set("security.scoped_keys", scopedKeys)
 	}
 }
 
