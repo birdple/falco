@@ -116,6 +116,23 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 
 // applyTransformations applies all transformations to the image
 func (p *VipsProcessor) applyTransformations(img *vips.Image, params *ProcessingParams) error {
+	// Auto-orient from EXIF (should happen early, before resize)
+	if params.AutoOrient {
+		_ = img.Autorot(nil) // Non-fatal: some formats don't have EXIF orientation
+	}
+
+	// Trim (remove uniform color borders, before resize)
+	if params.TrimEnabled {
+		threshold := params.TrimThreshold
+		if threshold == 0 {
+			threshold = 10
+		}
+		left, top, width, height, err := img.FindTrim(&vips.FindTrimOptions{Threshold: threshold})
+		if err == nil && width > 0 && height > 0 {
+			_ = img.ExtractArea(left, top, width, height)
+		}
+	}
+
 	// Crop
 	if params.CropW > 0 && params.CropH > 0 {
 		if err := img.ExtractArea(params.CropX, params.CropY, params.CropW, params.CropH); err != nil {
@@ -144,8 +161,31 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		}
 	}
 
+	// Gravity-aware resize (smart crop)
+	if (params.Width > 0 || params.Height > 0) && params.Gravity != "" {
+		interesting := vips.InterestingCentre
+		switch params.Gravity {
+		case "smart", "attention":
+			interesting = vips.InterestingAttention
+		case "entropy":
+			interesting = vips.InterestingEntropy
+		}
+		w, h := params.Width, params.Height
+		if w == 0 {
+			w = img.Width()
+		}
+		if h == 0 {
+			h = img.Height()
+		}
+		if err := img.ThumbnailImage(w, &vips.ThumbnailImageOptions{
+			Height: h,
+			Crop:   interesting,
+			Size:   vips.SizeBoth,
+		}); err != nil {
+			return fmt.Errorf("smart resize failed: %w", err)
+		}
+	} else if params.Width > 0 || params.Height > 0 {
 	// Resize with upscaling protection
-	if params.Width > 0 || params.Height > 0 {
 		// Prevent upscaling attacks - limit requested dimensions to original or max dimensions
 		originalWidth := img.Width()
 		originalHeight := img.Height()
@@ -253,7 +293,54 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		}
 	}
 
+	// Padding
+	if params.PaddingTop > 0 || params.PaddingRight > 0 || params.PaddingBottom > 0 || params.PaddingLeft > 0 {
+		bg := parseHexColor(params.PaddingColor)
+		newWidth := img.Width() + params.PaddingLeft + params.PaddingRight
+		newHeight := img.Height() + params.PaddingTop + params.PaddingBottom
+		if err := img.Embed(params.PaddingLeft, params.PaddingTop, newWidth, newHeight, &vips.EmbedOptions{
+			Extend:     vips.ExtendBackground,
+			Background: bg,
+		}); err != nil {
+			return fmt.Errorf("padding failed: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// parseHexColor parses a hex color string (e.g. "FF0000") into RGB float64 slice
+func parseHexColor(hex string) []float64 {
+	if hex == "" {
+		return []float64{255, 255, 255} // default white
+	}
+	// Remove leading # if present
+	if len(hex) > 0 && hex[0] == '#' {
+		hex = hex[1:]
+	}
+	if len(hex) != 6 {
+		return []float64{255, 255, 255}
+	}
+	r := hexToByte(hex[0:2])
+	g := hexToByte(hex[2:4])
+	b := hexToByte(hex[4:6])
+	return []float64{float64(r), float64(g), float64(b)}
+}
+
+func hexToByte(s string) byte {
+	var val byte
+	for _, c := range s {
+		val <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			val |= byte(c - '0')
+		case c >= 'a' && c <= 'f':
+			val |= byte(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			val |= byte(c-'A') + 10
+		}
+	}
+	return val
 }
 
 // resizeImage handles different resize modes
@@ -361,13 +448,19 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			// Note: Chroma subsampling is handled automatically by libvips
 		})
 	case FormatAVIF:
-		// AVIF with optimization (uses HEIF encoder with AV1 codec)
+		// AVIF requires HeifCompressionAv1 to produce actual AV1-encoded AVIF
 		err = img.HeifsaveTarget(target, &vips.HeifsaveTargetOptions{
-			Q:        quality,
-			Lossless: quality == 100, // Lossless if quality is 100
-			Effort:   8,              // Higher effort for better compression
-			// Note: AVIF support depends on libvips being compiled with HEIF/AV1 support
+			Q:           quality,
+			Lossless:    quality == 100,
+			Effort:      6, // Balanced: 8 is very slow for AVIF
+			Compression: vips.HeifCompressionAv1,
 		})
+		// Fallback to WebP if libvips lacks AV1 support
+		if err != nil {
+			err = img.WebpsaveTarget(target, &vips.WebpsaveTargetOptions{
+				Q: quality,
+			})
+		}
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
@@ -463,6 +556,16 @@ func (p *VipsProcessor) detectFormat(data []byte) string {
 		return "webp"
 	}
 
+	// GIF: 47 49 46 38
+	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 {
+		return "gif"
+	}
+
+	// TIFF: 49 49 (little-endian) or 4D 4D (big-endian)
+	if (data[0] == 0x49 && data[1] == 0x49) || (data[0] == 0x4D && data[1] == 0x4D) {
+		return "tiff"
+	}
+
 	// HEIC/HEIF
 	if data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70 {
 		ftype := string(data[8:12])
@@ -472,6 +575,11 @@ func (p *VipsProcessor) detectFormat(data []byte) string {
 		if ftype == "avif" || ftype == "avis" {
 			return "avif"
 		}
+	}
+
+	// SVG: starts with <svg or <?xml
+	if len(data) > 5 && (string(data[:4]) == "<svg" || string(data[:5]) == "<?xml") {
+		return "svg"
 	}
 
 	return "unknown"
@@ -543,6 +651,20 @@ func (p *VipsProcessor) generateCacheKey(inputData []byte, params *ProcessingPar
 	}
 	if params.Sharpen > 0 {
 		parts = append(parts, fmt.Sprintf("sharp%.1f", params.Sharpen))
+	}
+
+	// Extended parameters
+	if params.Gravity != "" {
+		parts = append(parts, fmt.Sprintf("grav%s", params.Gravity))
+	}
+	if params.TrimEnabled {
+		parts = append(parts, fmt.Sprintf("trim%.0f", params.TrimThreshold))
+	}
+	if params.PaddingTop > 0 || params.PaddingRight > 0 || params.PaddingBottom > 0 || params.PaddingLeft > 0 {
+		parts = append(parts, fmt.Sprintf("pad%d_%d_%d_%d_%s", params.PaddingTop, params.PaddingRight, params.PaddingBottom, params.PaddingLeft, params.PaddingColor))
+	}
+	if params.AutoOrient {
+		parts = append(parts, "orient")
 	}
 
 	return strings.Join(parts, "_")

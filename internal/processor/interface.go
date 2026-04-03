@@ -38,6 +38,29 @@ type ProcessingParams struct {
 	WatermarkURL      string  `json:"watermark_url,omitempty"`
 	WatermarkOpacity  float64 `json:"watermark_opacity,omitempty"`  // 0.0 to 1.0
 	WatermarkPosition string  `json:"watermark_position,omitempty"` // "top-left", "top-right", "bottom-left", "bottom-right", "center"
+	WatermarkScale    float64 `json:"watermark_scale,omitempty"`    // 0.0 to 1.0, scale relative to image width
+
+	// Gravity for resize/crop (smart cropping)
+	// Values: "center", "north", "south", "east", "west",
+	//         "smart" (libvips attention), "entropy" (libvips entropy)
+	Gravity string `json:"gravity,omitempty"`
+
+	// Trim (remove uniform color borders)
+	TrimEnabled   bool    `json:"trim_enabled,omitempty"`
+	TrimThreshold float64 `json:"trim_threshold,omitempty"` // 0-255, default 10
+
+	// Padding (add borders)
+	PaddingTop    int    `json:"padding_top,omitempty"`
+	PaddingRight  int    `json:"padding_right,omitempty"`
+	PaddingBottom int    `json:"padding_bottom,omitempty"`
+	PaddingLeft   int    `json:"padding_left,omitempty"`
+	PaddingColor  string `json:"padding_color,omitempty"` // hex color, default "FFFFFF"
+
+	// Auto-orient from EXIF (default true)
+	AutoOrient bool `json:"auto_orient,omitempty"`
+
+	// Strip metadata (default true)
+	StripMetadata bool `json:"strip_metadata,omitempty"`
 }
 
 // ProcessedImage holds the result of image processing
