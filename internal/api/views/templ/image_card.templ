@@ -1,0 +1,65 @@
+package views
+
+import "fmt"
+
+templ ImageCard(img ImageInfo, bucket string) {
+	<div
+		class="group relative rounded-xl overflow-hidden bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-500/40 transition-all duration-200 hover:shadow-lg dark:hover:shadow-violet-500/5 flex flex-col h-full cursor-pointer"
+		id={ fmt.Sprintf("image-%s", img.ID) }
+		@click={ fmt.Sprintf("openLightbox('/api/v1/images/%s?b=%s', '%s', '%s', '%s', '%s')", img.ID, bucket, img.Filename, img.SizeHuman, img.CreatedAt.Format("Jan 02, 2006"), img.ContentType) }>
+		<!-- Image container -->
+		<div class="aspect-[4/3] w-full relative overflow-hidden bg-gray-100 dark:bg-gray-900 flex-shrink-0">
+			<img
+				src={ fmt.Sprintf("/api/v1/images/%s?b=%s", img.ID, bucket) }
+				alt={ img.Filename }
+				class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500"
+				loading="lazy"
+			/>
+
+			<!-- Format Badge -->
+			<div class="absolute top-2.5 left-2.5 z-10">
+				<div class="px-2 py-0.5 rounded-md bg-black/50 backdrop-blur-md text-white flex items-center gap-1.5">
+					<div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+					<span class="text-[9px] font-bold uppercase tracking-widest">
+						{ img.ContentType }
+					</span>
+				</div>
+			</div>
+
+			<!-- Delete Action -->
+			<div class="absolute top-2.5 right-2.5 z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+				<button
+					class="w-7 h-7 rounded-lg bg-black/50 backdrop-blur-md flex items-center justify-center text-white/70 hover:text-white hover:bg-red-500/80 transition-colors"
+					@click.stop=""
+					hx-delete={ fmt.Sprintf("/api/v1/delete?id=%s&b=%s", img.ID, bucket) }
+					hx-target={ fmt.Sprintf("#image-%s", img.ID) }
+					hx-swap="outerHTML swap:0.5s"
+					hx-confirm={ fmt.Sprintf("Are you sure you want to permanently delete '%s'?", img.Filename) }>
+					<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+						<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+					</svg>
+				</button>
+			</div>
+		</div>
+
+		<!-- Metadata -->
+		<div class="p-3 flex-1 flex flex-col border-t border-gray-100 dark:border-gray-700/50">
+			<h3 class="font-medium text-gray-900 dark:text-gray-200 truncate text-sm mb-2" title={ img.Filename }>{ img.Filename }</h3>
+			<div class="mt-auto flex items-center justify-between text-[11px] text-gray-400 dark:text-gray-500 font-medium">
+				<span class="flex items-center gap-1">
+					<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" x2="12" y1="3" y2="15"></line>
+					</svg>
+					{ img.SizeHuman }
+				</span>
+				<span class="flex items-center gap-1">
+					<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<rect width="18" height="18" x="3" y="4" rx="2" ry="2"></rect><line x1="16" x2="16" y1="2" y2="6"></line><line x1="8" x2="8" y1="2" y2="6"></line><line x1="3" x2="21" y1="10" y2="10"></line>
+					</svg>
+					{ img.CreatedAt.Format("Jan 02, 2006") }
+				</span>
+			</div>
+		</div>
+	</div>
+}
