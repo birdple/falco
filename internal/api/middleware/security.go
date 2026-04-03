@@ -188,6 +188,8 @@ type RateLimiter struct {
 	mu                sync.RWMutex
 	cleanupInterval   time.Duration
 	maxClientAge      time.Duration
+	maxClients        int
+	stopCleanup       chan struct{}
 }
 
 // clientLimiter tracks requests for a specific client
@@ -205,11 +207,21 @@ func NewRateLimiter(requestsPerMinute, burst int) *RateLimiter {
 		clients:           make(map[string]*clientLimiter),
 		cleanupInterval:   5 * time.Minute,
 		maxClientAge:      15 * time.Minute,
+		maxClients:        100000,
+		stopCleanup:       make(chan struct{}),
 	}
 
 	go rl.backgroundCleanup()
 
 	return rl
+}
+
+// Stop signals the background cleanup goroutine to exit
+func (rl *RateLimiter) Stop() {
+	select {
+	case rl.stopCleanup <- struct{}{}:
+	default:
+	}
 }
 
 // backgroundCleanup periodically removes inactive clients to prevent memory leak
@@ -224,15 +236,20 @@ func (rl *RateLimiter) backgroundCleanup() {
 	ticker := time.NewTicker(rl.cleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for ip, limiter := range rl.clients {
-			if now.Sub(limiter.lastSeen) > rl.maxClientAge {
-				delete(rl.clients, ip)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			for ip, limiter := range rl.clients {
+				if now.Sub(limiter.lastSeen) > rl.maxClientAge {
+					delete(rl.clients, ip)
+				}
 			}
+			rl.mu.Unlock()
+		case <-rl.stopCleanup:
+			return
 		}
-		rl.mu.Unlock()
 	}
 }
 
@@ -245,6 +262,10 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 		rl.mu.Lock()
 		limiter, exists := rl.clients[clientIP]
 		if !exists {
+			// Evict oldest client if at capacity
+			if len(rl.clients) >= rl.maxClients {
+				rl.evictOldestClient()
+			}
 			limiter = &clientLimiter{
 				requests:    make([]time.Time, 0),
 				lastCleanup: now,
@@ -287,6 +308,24 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// evictOldestClient removes the least recently seen client to make room.
+// IMPORTANT: Caller MUST hold rl.mu lock before calling this function.
+func (rl *RateLimiter) evictOldestClient() {
+	var oldestIP string
+	var oldestTime time.Time
+	first := true
+	for ip, limiter := range rl.clients {
+		if first || limiter.lastSeen.Before(oldestTime) {
+			oldestIP = ip
+			oldestTime = limiter.lastSeen
+			first = false
+		}
+	}
+	if oldestIP != "" {
+		delete(rl.clients, oldestIP)
+	}
 }
 
 // cleanupOldRequests removes requests older than 1 minute.
