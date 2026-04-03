@@ -7,55 +7,58 @@ server:
   shutdown_timeout: "30s"
 
 storage:
-  # Mode: "single" (default) or "multi" (named backends via storage.backends)
-  mode: "single"
-  primary: "filesystem"
-  secondary: "none"
-  # Replication mode when secondary != "none": "sync", "async", or "read-fallback"
-  replication: "sync"
-  local:
-    path: "./data/images"
-    create_dirs: true
-  s3:
-    bucket: "your-image-bucket"
-    region: "us-west-2"
-    endpoint: ""
-    access_key: ""
-    secret_key: ""
-  minio:
-    bucket: "your-minio-bucket"
-    endpoint: "http://localhost:9000"
-    region: "us-east-1"
-    access_key: "minioadmin"
-    secret_key: "minioadmin"
-    secure: false
-  r2:
-    bucket: ""
-    account_id: ""
-    access_key: ""
-    secret_key: ""
+  default: "local"
 
-  # Multi mode: named backends (uncomment to use)
-  # default: "images"
-  # backends:
-  #   images:
-  #     type: minio
-  #     bucket: prod-images
-  #     endpoint: "minio:9000"
-  #     access_key: ""
-  #     secret_key: ""
-  #   backups:
-  #     type: s3
-  #     bucket: backup-bucket
-  #     region: us-east-1
-  #     access_key: ""
-  #     secret_key: ""
-  #   cdn:
-  #     type: r2
-  #     bucket: cdn-assets
-  #     account_id: "your-cf-account-id"
-  #     access_key: ""
-  #     secret_key: ""
+  buckets:
+    local:
+      type: filesystem
+      path: "./data/images"
+
+    # Example: S3 bucket with sync backup to MinIO and async to R2
+    # images:
+    #   type: s3
+    #   bucket: prod-images
+    #   region: us-west-2
+    #   access_key: ""
+    #   secret_key: ""
+    #   backups:
+    #     - target: "images-backup"
+    #       mode: sync
+    #     - target: "images-archive"
+    #       mode: async
+    #   keys:
+    #     - name: "client-a"
+    #       key: "sk-client-a-secret"
+    #     - name: "client-b"
+    #       key: "sk-client-b-secret"
+    #
+    # images-backup:
+    #   type: minio
+    #   bucket: backup-images
+    #   endpoint: "http://minio:9000"
+    #   access_key: ""
+    #   secret_key: ""
+    #
+    # images-archive:
+    #   type: r2
+    #   bucket: archive-images
+    #   account_id: ""
+    #   access_key: ""
+    #   secret_key: ""
+
+  # Groups: organize buckets with shared keys and subgroups (1 level deep)
+  # groups:
+  #   media:
+  #     buckets: ["images", "images-backup", "images-archive"]
+  #     keys:
+  #       - name: "media-team"
+  #         key: "sk-media-team-secret"
+  #     subgroups:
+  #       thumbnails:
+  #         buckets: ["images"]
+  #         keys:
+  #           - name: "thumb-service"
+  #             key: "sk-thumb-service"
 
 cache:
   size_mb: 256
@@ -74,7 +77,7 @@ processing:
 
 security:
   api_key_required: false
-  api_key: ""           # Admin key: full access to all storages and buckets
+  api_key: ""
   cors:
     origins: ["http://localhost:3000", "http://localhost:8080"]
     methods: ["GET", "POST", "OPTIONS"]
@@ -82,20 +85,6 @@ security:
   rate_limit:
     requests_per_minute: 1000
     burst: 100
-
-  honeypot:
-    db_path: "data/honeypot.db"
-    ban_threshold: 3
-
-  # Scoped API keys: restrict access to specific storages/buckets per client
-  # scoped_keys:
-  #   - name: "client-a"
-  #     key: "sk-client-a-secret-key"
-  #     storages: ["images"]          # only access the "images" storage backend
-  #     buckets: ["client-a-bucket"]  # only access this bucket
-  #   - name: "client-b"
-  #     key: "sk-client-b-secret-key"
-  #     buckets: ["client-b-uploads", "client-b-assets"]
 
 logging:
   level: "info"
