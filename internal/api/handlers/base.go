@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/config"
 	"github.com/birdple/falco/internal/pkg/httputil"
@@ -17,11 +18,12 @@ import (
 
 // Handler contains dependencies for all API handlers
 type Handler struct {
-	config         *config.Config
-	storage        storage.StorageBackend
-	imageProcessor processor.ImageProcessor
-	startTime      time.Time
-	httpClient     *http.Client
+	config          *config.Config
+	storage         storage.StorageBackend
+	storageRegistry *storage.Registry
+	imageProcessor  processor.ImageProcessor
+	startTime       time.Time
+	httpClient      *http.Client
 }
 
 // NewHandler creates a new handler instance
@@ -38,6 +40,11 @@ func NewHandler(
 		startTime:      startTime,
 		httpClient:     httputil.NewSafeHTTPClient(30 * time.Second),
 	}
+}
+
+// SetRegistry sets the storage registry for multi-backend support.
+func (h *Handler) SetRegistry(r *storage.Registry) {
+	h.storageRegistry = r
 }
 
 // sendError sends a JSON error response with enhanced logging
@@ -116,4 +123,54 @@ func (h *Handler) getStorageForBucket(bucket string) storage.StorageBackend {
 	}
 
 	return h.storage
+}
+
+// getStorageBackend resolves a storage backend by name (from registry) and
+// optional bucket override. If storageName is empty, uses the default backend.
+// Enforces scoped API key restrictions from the request context.
+func (h *Handler) getStorageBackend(storageName, bucket string) (storage.StorageBackend, error) {
+	return h.getStorageBackendWithScope(nil, storageName, bucket)
+}
+
+// getStorageBackendScoped resolves a storage backend and enforces scope from the request.
+func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket string) (storage.StorageBackend, error) {
+	scope := apimw.GetScope(r.Context())
+
+	// Enforce storage access
+	if scope != nil && storageName != "" && !scope.CanAccessStorage(storageName) {
+		return nil, fmt.Errorf("access denied to storage %q", storageName)
+	}
+
+	// Enforce bucket access
+	if scope != nil && bucket != "" && !scope.CanAccessBucket(bucket) {
+		return nil, fmt.Errorf("access denied to bucket %q", bucket)
+	}
+
+	return h.getStorageBackendWithScope(scope, storageName, bucket)
+}
+
+// getStorageBackendWithScope is the internal resolver.
+func (h *Handler) getStorageBackendWithScope(scope *apimw.APIScope, storageName, bucket string) (storage.StorageBackend, error) {
+	var backend storage.StorageBackend
+
+	if h.storageRegistry != nil && storageName != "" {
+		b, err := h.storageRegistry.Get(storageName)
+		if err != nil {
+			return nil, err
+		}
+		backend = b
+	} else if h.storageRegistry != nil {
+		backend = h.storageRegistry.Default()
+	} else {
+		backend = h.storage
+	}
+
+	// Apply bucket override if provided
+	if bucket != "" {
+		if bucketAware, ok := backend.(storage.BucketAware); ok {
+			backend = bucketAware.WithBucket(bucket)
+		}
+	}
+
+	return backend, nil
 }

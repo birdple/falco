@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
@@ -22,6 +24,8 @@ import (
 // HandleUpload handles image upload requests
 func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	storageName := r.URL.Query().Get("storage")
 
 	bucket := r.URL.Query().Get("b")
 	if bucket == "" {
@@ -180,7 +184,11 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storageKey := utils.BuildStorageKey(directory, imageID)
-	storageBackend := h.getStorageForBucket(bucket)
+	storageBackend, sbErr := h.getStorageBackendScoped(r, storageName, bucket)
+	if sbErr != nil {
+		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		return
+	}
 
 	exists, err := storageBackend.Exists(ctx, storageKey)
 	if err != nil {
@@ -221,49 +229,76 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imageReader = bytes.NewReader(imageData)
+	// Detect content type to decide: process as image or store as passthrough
+	detectedType := utils.DetectContentType(imageData)
+	isImage := utils.IsImageContentType(detectedType)
 
-	processedImage, err := h.imageProcessor.Process(ctx, imageReader, &processor.ProcessingParams{
-		Quality: quality,
-		Format:  format,
-	})
+	var storedMeta storage.ImageMetadata
+	var storeReader io.Reader
+
+	if isImage {
+		// Process image through the pipeline
+		imageReader = bytes.NewReader(imageData)
+		processedImage, procErr := h.imageProcessor.Process(ctx, imageReader, &processor.ProcessingParams{
+			Quality: quality,
+			Format:  format,
+		})
+		if procErr != nil {
+			logger.Error().Err(procErr).Msg("Failed to process image")
+			h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
+			return
+		}
+
+		storedMeta = storage.ImageMetadata{
+			ID:           imageID,
+			OriginalName: filename,
+			Format:       processedImage.Metadata.Format,
+			Size:         processedImage.Metadata.Size,
+			Width:        processedImage.Metadata.Width,
+			Height:       processedImage.Metadata.Height,
+			ContentType:  processedImage.Metadata.ContentType,
+			CreatedAt:    processedImage.Metadata.CreatedAt,
+		}
+		storeReader = processedImage.Data
+	} else {
+		// Passthrough: store file as-is without processing
+		ext := filepath.Ext(filename)
+		if ext != "" {
+			ext = ext[1:] // remove leading dot
+		}
+		storedMeta = storage.ImageMetadata{
+			ID:           imageID,
+			OriginalName: filename,
+			Format:       ext,
+			Size:         int64(len(imageData)),
+			ContentType:  detectedType,
+			CreatedAt:    time.Now(),
+		}
+		storeReader = bytes.NewReader(imageData)
+	}
+
+	err = storageBackend.Store(ctx, storageKey, storeReader, &storedMeta)
 	if err != nil {
-		logger.Error().Err(err).Msg("Failed to process image")
-		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
+		logger.Error().Err(err).Msg("Failed to store file")
+		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", "Failed to store file")
 		return
 	}
 
-	err = storageBackend.Store(ctx, storageKey, processedImage.Data, &storage.ImageMetadata{
-		ID:           imageID,
-		OriginalName: filename,
-		Format:       processedImage.Metadata.Format,
-		Size:         processedImage.Metadata.Size,
-		Width:        processedImage.Metadata.Width,
-		Height:       processedImage.Metadata.Height,
-		ContentType:  processedImage.Metadata.ContentType,
-		CreatedAt:    processedImage.Metadata.CreatedAt,
-	})
-	if err != nil {
-		logger.Error().Err(err).Msg("Failed to store image")
-		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", "Failed to store image")
-		return
-	}
-
-	imageURL := utils.BuildImageURL(imageID, bucket, directory)
+	fileURL := utils.BuildImageURL(imageID, bucket, directory)
 
 	response := types.UploadResponse{
 		Success: true,
 		Data: types.UploadData{
 			ID:           imageID,
-			URL:          imageURL,
+			URL:          fileURL,
 			OriginalName: filename,
-			Format:       processedImage.Metadata.Format,
-			Size:         processedImage.Metadata.Size,
+			Format:       storedMeta.Format,
+			Size:         storedMeta.Size,
 			Dimensions: types.Dimensions{
-				Width:  processedImage.Metadata.Width,
-				Height: processedImage.Metadata.Height,
+				Width:  storedMeta.Width,
+				Height: storedMeta.Height,
 			},
-			CreatedAt: processedImage.Metadata.CreatedAt,
+			CreatedAt: storedMeta.CreatedAt,
 		},
 	}
 

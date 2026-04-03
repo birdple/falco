@@ -77,7 +77,11 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	urlSize := int64(len(imageData))
 
-	storageBackend := h.getStorageForBucket(req.Bucket)
+	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
+	if sbErr != nil {
+		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		return
+	}
 
 	var existingSize int64
 	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {

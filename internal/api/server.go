@@ -23,9 +23,10 @@ import (
 
 // ServerConfig holds configuration for the API server
 type ServerConfig struct {
-	Config         *config.Config
-	Storage        storage.StorageBackend
-	ImageProcessor processor.ImageProcessor
+	Config          *config.Config
+	Storage         storage.StorageBackend
+	StorageRegistry *storage.Registry
+	ImageProcessor  processor.ImageProcessor
 }
 
 // Server represents the HTTP server
@@ -46,6 +47,10 @@ func NewServer(cfg *ServerConfig) *Server {
 		cfg.ImageProcessor,
 		time.Now(),
 	)
+
+	if cfg.StorageRegistry != nil {
+		h.SetRegistry(cfg.StorageRegistry)
+	}
 
 	m := metrics.New()
 
@@ -146,8 +151,15 @@ func (s *Server) setupRouter() {
 		// Protected endpoints
 		r.Group(func(r chi.Router) {
 			if s.config.Security.APIKeyRequired {
-				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
-				r.Use(apiKeyAuth.Handler)
+				if len(s.config.Security.ScopedKeys) > 0 {
+					// Use scoped auth: validates admin key + scoped keys, injects scope into context
+					scopedAuth := apimw.NewScopedAPIKeyAuth(s.config.Security.APIKey, s.config.Security.ScopedKeys)
+					r.Use(scopedAuth.Handler)
+				} else {
+					// Legacy: single admin key only
+					apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
+					r.Use(apiKeyAuth.Handler)
+				}
 			}
 
 			r.Post("/upload", s.handler.HandleUpload)

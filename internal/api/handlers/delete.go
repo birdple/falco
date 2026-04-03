@@ -26,7 +26,11 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storageBackend := h.getStorageForBucket(req.Bucket)
+	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
+	if sbErr != nil {
+		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		return
+	}
 
 	var deletedKeys []string
 

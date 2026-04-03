@@ -37,6 +37,20 @@ func GetExtensionFromContentType(contentType string) string {
 	}
 }
 
+// IsImageContentType returns true if the content type represents an image
+// that can be processed by the image processor.
+func IsImageContentType(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.HasPrefix(ct, "image/") &&
+		!strings.Contains(ct, "svg") // SVG is not raster, skip processing
+}
+
+// DetectContentType uses http.DetectContentType on the first 512 bytes
+// and returns the detected MIME type.
+func DetectContentType(data []byte) string {
+	return http.DetectContentType(data)
+}
+
 // ExtractFilenameFromURL extracts filename from URL path
 func ExtractFilenameFromURL(rawURL string) string {
 	u, err := url.Parse(rawURL)

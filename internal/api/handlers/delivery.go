@@ -55,7 +55,9 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get bucket and directory parameters
+	// Get storage, bucket, and directory parameters
+	storageName := r.URL.Query().Get("storage")
+
 	bucket := r.URL.Query().Get("b")
 	if bucket == "" {
 		bucket = r.URL.Query().Get("bucket")
@@ -76,7 +78,12 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storageKey := utils.BuildStorageKey(directory, imageID)
-	storageBackend := h.getStorageForBucket(bucket)
+
+	storageBackend, err := h.getStorageBackendScoped(r, storageName, bucket)
+	if err != nil {
+		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", err.Error())
+		return
+	}
 
 	// Parse query parameters for transformations
 	params := &processor.ProcessingParams{}
@@ -219,7 +226,14 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	m.StorageOperationDuration.WithLabelValues("retrieve", "minio").Observe(storageDuration)
 	defer reader.Close()
 
-	// Determine if processing is needed
+	// Non-image files: serve directly without any processing
+	isImage := utils.IsImageContentType(metadata.ContentType)
+	if !isImage {
+		h.serveImage(w, reader, metadata)
+		return
+	}
+
+	// Determine if processing is needed (image files only)
 	hasTransformations := params.Width != 0 || params.Height != 0 || params.Quality != 0 ||
 		params.CropW != 0 || params.CropH != 0 ||
 		params.Rotate != 0 || params.Flip != "" || params.Flop ||

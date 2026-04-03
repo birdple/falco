@@ -16,6 +16,8 @@ import (
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	storageName := r.URL.Query().Get("storage")
+
 	bucket := r.URL.Query().Get("b")
 	if bucket == "" {
 		bucket = r.URL.Query().Get("bucket")
@@ -41,7 +43,11 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storageBackend := h.getStorageForBucket(bucket)
+	storageBackend, sbErr := h.getStorageBackendScoped(r, storageName, bucket)
+	if sbErr != nil {
+		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		return
+	}
 
 	results, err := storageBackend.List(ctx, prefix)
 	if err != nil {
