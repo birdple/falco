@@ -127,9 +127,15 @@ func (s *Server) setupRouter() {
 		http.ServeFile(w, r, "./docs/openapi.yaml")
 	})
 
-	// Prometheus metrics endpoint
+	// Prometheus metrics endpoint (protected by API key when auth is enabled)
 	if s.config.Development.EnableMetrics {
-		r.Handle("/metrics", promhttp.Handler())
+		r.Group(func(r chi.Router) {
+			if s.config.Security.APIKeyRequired {
+				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
+				r.Use(apiKeyAuth.Handler)
+			}
+			r.Handle("/metrics", promhttp.Handler())
+		})
 	}
 
 	// API routes
