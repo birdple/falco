@@ -9,7 +9,7 @@ GO_VERSION=1.21
 # Build commands
 .PHONY: build
 build:
-	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/$(BINARY_NAME) cmd/server/main.go
+	CGO_ENABLED=1 GOOS=linux go build -o bin/$(BINARY_NAME) cmd/server/main.go
 
 .PHONY: build-local
 build-local:
