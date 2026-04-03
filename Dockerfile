@@ -81,6 +81,9 @@ COPY --from=builder /app/configs ./configs
 # Copia la documentación de la API
 COPY --from=builder /app/docs ./docs
 
+# Copia los archivos estáticos de la UI
+COPY --from=builder /app/web ./web
+
 # Cambia la propiedad de todos los archivos copiados
 RUN chown -R appuser:appgroup /app
 
@@ -90,9 +93,9 @@ USER appuser
 # Expone el puerto
 EXPOSE 8080
 
-# Chequeo de salud
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-#     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 # Comando de ejecución
 CMD ["./falco-server"]
