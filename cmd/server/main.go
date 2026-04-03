@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,11 +48,14 @@ func main() {
 
 	// Log sanitized configuration (no secrets)
 	logger.Info().
+		Str("storage_mode", cfg.Storage.Mode).
 		Str("storage_primary", cfg.Storage.Primary).
 		Str("storage_secondary", cfg.Storage.Secondary).
+		Str("storage_replication", cfg.Storage.Replication).
 		Str("s3_bucket", cfg.Storage.S3.Bucket).
 		Str("minio_bucket", cfg.Storage.MinIO.Bucket).
 		Str("minio_endpoint", cfg.Storage.MinIO.Endpoint).
+		Str("r2_bucket", cfg.Storage.R2.Bucket).
 		Str("local_path", cfg.GetLocalStoragePath()).
 		Int("port", cfg.Server.Port).
 		Str("host", cfg.Server.Host).
@@ -75,7 +79,7 @@ func main() {
 	defer cancel()
 
 	// Initialize components
-	storageBackend, err := initializeStorage(cfg)
+	storageBackend, storageReg, err := initializeStorage(cfg)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("Failed to initialize storage backend")
 	}
@@ -87,6 +91,14 @@ func main() {
 		cfg.Processing.MaxDimensions.Width,
 		cfg.Processing.MaxDimensions.Height,
 	)
+
+	// Limit concurrent image processing to avoid CPU/memory exhaustion
+	if cfg.Processing.ConcurrentWorkers > 0 {
+		if vp, ok := imageProcessor.(*processor.VipsProcessor); ok {
+			vp.SetMaxConcurrency(cfg.Processing.ConcurrentWorkers)
+			logger.Info().Int("max_concurrent", cfg.Processing.ConcurrentWorkers).Msg("Processing concurrency limit set")
+		}
+	}
 
 	// Initialize cache
 	var appCache processor.Cache
@@ -115,9 +127,10 @@ func main() {
 
 	// Initialize API server
 	server := api.NewServer(&api.ServerConfig{
-		Config:         cfg,
-		Storage:        storageBackend,
-		ImageProcessor: imageProcessor,
+		Config:          cfg,
+		Storage:         storageBackend,
+		StorageRegistry: storageReg,
+		ImageProcessor:  imageProcessor,
 	})
 
 	// Start server in a goroutine
@@ -217,55 +230,154 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 	}
 }
 
-// initializeStorage initializes the storage backend based on configuration
-func initializeStorage(cfg *config.Config) (storage.StorageBackend, error) {
-	storageType := storage.StorageType(cfg.Storage.Primary)
+// initializeStorage initializes the storage backend(s) based on configuration.
+// Returns the default backend and an optional registry (non-nil in multi mode).
+func initializeStorage(cfg *config.Config) (storage.StorageBackend, *storage.Registry, error) {
+	// Multi mode: build named backends from config
+	if cfg.Storage.Mode == "multi" {
+		return initializeMultiStorage(cfg)
+	}
+
+	// Single mode: primary + optional secondary with replication
+	primary, err := buildBackend(cfg, cfg.Storage.Primary)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize primary storage: %w", err)
+	}
+	logger.Info().Str("type", cfg.Storage.Primary).Msg("Primary storage initialized")
+
+	// If secondary is configured, wrap with ReplicatedStorage
+	if cfg.Storage.Secondary != "" && cfg.Storage.Secondary != "none" {
+		secondary, err := buildBackend(cfg, cfg.Storage.Secondary)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize secondary storage: %w", err)
+		}
+
+		mode := storage.ReplicationMode(cfg.Storage.Replication)
+		if mode == "" {
+			mode = storage.ReplicationSync
+		}
+
+		logger.Info().
+			Str("secondary_type", cfg.Storage.Secondary).
+			Str("replication_mode", string(mode)).
+			Msg("Secondary storage initialized with replication")
+
+		replicated := storage.NewReplicatedStorage(primary, secondary, mode)
+		return replicated, nil, nil
+	}
+
+	return primary, nil, nil
+}
+
+// initializeMultiStorage builds a registry of named backends from config.
+func initializeMultiStorage(cfg *config.Config) (storage.StorageBackend, *storage.Registry, error) {
+	if len(cfg.Storage.Backends) == 0 {
+		return nil, nil, fmt.Errorf("multi mode requires at least one named backend in storage.backends")
+	}
+
+	// Build the first backend to use as initial default
+	var firstBackend storage.StorageBackend
+	var firstName string
+	for name := range cfg.Storage.Backends {
+		firstName = name
+		break
+	}
+
+	firstBackend, err := buildNamedBackend(cfg.Storage.Backends[firstName])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize backend %q: %w", firstName, err)
+	}
+
+	reg := storage.NewRegistry(firstBackend)
+	// Re-register under its actual name (NewRegistry puts it under "default")
+	reg.Register(firstName, firstBackend)
+	logger.Info().Str("name", firstName).Str("type", cfg.Storage.Backends[firstName].Type).Msg("Storage backend registered")
+
+	// Build remaining backends
+	for name, backendCfg := range cfg.Storage.Backends {
+		if name == firstName {
+			continue
+		}
+		backend, err := buildNamedBackend(backendCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize backend %q: %w", name, err)
+		}
+		reg.Register(name, backend)
+		logger.Info().Str("name", name).Str("type", backendCfg.Type).Msg("Storage backend registered")
+	}
+
+	// Set the configured default if specified
+	if cfg.Storage.Default != "" {
+		if err := reg.SetDefault(cfg.Storage.Default); err != nil {
+			return nil, nil, fmt.Errorf("failed to set default backend: %w", err)
+		}
+	}
 
 	logger.Info().
-		Str("requested_type", string(storageType)).
-		Str("primary_config", cfg.Storage.Primary).
-		Str("minio_endpoint", cfg.Storage.MinIO.Endpoint).
-		Str("minio_bucket", cfg.Storage.MinIO.Bucket).
-		Str("s3_bucket", cfg.Storage.S3.Bucket).
-		Msg("Initializing storage backend")
+		Int("backend_count", reg.Len()).
+		Str("default", reg.DefaultName()).
+		Strs("backends", reg.Names()).
+		Msg("Multi-storage mode initialized")
+
+	return reg.Default(), reg, nil
+}
+
+// buildBackend creates a storage backend from the global config for a given type string.
+func buildBackend(cfg *config.Config, storageType string) (storage.StorageBackend, error) {
+	st := storage.StorageType(storageType)
 
 	accessKey := cfg.Storage.S3.AccessKey
 	secretKey := cfg.Storage.S3.SecretKey
-	if storageType == storage.StorageTypeMinIO {
+	if st == storage.StorageTypeMinIO {
 		accessKey = cfg.Storage.MinIO.AccessKey
 		secretKey = cfg.Storage.MinIO.SecretKey
 	}
 
 	storageConfig := &storage.StorageConfig{
-		Type:          storageType,
-		LocalPath:     cfg.GetLocalStoragePath(),
-		S3Bucket:      cfg.Storage.S3.Bucket,
-		S3Region:      cfg.Storage.S3.Region,
-		S3Endpoint:    cfg.Storage.S3.Endpoint,
-		AccessKey:     accessKey,
-		SecretKey:     secretKey,
+		Type:        st,
+		LocalPath:   cfg.GetLocalStoragePath(),
+		S3Bucket:    cfg.Storage.S3.Bucket,
+		S3Region:    cfg.Storage.S3.Region,
+		S3Endpoint:  cfg.Storage.S3.Endpoint,
+		AccessKey:   accessKey,
+		SecretKey:   secretKey,
 		MinIOBucket:   cfg.Storage.MinIO.Bucket,
 		MinIOEndpoint: cfg.Storage.MinIO.Endpoint,
 		MinIORegion:   cfg.Storage.MinIO.Region,
 		MinIOSecure:   cfg.Storage.MinIO.Secure,
+		R2Bucket:    cfg.Storage.R2.Bucket,
+		R2AccountID: cfg.Storage.R2.AccountID,
+		R2AccessKey: cfg.Storage.R2.AccessKey,
+		R2SecretKey: cfg.Storage.R2.SecretKey,
 	}
 
-	backend, err := storage.NewStorageBackend(storageConfig)
-	if err != nil {
-		logger.Error().Err(err).Msg("Failed to initialize storage backend")
-		return nil, err
+	return storage.NewStorageBackend(storageConfig)
+}
+
+// buildNamedBackend creates a storage backend from a named BackendConfig.
+func buildNamedBackend(bcfg config.BackendConfig) (storage.StorageBackend, error) {
+	st := storage.StorageType(bcfg.Type)
+
+	storageConfig := &storage.StorageConfig{
+		Type:      st,
+		LocalPath: bcfg.Path,
+		// S3 fields
+		S3Bucket:   bcfg.Bucket,
+		S3Region:   bcfg.Region,
+		S3Endpoint: bcfg.Endpoint,
+		AccessKey:  bcfg.AccessKey,
+		SecretKey:  bcfg.SecretKey,
+		// MinIO fields
+		MinIOBucket:   bcfg.Bucket,
+		MinIOEndpoint: bcfg.Endpoint,
+		MinIORegion:   bcfg.Region,
+		MinIOSecure:   bcfg.Secure,
+		// R2 fields
+		R2Bucket:    bcfg.Bucket,
+		R2AccountID: bcfg.AccountID,
+		R2AccessKey: bcfg.AccessKey,
+		R2SecretKey: bcfg.SecretKey,
 	}
 
-	switch storageType {
-	case storage.StorageTypeMinIO:
-		logger.Info().Msg("Using MinIO storage backend")
-	case storage.StorageTypeS3:
-		logger.Info().Msg("Using S3 storage backend")
-	case storage.StorageTypeFilesystem:
-		logger.Info().Msg("Using filesystem storage backend")
-	default:
-		logger.Warn().Str("type", string(storageType)).Msg("Unknown storage backend type")
-	}
-
-	return backend, nil
+	return storage.NewStorageBackend(storageConfig)
 }
