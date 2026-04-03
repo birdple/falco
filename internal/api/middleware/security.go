@@ -54,9 +54,9 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-		// Use a stricter CSP for the main app, allow unsafe-eval only for /docs
+		// Alpine.js requires 'unsafe-eval' for expression evaluation (x-data, @click, etc.)
 		csp := "default-src 'self'; " +
-			"script-src 'self'; " +
+			"script-src 'self' 'unsafe-eval'; " +
 			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
 			"font-src 'self' https://fonts.gstatic.com; " +
 			"img-src 'self' data:; " +
