@@ -125,6 +125,10 @@ func (l *loader) getEnvMappings() map[string]string {
 		"API_KEY":                  "security.api_key",
 		"CORS_ORIGINS":             "security.cors.origins",
 		"RATE_LIMIT_RPM":           "security.rate_limit.requests_per_minute",
+		"HMAC_KEY":                 "security.hmac_key",
+		"HMAC_SALT":                "security.hmac_salt",
+		"HMAC_SIGNATURE_SIZE":      "security.hmac_signature_size",
+		"HMAC_REQUIRED":            "security.hmac_required",
 		"LOG_LEVEL":                "logging.level",
 		"LOG_FORMAT":               "logging.format",
 		"LOG_OUTPUT":               "logging.output",
@@ -148,6 +152,7 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 		"processing.max_dimensions.height":        true,
 		"cache.default_max_age":                   true,
 		"cache.default_smax_age":                  true,
+		"security.hmac_signature_size":            true,
 	}
 
 	boolKeys := map[string]bool{
@@ -157,6 +162,7 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 		"development.enable_metrics": true,
 		"storage.minio.secure":       true,
 		"cache.enable_redis":         true,
+		"security.hmac_required":     true,
 	}
 
 	switch {

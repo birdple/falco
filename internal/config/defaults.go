@@ -78,6 +78,8 @@ func (d *defaultsProvider) setSecurityDefaults(v *viper.Viper) {
 	v.SetDefault("security.rate_limit.burst", 100)
 	v.SetDefault("security.honeypot.db_path", "data/honeypot.db")
 	v.SetDefault("security.honeypot.ban_threshold", 3)
+	v.SetDefault("security.hmac_signature_size", 32)
+	v.SetDefault("security.hmac_required", false)
 }
 
 // setLoggingDefaults sets logging default values

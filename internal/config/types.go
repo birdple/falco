@@ -94,6 +94,11 @@ type SecurityConfig struct {
 		RequestsPerMinute int `mapstructure:"requests_per_minute"`
 		Burst             int `mapstructure:"burst"`
 	} `mapstructure:"rate_limit"`
+	// HMAC URL signing
+	HMACKey           string `mapstructure:"hmac_key"`
+	HMACKeySalt       string `mapstructure:"hmac_salt"`
+	HMACSignatureSize int    `mapstructure:"hmac_signature_size"` // bytes, default 32
+	HMACRequired      bool   `mapstructure:"hmac_required"`       // if false, signature is optional
 }
 
 // LoggingConfig holds logging configuration
