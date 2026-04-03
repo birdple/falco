@@ -16,8 +16,8 @@ A blazing-fast, self-hosted image processing service built in Go. Store, transfo
 - **File Management** — list images in buckets/directories, delete files or entire directories
 - **Flexible Storage** — local filesystem, MinIO, Amazon S3, or Cloudflare R2 with multi-bucket and directory support
 - **File Passthrough** — upload and serve any file type (PDFs, ZIPs, videos, etc.) without processing
-- **Multi-Storage Mode** — register multiple named backends and route requests with `?storage=name`
-- **Storage Replication** — primary/secondary backends with sync, async, or read-fallback modes
+- **Bucket Groups** — organize N buckets from N providers into logical groups with shared API keys and 1-level subgroups with inheritance
+- **Multi-Target Backups** — each bucket can have multiple backup targets with independent modes (sync, async, read-fallback)
 - **Content-based Deduplication** — automatic duplicate detection via hash-based IDs
 - **Custom Image IDs** — optional manual ID specification for better organization
 
@@ -29,7 +29,7 @@ A blazing-fast, self-hosted image processing service built in Go. Store, transfo
 
 ### Security
 - **HMAC-SHA256 URL signing** — signed delivery URLs to prevent unauthorized transformations
-- **API key authentication** — global admin key + scoped keys with per-storage/bucket access control
+- **API key authentication** — global admin key + scoped keys at bucket, group, or subgroup level
 - **SSRF protection** — blocks requests to private/loopback IP ranges when downloading external URLs
 - **Trusted proxies** — validate `X-Forwarded-For` only from known proxy IPs to prevent rate limiter bypass
 - **Path traversal protection** — validates storage paths in the filesystem backend
@@ -89,46 +89,118 @@ docker-compose --profile with-minio up -d
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust values. All environment variables can also be set as YAML config.
+Copy `.env.example` to `.env` and adjust values. All settings work via both YAML (`config.yaml`) and environment variables.
 
-### Key Environment Variables
+### Storage: Buckets & Groups
+
+Falco uses a unified **bucket-group** model. Every storage target is a named bucket. Buckets can be grouped, and each level (bucket, group, subgroup) can have its own API keys.
+
+#### YAML Configuration
+
+```yaml
+storage:
+  default: "images"   # required: which bucket to use when none is specified
+
+  buckets:
+    images:
+      type: s3
+      bucket: prod-images
+      region: us-west-2
+      access_key: ""
+      secret_key: ""
+      backups:
+        - target: "images-backup"
+          mode: sync
+        - target: "images-archive"
+          mode: async
+      keys:
+        - name: "client-a"
+          key: "sk-client-a-secret"
+
+    images-backup:
+      type: minio
+      bucket: backup-images
+      endpoint: "http://minio:9000"
+      access_key: ""
+      secret_key: ""
+
+    images-archive:
+      type: r2
+      bucket: archive-images
+      account_id: ""
+      access_key: ""
+      secret_key: ""
+
+    local-files:
+      type: filesystem
+      path: ./data/images
+
+  groups:
+    media:
+      buckets: ["images", "images-backup", "images-archive"]
+      keys:
+        - name: "media-team"
+          key: "sk-media-team-secret"
+      subgroups:
+        thumbnails:
+          buckets: ["images"]
+          keys:
+            - name: "thumb-service"
+              key: "sk-thumb-service"
+```
+
+#### Environment Variables
+
+Buckets, backups, keys, and groups are auto-discovered from env vars:
+
+```bash
+# Buckets: STORAGE_BUCKET_<NAME>_TYPE + fields
+STORAGE_DEFAULT=images
+STORAGE_BUCKET_IMAGES_TYPE=s3
+STORAGE_BUCKET_IMAGES_BUCKET=prod-images
+STORAGE_BUCKET_IMAGES_REGION=us-west-2
+STORAGE_BUCKET_IMAGES_ACCESS_KEY=...
+STORAGE_BUCKET_IMAGES_SECRET_KEY=...
+
+# Backups: STORAGE_BUCKET_<NAME>_BACKUP_<N>_TARGET/MODE
+STORAGE_BUCKET_IMAGES_BACKUP_1_TARGET=imagesbackup
+STORAGE_BUCKET_IMAGES_BACKUP_1_MODE=sync
+
+# Bucket keys: STORAGE_BUCKET_<NAME>_KEY_<KEYNAME>_KEY
+STORAGE_BUCKET_IMAGES_KEY_CLIENTA_KEY=sk-client-a-secret
+
+# Groups: STORAGE_GROUP_<NAME>_BUCKETS
+STORAGE_GROUP_MEDIA_BUCKETS=images,imagesbackup
+STORAGE_GROUP_MEDIA_KEY_MEDIATEAM_KEY=sk-media-team-secret
+
+# Subgroups: STORAGE_GROUP_<NAME>_SUBGROUP_<SUB>_BUCKETS
+STORAGE_GROUP_MEDIA_SUBGROUP_THUMBNAILS_BUCKETS=images
+STORAGE_GROUP_MEDIA_SUBGROUP_THUMBNAILS_KEY_THUMBSVC_KEY=sk-thumb-svc
+```
+
+#### Simple Setup (filesystem only)
+
+If no buckets are configured, Falco defaults to a single filesystem bucket at `./data/images`:
+
+```bash
+# This is all you need for a minimal setup
+STORAGE_DEFAULT=local
+STORAGE_BUCKET_LOCAL_TYPE=filesystem
+STORAGE_BUCKET_LOCAL_PATH=./data/images
+```
+
+### Other Environment Variables
 
 ```bash
 # Server
 PORT=8080
 HOST=0.0.0.0
-ENV=production
-
-# Storage
-STORAGE_PRIMARY=filesystem       # filesystem | s3 | minio | r2
-STORAGE_LOCAL_PATH=./data/images
-
-# S3
-STORAGE_S3_BUCKET=my-bucket
-STORAGE_S3_REGION=us-west-2
-STORAGE_S3_ACCESS_KEY=...
-STORAGE_S3_SECRET_KEY=...
-
-# MinIO
-STORAGE_MINIO_ENDPOINT=http://localhost:9000
-STORAGE_MINIO_BUCKET=images
-STORAGE_MINIO_ACCESS_KEY=minioadmin
-STORAGE_MINIO_SECRET_KEY=minioadmin
-STORAGE_MINIO_SECURE=false
-
-# Cloudflare R2
-STORAGE_R2_BUCKET=my-bucket
-STORAGE_R2_ACCOUNT_ID=your-account-id
-STORAGE_R2_ACCESS_KEY=...
-STORAGE_R2_SECRET_KEY=...
 
 # Cache
 CACHE_SIZE_MB=256
 CACHE_TTL_HOURS=24
 CACHE_DEFAULT_MAX_AGE=3600       # Browser Cache-Control (seconds)
 CACHE_DEFAULT_SMAX_AGE=7200      # CDN s-maxage (seconds)
-
-# Redis (optional persistent cache layer)
 ENABLE_REDIS=false
 REDIS_URL=redis://localhost:6379/0
 
@@ -143,13 +215,12 @@ API_KEY_REQUIRED=true
 API_KEY=your-api-key
 CORS_ORIGINS=https://yourdomain.com
 RATE_LIMIT_RPM=1000
-TRUSTED_PROXIES=10.0.0.1,10.0.0.2  # IPs of reverse proxies
 
 # HMAC URL signing (recommended for production)
 HMAC_KEY=                        # openssl rand -hex 32
 HMAC_SALT=
 HMAC_SIGNATURE_SIZE=32
-HMAC_REQUIRED=false              # true = reject unsigned requests
+HMAC_REQUIRED=false
 
 # Observability
 LOG_LEVEL=info
@@ -412,110 +483,103 @@ docker-compose --profile with-minio up -d
 # Access MinIO Console: http://localhost:9001
 # Default credentials: minioadmin / minioadmin
 
-STORAGE_PRIMARY=minio
-STORAGE_MINIO_ENDPOINT=http://localhost:9000
-STORAGE_MINIO_BUCKET=images
-STORAGE_MINIO_ACCESS_KEY=minioadmin
-STORAGE_MINIO_SECRET_KEY=minioadmin
-STORAGE_MINIO_SECURE=false
+STORAGE_DEFAULT=minio
+STORAGE_BUCKET_MINIO_TYPE=minio
+STORAGE_BUCKET_MINIO_BUCKET=images
+STORAGE_BUCKET_MINIO_ENDPOINT=http://localhost:9000
+STORAGE_BUCKET_MINIO_ACCESS_KEY=minioadmin
+STORAGE_BUCKET_MINIO_SECRET_KEY=minioadmin
+STORAGE_BUCKET_MINIO_SECURE=false
 ```
 
 ---
 
-## Multi-Storage Mode
+## Multiple Buckets
 
-Run multiple storage backends simultaneously and route requests by name. Useful for separating concerns (e.g., originals in MinIO, CDN-optimized copies in R2, temp files on local disk).
-
-### Configuration
-
-Backends are auto-discovered from environment variables following the pattern `STORAGE_BACKEND_<NAME>_*`:
+Run multiple storage buckets from different providers simultaneously. Select a bucket per request with `?storage=`:
 
 ```bash
-# Defining any STORAGE_BACKEND_*_TYPE var automatically enables multi mode
-STORAGE_DEFAULT=images
-
-STORAGE_BACKEND_IMAGES_TYPE=minio
-STORAGE_BACKEND_IMAGES_BUCKET=prod-images
-STORAGE_BACKEND_IMAGES_ENDPOINT=minio:9000
-STORAGE_BACKEND_IMAGES_ACCESS_KEY=minioadmin
-STORAGE_BACKEND_IMAGES_SECRET_KEY=minioadmin
-
-STORAGE_BACKEND_CDN_TYPE=r2
-STORAGE_BACKEND_CDN_BUCKET=cdn-assets
-STORAGE_BACKEND_CDN_ACCOUNT_ID=your-cf-account-id
-STORAGE_BACKEND_CDN_ACCESS_KEY=...
-STORAGE_BACKEND_CDN_SECRET_KEY=...
-
-STORAGE_BACKEND_TEMP_TYPE=filesystem
-STORAGE_BACKEND_TEMP_PATH=/tmp/processing
-```
-
-### Usage
-
-Select a backend per request with the `?storage=` query parameter:
-
-```bash
-# Upload to the "cdn" backend
+# Upload to the "cdn" bucket
 curl -X POST "http://localhost:8080/api/v1/upload?storage=cdn" \
   -H "X-API-Key: your-key" \
   -F "file=@image.jpg"
 
-# List files in the "images" backend
+# List files in the "images" bucket
 curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/list?storage=images"
 ```
 
-When `?storage=` is omitted, the default backend is used.
+When `?storage=` is omitted, the `storage.default` bucket is used.
 
 ---
 
-## Storage Replication
+## Multi-Target Backups
 
-In single mode, configure a secondary backend for redundancy or migration:
+Each bucket can have multiple backup targets, each with its own replication mode:
 
-```bash
-STORAGE_PRIMARY=minio
-STORAGE_SECONDARY=s3
-STORAGE_REPLICATION=async    # sync | async | read-fallback
+```yaml
+storage:
+  buckets:
+    images:
+      type: s3
+      bucket: prod-images
+      backups:
+        - target: "hot-backup"     # sync: fail if backup fails
+          mode: sync
+        - target: "cold-archive"   # async: best-effort background
+          mode: async
+        - target: "migration"      # read-fallback: read from here on 404
+          mode: read-fallback
 ```
 
 | Mode | Behavior |
 |------|----------|
-| `sync` | Writes to both backends; fails if secondary fails |
-| `async` | Writes to primary, replicates to secondary in background |
-| `read-fallback` | Writes only to primary; reads fall back to secondary on 404 |
+| `sync` | Writes to primary + backup; fails if backup write fails |
+| `async` | Writes to primary, replicates to backup in background |
+| `read-fallback` | Writes only to primary; reads fall back to backup on 404 |
+
+Backup targets must reference other buckets defined in the config. A single bucket can have any number of backups mixing different modes and providers (e.g., sync to MinIO + async to R2).
 
 ---
 
 ## Scoped API Keys
 
-Restrict API keys to specific storages and/or buckets for multi-tenant isolation:
+API keys can be scoped at the **bucket**, **group**, or **subgroup** level for multi-tenant isolation:
 
 ```yaml
-# config.yaml
-security:
-  api_key: "admin-master-key"       # Full access to everything
-  scoped_keys:
-    - name: "client-a"
-      key: "sk-client-a-secret"
-      storages: ["images"]          # Can only use the "images" backend
-      buckets: ["client-a-bucket"]
-    - name: "client-b"
-      key: "sk-client-b-secret"
-      buckets: ["client-b-uploads", "client-b-assets"]
+storage:
+  buckets:
+    client-uploads:
+      type: s3
+      bucket: client-uploads
+      keys:
+        - name: "client-a"
+          key: "sk-client-a-secret"
+        - name: "client-b"
+          key: "sk-client-b-secret"
+
+  groups:
+    media:
+      buckets: ["images", "backups"]
+      keys:
+        - name: "media-team"
+          key: "sk-media-team"
+        - name: "readonly-viewer"
+          key: "sk-viewer"
+          buckets: ["images"]      # restrict to subset of group
+      subgroups:
+        thumbnails:
+          buckets: ["images"]      # subset of parent group
+          keys:
+            - name: "thumb-service"
+              key: "sk-thumb"      # inherits access to "images" only
 ```
 
-Or via environment variables (auto-discovered from `SCOPED_KEY_<NAME>_KEY`):
+Key resolution:
+- **Bucket-level keys** get access to that bucket only
+- **Group-level keys** get access to all buckets in the group (or a specified subset)
+- **Subgroup-level keys** get access to the subgroup's buckets (which must be a subset of the parent group)
 
-```bash
-SCOPED_KEY_CLIENTA_KEY=sk-client-a-secret
-SCOPED_KEY_CLIENTA_STORAGES=images
-SCOPED_KEY_CLIENTA_BUCKETS=client-a-bucket
-
-SCOPED_KEY_CLIENTB_KEY=sk-client-b-secret
-SCOPED_KEY_CLIENTB_BUCKETS=client-b-uploads,client-b-assets
-```
-
-Requests with a scoped key that try to access an unauthorized storage or bucket receive `403 ACCESS_DENIED`.
+The admin key (`security.api_key`) always has unrestricted access. Requests with a scoped key that try to access an unauthorized bucket receive `403 ACCESS_DENIED`.
 
 ---
 
@@ -552,7 +616,7 @@ Both Falco and [imgproxy](https://imgproxy.net) are self-hosted, libvips-based i
 | | Falco | imgproxy |
 |--|-------|---------|
 | **Model** | Storage + processing service | Processing proxy only |
-| **Image storage** | Built-in (local FS, S3, MinIO) | None — processes remote URLs on-the-fly |
+| **Image storage** | Built-in (local FS, S3, MinIO, R2) with bucket groups and multi-target backups | None — processes remote URLs on-the-fly |
 | **Image upload** | Yes — REST API with deduplication | No |
 | **Image management** | List, delete, directory organization | No |
 | **Web dashboard** | Yes — HTMX + Tailwind UI | No (Pro plan only) |
