@@ -9,13 +9,13 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sirupsen/logrus"
 
 	"github.com/birdple/falco/internal/api/handlers"
 	"github.com/birdple/falco/internal/api/handlers/ui"
 	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/views"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
@@ -24,7 +24,6 @@ import (
 // ServerConfig holds configuration for the API server
 type ServerConfig struct {
 	Config         *config.Config
-	Logger         *logrus.Logger
 	Storage        storage.StorageBackend
 	ImageProcessor processor.ImageProcessor
 }
@@ -32,7 +31,6 @@ type ServerConfig struct {
 // Server represents the HTTP server
 type Server struct {
 	config    *config.Config
-	logger    *logrus.Logger
 	router    *chi.Mux
 	server    *http.Server
 	handler   *handlers.Handler
@@ -42,27 +40,22 @@ type Server struct {
 
 // NewServer creates a new API server
 func NewServer(cfg *ServerConfig) *Server {
-	// Create handler with dependencies
 	h := handlers.NewHandler(
 		cfg.Config,
-		cfg.Logger,
 		cfg.Storage,
 		cfg.ImageProcessor,
 		time.Now(),
 	)
 
-	// Create metrics instance
 	m := metrics.New()
 
-	// Initialize UI renderer
 	renderer, err := views.NewRenderer()
 	if err != nil {
-		cfg.Logger.WithError(err).Error("Failed to initialize UI renderer")
+		logger.Error().Err(err).Msg("Failed to initialize UI renderer")
 	}
 
 	s := &Server{
 		config:    cfg.Config,
-		logger:    cfg.Logger,
 		handler:   h,
 		uiHandler: ui.NewHandler(renderer, cfg.Storage),
 		metrics:   m,
@@ -82,19 +75,19 @@ func (s *Server) setupRouter() {
 	r.Use(apimw.SecurityHeaders)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	r.Use(apimw.ZerologRequestLogger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second)) // Reduced from 60s to prevent slowloris attacks
+	r.Use(middleware.Timeout(30 * time.Second))
 
 	// Request size limiting
-	maxRequestSize := s.config.GetMaxFileSizeBytes() * 2 // Allow some overhead
-	sizeLimiter := apimw.NewRequestSizeLimiter(maxRequestSize, s.logger)
+	maxRequestSize := s.config.GetMaxFileSizeBytes() * 2
+	sizeLimiter := apimw.NewRequestSizeLimiter(maxRequestSize)
 	r.Use(sizeLimiter.Handler)
 
 	// Compression middleware
 	r.Use(middleware.Compress(5))
 
-	// Metrics middleware (when metrics are enabled)
+	// Metrics middleware
 	if s.config.Development.EnableMetrics {
 		metricsMiddleware := apimw.NewMetricsMiddleware(s.metrics)
 		r.Use(metricsMiddleware.Handler)
@@ -105,7 +98,6 @@ func (s *Server) setupRouter() {
 		rateLimiter := apimw.NewRateLimiter(
 			s.config.Security.RateLimit.RequestsPerMinute,
 			s.config.Security.RateLimit.Burst,
-			s.logger,
 		)
 		r.Use(rateLimiter.Handler)
 	}
@@ -123,9 +115,8 @@ func (s *Server) setupRouter() {
 	// UI Routes
 	r.Get("/", s.uiHandler.Index)
 
-	// Static files
-	staticDir := http.Dir("web/static")
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(staticDir)))
+	// Static files - restrict to known extensions
+	r.Handle("/static/*", http.StripPrefix("/static/", apimw.RestrictedFileServer(http.Dir("web/static"))))
 
 	// Health check endpoint (no auth required)
 	r.Get("/health", s.handler.HandleHealth)
@@ -136,21 +127,20 @@ func (s *Server) setupRouter() {
 		http.ServeFile(w, r, "./docs/openapi.yaml")
 	})
 
-	// Prometheus metrics endpoint (enabled via development.enable_metrics)
+	// Prometheus metrics endpoint
 	if s.config.Development.EnableMetrics {
 		r.Handle("/metrics", promhttp.Handler())
 	}
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		// Public endpoint - no auth required (image delivery)
+		// Public endpoint
 		r.Get("/images/*", s.handler.HandleDelivery)
 
-		// Protected endpoints - require API key when enabled
+		// Protected endpoints
 		r.Group(func(r chi.Router) {
-			// API key authentication for protected endpoints
 			if s.config.Security.APIKeyRequired {
-				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey, s.logger)
+				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
 				r.Use(apiKeyAuth.Handler)
 			}
 
@@ -185,15 +175,14 @@ func (s *Server) setupServer() {
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
-	s.logger.WithField("address", s.config.GetServerAddress()).Info("Starting HTTP server")
+	logger.Info().Str("address", s.config.GetServerAddress()).Msg("Starting HTTP server")
 	return s.server.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the server with enhanced resource management
+// Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.logger.Info("Initiating HTTP server shutdown")
+	logger.Info().Msg("Initiating HTTP server shutdown")
 
-	// Set a reasonable timeout if none provided
 	shutdownCtx := ctx
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 30*time.Second {
 		var cancel context.CancelFunc
@@ -201,14 +190,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		defer cancel()
 	}
 
-	// Attempt graceful shutdown
 	err := s.server.Shutdown(shutdownCtx)
 	if err != nil {
-		s.logger.WithError(err).Warn("HTTP server shutdown completed with errors")
+		logger.Warn().Err(err).Msg("HTTP server shutdown completed with errors")
 		return err
 	}
 
-	s.logger.Info("HTTP server shutdown completed successfully")
+	logger.Info().Msg("HTTP server shutdown completed successfully")
 	return nil
 }
 

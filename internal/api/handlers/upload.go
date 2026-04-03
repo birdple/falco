@@ -14,6 +14,7 @@ import (
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/hashutil"
 	"github.com/birdple/falco/internal/pkg/httputil"
+	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -22,7 +23,6 @@ import (
 func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get bucket and directory parameters
 	bucket := r.URL.Query().Get("b")
 	if bucket == "" {
 		bucket = r.URL.Query().Get("bucket")
@@ -36,14 +36,12 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		directory = r.URL.Query().Get("directory")
 	}
 
-	// Normalize and validate directory path
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_DIRECTORY", fmt.Sprintf("Invalid directory path: %v", err))
 		return
 	}
 
-	// Check content type
 	contentType := r.Header.Get("Content-Type")
 
 	var imageReader io.Reader
@@ -53,11 +51,8 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	var imageData []byte
 	var err error
-	var contentTypeFromURL string
 
-	// Handle direct binary upload (image/*)
 	if strings.HasPrefix(contentType, "image/") {
-		// Read the entire body into memory
 		imageData, err = io.ReadAll(r.Body)
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
@@ -65,7 +60,6 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		filename = "image" + utils.GetExtensionFromContentType(contentType)
 
-		// Get optional parameters from query string
 		if q := r.URL.Query().Get("quality"); q != "" {
 			if quality, err = strconv.Atoi(q); err != nil {
 				h.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter")
@@ -78,14 +72,12 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 	} else if strings.Contains(contentType, "multipart/form-data") {
-		// Parse multipart form
-		err := r.ParseMultipartForm(32 << 20) // 32MB max memory
+		err := r.ParseMultipartForm(32 << 20)
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse multipart form")
 			return
 		}
 
-		// Get uploaded file
 		file, header, err := r.FormFile("file")
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "MISSING_FILE", "No file uploaded")
@@ -93,7 +85,6 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 
-		// Read file data
 		imageData, err = io.ReadAll(file)
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "READ_ERROR", "Failed to read image data")
@@ -101,7 +92,6 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		filename = header.Filename
 
-		// Get optional parameters
 		if q := r.FormValue("quality"); q != "" {
 			if quality, err = strconv.Atoi(q); err != nil {
 				h.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter")
@@ -113,16 +103,13 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			format = f
 		}
 
-		// Check for custom ID in form data
 		if id := r.FormValue("id"); id != "" {
 			if utils.IsValidImageID(id) {
-				// Store for later use
 				r.URL.RawQuery = fmt.Sprintf("id=%s&%s", id, r.URL.RawQuery)
 			}
 		}
 
 	} else if contentType == "application/json" {
-		// Handle URL-based upload
 		var uploadReq struct {
 			URL     string `json:"url"`
 			Quality int    `json:"quality,omitempty"`
@@ -140,41 +127,34 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate URL with stricter checks
 		parsedURL, err := url.Parse(uploadReq.URL)
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "Invalid URL format")
 			return
 		}
 
-		// Only allow HTTPS in production, allow HTTP in development
 		if parsedURL.Scheme != "https" && parsedURL.Scheme != "http" {
 			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol")
 			return
 		}
 
-		// Additional validation for URL length and domain
 		if len(uploadReq.URL) > 2048 {
 			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL too long (max 2048 characters)")
 			return
 		}
 
-		// Download image from URL with timeout and validation
 		maxSize := h.config.GetMaxFileSizeBytes()
-		imageData, contentTypeFromURL, err = httputil.DownloadURL(ctx, h.httpClient, uploadReq.URL, maxSize)
+		imageData, _, err = httputil.DownloadURL(ctx, h.httpClient, uploadReq.URL, maxSize)
 		if err != nil {
-			h.logger.WithError(err).Error("Failed to download image from URL")
+			logger.Error().Err(err).Msg("Failed to download image from URL")
 			h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
 			return
 		}
 
-		// Update content type from downloaded file
-		_ = contentTypeFromURL // Content type already validated by DownloadURL
 		filename = utils.ExtractFilenameFromURL(uploadReq.URL)
 		quality = uploadReq.Quality
 		format = uploadReq.Format
 
-		// Check for custom ID in JSON payload
 		if uploadReq.ID != "" {
 			if utils.IsValidImageID(uploadReq.ID) {
 				r.URL.RawQuery = fmt.Sprintf("id=%s", uploadReq.ID)
@@ -186,12 +166,9 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate image ID from hash of original data, or use provided ID
 	var imageID string
 
-	// Check for optional 'id' parameter
 	if customID := r.URL.Query().Get("id"); customID != "" {
-		// Validate custom ID (alphanumeric, hyphens, underscores only)
 		if utils.IsValidImageID(customID) {
 			imageID = customID
 		} else {
@@ -199,37 +176,29 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Use hash-based ID generation
 		imageID = hashutil.GenerateImageIDFromData(imageData)
 	}
 
-	// Build full storage key with directory and image ID
 	storageKey := utils.BuildStorageKey(directory, imageID)
-
-	// Get bucket-aware storage instance
 	storageBackend := h.getStorageForBucket(bucket)
 
-	// Check if image already exists (using bucket-aware storage)
 	exists, err := storageBackend.Exists(ctx, storageKey)
 	if err != nil {
-		h.logger.WithError(err).Warn("Failed to check image existence")
+		logger.Warn().Err(err).Msg("Failed to check image existence")
 	}
 
 	if exists {
-		// Image already exists, retrieve metadata and return
-		h.logger.WithField("image_id", imageID).Info("Image already exists, returning existing")
+		logger.Info().Str("image_id", imageID).Msg("Image already exists, returning existing")
 
 		_, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 		if err != nil {
-			h.logger.WithError(err).Error("Failed to retrieve existing image metadata")
+			logger.Error().Err(err).Msg("Failed to retrieve existing image metadata")
 			h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
 			return
 		}
 
-		// Build URL with bucket and directory parameters if provided
 		imageURL := utils.BuildImageURL(imageID, bucket, directory)
 
-		// Return existing image data
 		response := types.UploadResponse{
 			Success: true,
 			Data: types.UploadData{
@@ -247,26 +216,23 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK) // 200 instead of 201 for existing
+		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(response)
 		return
 	}
 
-	// Image doesn't exist, process it
 	imageReader = bytes.NewReader(imageData)
 
-	// Process the image
 	processedImage, err := h.imageProcessor.Process(ctx, imageReader, &processor.ProcessingParams{
 		Quality: quality,
 		Format:  format,
 	})
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to process image")
+		logger.Error().Err(err).Msg("Failed to process image")
 		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
 		return
 	}
 
-	// Store the processed image with full storage key
 	err = storageBackend.Store(ctx, storageKey, processedImage.Data, &storage.ImageMetadata{
 		ID:           imageID,
 		OriginalName: filename,
@@ -278,15 +244,13 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    processedImage.Metadata.CreatedAt,
 	})
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to store image")
+		logger.Error().Err(err).Msg("Failed to store image")
 		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", "Failed to store image")
 		return
 	}
 
-	// Build URL with bucket and directory parameters if provided
 	imageURL := utils.BuildImageURL(imageID, bucket, directory)
 
-	// Send success response
 	response := types.UploadResponse{
 		Success: true,
 		Data: types.UploadData{

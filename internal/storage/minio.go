@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+
+	"github.com/birdple/falco/internal/pkg/logger"
 	"io"
 	"time"
 
@@ -73,7 +75,7 @@ func (m *MinIOStorage) WithBucket(bucket string) StorageBackend {
 	exists, err := m.client.BucketExists(ctx, bucket)
 	if err != nil {
 		// If we can't verify bucket existence, log and return original storage
-		fmt.Printf("Warning: failed to check existence of bucket '%s': %v\n", bucket, err)
+		logger.Warn().Err(err).Str("bucket", bucket).Msg("Failed to check bucket existence")
 		return m
 	}
 
@@ -81,7 +83,7 @@ func (m *MinIOStorage) WithBucket(bucket string) StorageBackend {
 		err = m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"})
 		if err != nil {
 			// If we can't create bucket, return original storage
-			fmt.Printf("Warning: failed to create bucket '%s': %v\n", bucket, err)
+			logger.Warn().Err(err).Str("bucket", bucket).Msg("Failed to create bucket")
 			return m
 		}
 	}

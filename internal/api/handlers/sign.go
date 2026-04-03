@@ -5,12 +5,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/security"
 )
 
 // SignURLRequest represents a request to sign a URL
 type SignURLRequest struct {
-	Path string `json:"path"` // e.g. "/api/v1/images/abc123?w=800&h=600"
+	Path string `json:"path"`
 }
 
 // SignURLResponse represents a signed URL response
@@ -20,7 +21,6 @@ type SignURLResponse struct {
 }
 
 // HandleSignURL generates a signed URL for the given path.
-// Requires API key. Used by backend services to generate URLs for clients.
 func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 	if h.config.Security.HMACKey == "" {
 		h.sendError(w, http.StatusNotImplemented, "SIGNING_DISABLED", "HMAC signing is not configured")
@@ -40,12 +40,11 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 		h.config.Security.HMACSignatureSize,
 	)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to generate signature")
+		logger.Error().Err(err).Msg("Failed to generate signature")
 		h.sendError(w, http.StatusInternalServerError, "SIGNING_ERROR", "Failed to generate signature")
 		return
 	}
 
-	// Build the full signed URL by appending sig param
 	sep := "?"
 	if strings.Contains(req.Path, "?") {
 		sep = "&"

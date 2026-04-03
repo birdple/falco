@@ -10,26 +10,20 @@ import (
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	health := map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"version":   "1.0.0",
-		"uptime":    time.Since(h.startTime).String(),
-		"services":  map[string]interface{}{},
-	}
+	services := map[string]interface{}{}
 
-	// Check storage health with detailed metrics
 	storageHealth := map[string]interface{}{
 		"status": "healthy",
 	}
 
+	overallStatus := "healthy"
+
 	if err := h.storage.Health(ctx); err != nil {
 		storageHealth["status"] = "unhealthy"
 		storageHealth["error"] = err.Error()
-		health["status"] = "degraded"
+		overallStatus = "degraded"
 	}
 
-	// Get storage stats with more details
 	if stats, err := h.storage.GetStats(ctx); err == nil {
 		storageHealth["total_images"] = stats.TotalImages
 		storageHealth["total_size_bytes"] = stats.TotalSize
@@ -39,17 +33,20 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		storageHealth["stats_error"] = err.Error()
 	}
 
-	health["services"].(map[string]interface{})["storage"] = storageHealth
-
-	// Check image processor health (basic check)
-	processorHealth := map[string]interface{}{
+	services["storage"] = storageHealth
+	services["processor"] = map[string]interface{}{
 		"status":            "healthy",
 		"supported_formats": []string{"webp", "jpeg", "png", "avif"},
 	}
 
-	health["services"].(map[string]interface{})["processor"] = processorHealth
+	health := map[string]interface{}{
+		"status":    overallStatus,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"version":   "1.0.0",
+		"uptime":    time.Since(h.startTime).String(),
+		"services":  services,
+	}
 
-	// System metrics
 	health["system"] = map[string]interface{}{
 		"go_version":       "1.21+",
 		"max_file_size_mb": float64(h.config.GetMaxFileSizeBytes()) / (1024 * 1024),
@@ -59,7 +56,6 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Set status code based on health
 	statusCode := http.StatusOK
 	if health["status"] == "degraded" {
 		statusCode = http.StatusServiceUnavailable
@@ -70,7 +66,6 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(health)
 }
 
-// max returns the maximum of two integers
 func max(a, b int64) int64 {
 	if a > b {
 		return a

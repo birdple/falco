@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/security"
@@ -21,7 +22,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	imageID := chi.URLParam(r, "*")
 
 	if imageID == "" {
-		// Fallback for old clients or unexpected route match
 		imageID = chi.URLParam(r, "id")
 	}
 
@@ -34,7 +34,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	if h.config.Security.HMACKey != "" || h.config.Security.HMACRequired {
 		sig := r.URL.Query().Get("sig")
 
-		// Build the signed string: path + query params excluding "sig"
 		q := r.URL.Query()
 		q.Del("sig")
 		signedPath := r.URL.Path
@@ -50,7 +49,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 			h.config.Security.HMACSignatureSize,
 			h.config.Security.HMACRequired,
 		); err != nil {
-			h.logger.WithField("path", r.URL.Path).Warn("Invalid signature")
+			logger.Warn().Str("error", err.Error()).Msg("Invalid signature")
 			h.sendError(w, http.StatusForbidden, "INVALID_SIGNATURE", "Invalid or missing URL signature")
 			return
 		}
@@ -70,23 +69,18 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		directory = r.URL.Query().Get("directory")
 	}
 
-	// Normalize and validate directory path
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_DIRECTORY", fmt.Sprintf("Invalid directory path: %v", err))
 		return
 	}
 
-	// Build full storage key
 	storageKey := utils.BuildStorageKey(directory, imageID)
-
-	// Get bucket-aware storage instance
 	storageBackend := h.getStorageForBucket(bucket)
 
 	// Parse query parameters for transformations
 	params := &processor.ProcessingParams{}
 
-	// Support both short (w) and long (width) parameter names
 	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
 			if widthVal < MinDimensionPixels {
@@ -152,7 +146,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Gravity for smart crop
 	if gravity := r.URL.Query().Get("gravity"); gravity != "" {
 		validGravities := map[string]bool{
 			"center": true, "north": true, "south": true, "east": true, "west": true,
@@ -164,14 +157,12 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Watermark scale
 	if sc := r.URL.Query().Get("wm_scale"); sc != "" {
 		if v, err := strconv.ParseFloat(sc, 64); err == nil && v > 0 && v <= 1 {
 			params.WatermarkScale = v
 		}
 	}
 
-	// Trim
 	if r.URL.Query().Get("trim") == "1" {
 		params.TrimEnabled = true
 		if th := r.URL.Query().Get("trim_threshold"); th != "" {
@@ -181,7 +172,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Padding
 	if pt := r.URL.Query().Get("pad_top"); pt != "" {
 		if v, err := strconv.Atoi(pt); err == nil && v >= 0 {
 			params.PaddingTop = v
@@ -206,18 +196,14 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		params.PaddingColor = pc
 	}
 
-	// Auto-orient from EXIF (default true)
 	params.AutoOrient = r.URL.Query().Get("orient") != "0"
-
-	// Strip metadata (default true)
 	params.StripMetadata = r.URL.Query().Get("meta") != "1"
 
-	// Retrieve original image using full storage key
+	// Retrieve original image
 	storageStart := time.Now()
 	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 	storageDuration := time.Since(storageStart).Seconds()
 
-	// Track storage metrics
 	m := metrics.Default()
 	if err != nil {
 		m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "error").Inc()
@@ -225,7 +211,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
 			return
 		}
-		h.logger.WithError(err).Error("Failed to retrieve image")
+		logger.Error().Err(err).Msg("Failed to retrieve image")
 		h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
 		return
 	}
@@ -242,20 +228,15 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		params.Gravity != "" || params.TrimEnabled ||
 		params.PaddingTop != 0 || params.PaddingRight != 0 || params.PaddingBottom != 0 || params.PaddingLeft != 0
 
-	// We process if:
-	// 1. There are explicit transformations
-	// 2. A specific format was requested that is different from original
-	// 3. The original format is unknown (we process to detect and set correct Content-Type)
 	needsProcessing := hasTransformations ||
 		(params.Format != "" && params.Format != metadata.Format) ||
-		(metadata.Format == "" || metadata.ContentType == "application/octet-stream")
+		(metadata.Format == "" || metadata.ContentType == "" || metadata.ContentType == "application/octet-stream")
 
 	if !needsProcessing {
 		h.serveImage(w, reader, metadata)
 		return
 	}
 
-	// If we need to process but no format was specified, use the default from config or WebP
 	if params.Format == "" {
 		params.Format = h.config.Processing.DefaultFormat
 		if params.Format == "" {
@@ -263,15 +244,13 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Process image with transformations (includes automatic format detection)
 	processStart := time.Now()
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params)
 	processDuration := time.Since(processStart).Seconds()
 
-	// Track processing metrics
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
-		h.logger.WithError(err).Error("Failed to process image")
+		logger.Error().Err(err).Msg("Failed to process image")
 		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
 		return
 	}
@@ -280,7 +259,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	defer processedImage.Data.Close()
 
-	// Convert processor metadata to storage metadata
 	storageMetadata := &storage.ImageMetadata{
 		ID:           processedImage.Metadata.ID,
 		OriginalName: processedImage.Metadata.OriginalName,
@@ -292,7 +270,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    processedImage.Metadata.CreatedAt,
 	}
 
-	// Fallback: Ensure ContentType is set based on format if empty
 	if storageMetadata.ContentType == "" {
 		storageMetadata.ContentType = h.imageProcessor.GetContentType(storageMetadata.Format)
 	}

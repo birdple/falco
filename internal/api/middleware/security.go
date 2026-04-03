@@ -4,71 +4,128 @@ import (
 	"crypto/subtle"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/birdple/falco/internal/pkg/httputil"
-	"github.com/sirupsen/logrus"
+	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/rs/zerolog"
 )
+
+// ZerologRequestLogger is a Chi-compatible middleware that logs requests via zerolog.
+func ZerologRequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+		next.ServeHTTP(wrapped, r)
+
+		var evt *zerolog.Event
+		switch {
+		case wrapped.statusCode >= 500:
+			evt = logger.Error()
+		case wrapped.statusCode >= 400:
+			evt = logger.Warn()
+		default:
+			evt = logger.Info()
+		}
+
+		evt.
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Int("status", wrapped.statusCode).
+			Int("size", wrapped.size).
+			Dur("duration", time.Since(start)).
+			Str("ip", httputil.GetClientIP(r)).
+			Str("request_id", middleware.GetReqID(r.Context())).
+			Msg("request")
+	})
+}
 
 // SecurityHeaders adds security headers to responses
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Prevent MIME type sniffing
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-
-		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
-
-		// XSS protection
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-		// Content Security Policy
-		// Allow external resources for ReDoc documentation page
-		csp := "default-src 'self' https://cdn.redoc.ly; " +
-			"script-src 'self' https://cdn.redoc.ly blob: 'unsafe-eval'; " +
+		// Use a stricter CSP for the main app, allow unsafe-eval only for /docs
+		csp := "default-src 'self'; " +
+			"script-src 'self'; " +
 			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
 			"font-src 'self' https://fonts.gstatic.com; " +
-			"img-src 'self' data: https://cdn.redoc.ly; " +
-			"worker-src 'self' blob:; " +
-			"connect-src 'self' https://cdn.redoc.ly"
+			"img-src 'self' data:; " +
+			"connect-src 'self'"
+
+		if strings.HasPrefix(r.URL.Path, "/docs") {
+			csp = "default-src 'self' https://cdn.redoc.ly; " +
+				"script-src 'self' https://cdn.redoc.ly blob: 'unsafe-eval'; " +
+				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+				"font-src 'self' https://fonts.gstatic.com; " +
+				"img-src 'self' data: https://cdn.redoc.ly; " +
+				"worker-src 'self' blob:; " +
+				"connect-src 'self' https://cdn.redoc.ly"
+		}
 		w.Header().Set("Content-Security-Policy", csp)
 
-		// Referrer Policy
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-
-		// Permissions Policy
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
 		next.ServeHTTP(w, r)
 	})
 }
 
+// RestrictedFileServer serves only files with known safe extensions.
+func RestrictedFileServer(root http.FileSystem) http.Handler {
+	fs := http.FileServer(root)
+	allowedExtensions := map[string]bool{
+		".css":  true,
+		".js":   true,
+		".ico":  true,
+		".png":  true,
+		".jpg":  true,
+		".jpeg": true,
+		".svg":  true,
+		".woff": true,
+		".woff2": true,
+		".ttf":  true,
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ext := strings.ToLower(filepath.Ext(r.URL.Path))
+		if !allowedExtensions[ext] {
+			http.NotFound(w, r)
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
+}
+
 // APIKeyAuth provides API key authentication
 type APIKeyAuth struct {
 	apiKey             string
-	logger             *logrus.Logger
 	exemptPaths        map[string]bool
 	exemptPathPrefixes []string
 }
 
 // NewAPIKeyAuth creates a new API key authentication middleware
-func NewAPIKeyAuth(apiKey string, logger *logrus.Logger) *APIKeyAuth {
+func NewAPIKeyAuth(apiKey string) *APIKeyAuth {
 	exemptPaths := map[string]bool{
 		"/health": true,
 		"/":       true,
 	}
 
-	// Exempt path prefixes - any path starting with these prefixes will skip auth
 	exemptPathPrefixes := []string{
-		"/api/v1/images/", // Image delivery/retrieval endpoints (public)
+		"/api/v1/images/",
 	}
 
 	return &APIKeyAuth{
 		apiKey:             apiKey,
-		logger:             logger,
 		exemptPaths:        exemptPaths,
 		exemptPathPrefixes: exemptPathPrefixes,
 	}
@@ -77,13 +134,11 @@ func NewAPIKeyAuth(apiKey string, logger *logrus.Logger) *APIKeyAuth {
 // Handler returns the middleware handler
 func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip authentication for exact exempt paths
 		if a.exemptPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Skip authentication for paths with exempt prefixes
 		for _, prefix := range a.exemptPathPrefixes {
 			if strings.HasPrefix(r.URL.Path, prefix) {
 				next.ServeHTTP(w, r)
@@ -91,33 +146,30 @@ func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 			}
 		}
 
-		// Get API key from header
 		providedKey := r.Header.Get("X-API-Key")
 		if providedKey == "" {
 			providedKey = r.Header.Get("Authorization")
 			providedKey, _ = strings.CutPrefix(providedKey, "Bearer ")
 		}
 
-		// Check if API key is required
 		if a.apiKey != "" {
 			if providedKey == "" {
-				a.logger.WithFields(logrus.Fields{
-					"ip":         httputil.GetClientIP(r),
-					"user_agent": httputil.GetUserAgent(r),
-					"path":       r.URL.Path,
-				}).Warn("Missing API key")
+				logger.Warn().
+					Str("ip", httputil.GetClientIP(r)).
+					Str("user_agent", httputil.GetUserAgent(r)).
+					Str("path", r.URL.Path).
+					Msg("Missing API key")
 
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 
-			// Use constant-time comparison to prevent timing attacks
 			if subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.apiKey)) != 1 {
-				a.logger.WithFields(logrus.Fields{
-					"ip":         httputil.GetClientIP(r),
-					"user_agent": httputil.GetUserAgent(r),
-					"path":       r.URL.Path,
-				}).Warn("Invalid API key")
+				logger.Warn().
+					Str("ip", httputil.GetClientIP(r)).
+					Str("user_agent", httputil.GetUserAgent(r)).
+					Str("path", r.URL.Path).
+					Msg("Invalid API key")
 
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -133,7 +185,6 @@ type RateLimiter struct {
 	requestsPerMinute int
 	burst             int
 	clients           map[string]*clientLimiter
-	logger            *logrus.Logger
 	mu                sync.RWMutex
 	cleanupInterval   time.Duration
 	maxClientAge      time.Duration
@@ -147,17 +198,15 @@ type clientLimiter struct {
 }
 
 // NewRateLimiter creates a new rate limiter
-func NewRateLimiter(requestsPerMinute, burst int, logger *logrus.Logger) *RateLimiter {
+func NewRateLimiter(requestsPerMinute, burst int) *RateLimiter {
 	rl := &RateLimiter{
 		requestsPerMinute: requestsPerMinute,
 		burst:             burst,
 		clients:           make(map[string]*clientLimiter),
-		logger:            logger,
 		cleanupInterval:   5 * time.Minute,
-		maxClientAge:      15 * time.Minute, // Remove clients inactive for 15 minutes
+		maxClientAge:      15 * time.Minute,
 	}
 
-	// Start background cleanup goroutine with panic recovery
 	go rl.backgroundCleanup()
 
 	return rl
@@ -167,8 +216,7 @@ func NewRateLimiter(requestsPerMinute, burst int, logger *logrus.Logger) *RateLi
 func (rl *RateLimiter) backgroundCleanup() {
 	defer func() {
 		if r := recover(); r != nil {
-			rl.logger.WithField("panic", r).Error("RateLimiter cleanup panic recovered")
-			// Restart cleanup goroutine
+			logger.Error().Interface("panic", r).Msg("RateLimiter cleanup panic recovered")
 			go rl.backgroundCleanup()
 		}
 	}()
@@ -194,7 +242,6 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 		clientIP := httputil.GetClientIP(r)
 		now := time.Now()
 
-		// Acquire write lock to get/create client limiter
 		rl.mu.Lock()
 		limiter, exists := rl.clients[clientIP]
 		if !exists {
@@ -207,20 +254,17 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 		}
 		limiter.lastSeen = now
 
-		// Clean up old requests while still holding the lock
 		rl.cleanupOldRequests(limiter)
 
-		// Check rate limit (still under lock)
 		requestCount := len(limiter.requests)
 
 		if requestCount >= rl.requestsPerMinute+rl.burst {
-			// Unlock before logging and sending error response
-			rl.mu.Unlock() // Explicit unlock here as defer would unlock later
-			rl.logger.WithFields(logrus.Fields{
-				"ip":         clientIP,
-				"user_agent": httputil.GetUserAgent(r),
-				"path":       r.URL.Path,
-			}).Warn("Rate limit exceeded")
+			rl.mu.Unlock()
+			logger.Warn().
+				Str("ip", clientIP).
+				Str("user_agent", httputil.GetUserAgent(r)).
+				Str("path", r.URL.Path).
+				Msg("Rate limit exceeded")
 
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.requestsPerMinute))
 			w.Header().Set("X-RateLimit-Remaining", "0")
@@ -230,7 +274,6 @@ func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add current request (still under lock)
 		limiter.requests = append(limiter.requests, now)
 		remaining := rl.requestsPerMinute + rl.burst - len(limiter.requests)
 		rl.mu.Unlock()
@@ -252,7 +295,6 @@ func (rl *RateLimiter) cleanupOldRequests(limiter *clientLimiter) {
 	now := time.Now()
 	oneMinuteAgo := now.Add(-time.Minute)
 
-	// Clean up old requests
 	validRequests := make([]time.Time, 0)
 	for _, reqTime := range limiter.requests {
 		if reqTime.After(oneMinuteAgo) {
@@ -267,37 +309,32 @@ func (rl *RateLimiter) cleanupOldRequests(limiter *clientLimiter) {
 // RequestSizeLimiter limits the size of incoming requests
 type RequestSizeLimiter struct {
 	maxSize int64
-	logger  *logrus.Logger
 }
 
 // NewRequestSizeLimiter creates a new request size limiter
-func NewRequestSizeLimiter(maxSize int64, logger *logrus.Logger) *RequestSizeLimiter {
+func NewRequestSizeLimiter(maxSize int64) *RequestSizeLimiter {
 	return &RequestSizeLimiter{
 		maxSize: maxSize,
-		logger:  logger,
 	}
 }
 
 // Handler returns the request size limiting middleware handler
 func (rsl *RequestSizeLimiter) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check Content-Length header
 		if r.ContentLength > rsl.maxSize {
-			rsl.logger.WithFields(logrus.Fields{
-				"ip":             httputil.GetClientIP(r),
-				"content_length": r.ContentLength,
-				"max_size":       rsl.maxSize,
-			}).Warn("Request too large")
+			logger.Warn().
+				Str("ip", httputil.GetClientIP(r)).
+				Int64("content_length", r.ContentLength).
+				Int64("max_size", rsl.maxSize).
+				Msg("Request too large")
 
 			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 			return
 		}
 
-		// Wrap the request body to limit reading
 		r.Body = &limitedReader{
 			reader:    r.Body,
 			remaining: rsl.maxSize,
-			logger:    rsl.logger,
 			ip:        httputil.GetClientIP(r),
 		}
 
@@ -309,18 +346,16 @@ func (rsl *RequestSizeLimiter) Handler(next http.Handler) http.Handler {
 type limitedReader struct {
 	reader    io.ReadCloser
 	remaining int64
-	logger    *logrus.Logger
 	ip        string
 	totalRead int64
 }
 
 func (lr *limitedReader) Read(p []byte) (n int, err error) {
 	if lr.remaining <= 0 {
-		lr.logger.WithFields(logrus.Fields{
-			"ip":         lr.ip,
-			"total_read": lr.totalRead,
-			"max_size":   lr.remaining,
-		}).Warn("Request size limit exceeded during read")
+		logger.Warn().
+			Str("ip", lr.ip).
+			Int64("total_read", lr.totalRead).
+			Msg("Request size limit exceeded during read")
 
 		return 0, io.EOF
 	}

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
@@ -37,11 +36,11 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 			DefaultFormat:  "webp",
 		},
 	}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	// Create proper multipart form data
 	body := &bytes.Buffer{}
@@ -88,11 +87,11 @@ func TestHandleUpload_JSONWithURL(t *testing.T) {
 			DefaultFormat:  "webp",
 		},
 	}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	uploadReq := map[string]interface{}{
 		"url": "https://example.com/image.jpg",
@@ -120,11 +119,11 @@ func TestHandleUpload_InvalidQuality(t *testing.T) {
 			MaxFileSizeMB: 10,
 		},
 	}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	req := httptest.NewRequest("POST", "/upload?quality=invalid", bytes.NewReader(imageData))
@@ -146,11 +145,11 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 	cfg.Processing.MaxDimensions.Width = 4000
 	cfg.Processing.MaxDimensions.Height = 4000
 
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	expectedMetadata := &storage.ImageMetadata{
@@ -201,11 +200,11 @@ func TestHandleDelivery_InvalidWidth(t *testing.T) {
 	cfg.Processing.MaxDimensions.Width = 4000
 	cfg.Processing.MaxDimensions.Height = 4000
 
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("GET", "/delivery/test-key?w=10", nil)
 	rctx := chi.NewRouteContext()
@@ -227,11 +226,11 @@ func TestHandleDelivery_InvalidFormat(t *testing.T) {
 	cfg.Processing.MaxDimensions.Width = 4000
 	cfg.Processing.MaxDimensions.Height = 4000
 
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	mockProcessor.On("ValidateFormat", "bmp").Return(false)
 
@@ -253,11 +252,11 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	deleteReq := types.DeleteRequest{
 		Prefix: "images/2024/",
@@ -292,11 +291,11 @@ func TestHandleDelete_MissingParameters(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	deleteReq := types.DeleteRequest{}
 	reqBody, _ := json.Marshal(deleteReq)
@@ -316,11 +315,11 @@ func TestHandleList_WithPrefix(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("GET", "/list?prefix=images/", nil)
 
@@ -344,11 +343,11 @@ func TestHandleList_StorageError(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("GET", "/list", nil)
 
@@ -367,11 +366,11 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 
@@ -391,11 +390,11 @@ func TestHandleHealth_GetStatsError(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 
@@ -416,11 +415,11 @@ func TestHandleUpdate_Success(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	updateReq := types.UpdateRequest{
 		URL:     "https://example.com/image.jpg",
@@ -463,11 +462,11 @@ func TestHandleUpdate_InvalidJSON(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("POST", "/update", bytes.NewReader([]byte("invalid")))
 	req.Header.Set("Content-Type", "application/json")
@@ -484,11 +483,11 @@ func TestHandleUpdate_MissingURL(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	updateReq := types.UpdateRequest{
 		Bucket:  "test-bucket",
@@ -511,11 +510,11 @@ func TestHandleUpdate_MissingBucket(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	updateReq := types.UpdateRequest{
 		URL:     "https://example.com/image.jpg",
@@ -538,11 +537,11 @@ func TestHandleUpdate_MissingKey(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	updateReq := types.UpdateRequest{
 		URL:     "https://example.com/image.jpg",
@@ -565,11 +564,11 @@ func TestHandleUpdate_InvalidQuality(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	updateReq := types.UpdateRequest{
 		URL:     "https://example.com/image.jpg",
@@ -593,11 +592,11 @@ func TestHandleUpdate_InvalidFormat(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	mockProcessor.On("ValidateFormat", "invalid").Return(false)
 
@@ -625,11 +624,11 @@ func TestHandleDocs(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
+
+
 	startTime := time.Now()
 
-	h := handlers.NewHandler(cfg, logger, mockStorage, mockProcessor, startTime)
+	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	req := httptest.NewRequest("GET", "/docs", nil)
 	w := httptest.NewRecorder()

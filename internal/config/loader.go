@@ -31,11 +31,8 @@ func NewLoader() Loader {
 
 // Load loads configuration from various sources
 func (l *loader) Load() (*Config, error) {
-	// Load .env file if present
-	if err := godotenv.Load(); err != nil {
-		// .env file is optional
-		fmt.Println("No .env file found, using system environment variables")
-	}
+	// Load .env file if present (optional)
+	_ = godotenv.Load()
 
 	v := viper.New()
 

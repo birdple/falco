@@ -4,6 +4,8 @@ import (
 	"container/list"
 	"sync"
 	"time"
+
+	"github.com/birdple/falco/internal/pkg/logger"
 )
 
 // CacheItem represents an item in the cache
@@ -243,10 +245,7 @@ func (c *LRUCache) removeItem(item *CacheItem) {
 func (c *LRUCache) cleanup() {
 	defer func() {
 		if r := recover(); r != nil {
-			// Log panic and restart cleanup goroutine
-			// In production, this should use proper logging
-			println("Cache cleanup panic recovered:", r)
-			// Restart cleanup goroutine
+			logger.Error().Interface("panic", r).Msg("Cache cleanup panic recovered")
 			go c.cleanup()
 		}
 	}()
