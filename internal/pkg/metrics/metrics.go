@@ -21,9 +21,11 @@ type Metrics struct {
 	ImageProcessingSize     *prometheus.HistogramVec
 
 	// Cache metrics
-	CacheHits   prometheus.Counter
-	CacheMisses prometheus.Counter
-	CacheSize   prometheus.Gauge
+	CacheHits      prometheus.Counter
+	CacheMisses    prometheus.Counter
+	CacheSize      prometheus.Gauge
+	CacheItemCount prometheus.Gauge
+	CacheEvictions prometheus.Counter
 
 	// Storage metrics
 	StorageOperationsTotal    *prometheus.CounterVec
@@ -132,6 +134,20 @@ func create() *Metrics {
 				Namespace: namespace,
 				Name:      "cache_size_bytes",
 				Help:      "Current cache size in bytes",
+			},
+		),
+		CacheItemCount: promauto.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "cache_item_count",
+				Help:      "Current number of items in the cache",
+			},
+		),
+		CacheEvictions: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "cache_evictions_total",
+				Help:      "Total number of cache evictions",
 			},
 		),
 

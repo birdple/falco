@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/pkg/metrics"
 )
 
 // CacheItem represents an item in the cache
@@ -231,6 +232,7 @@ func (c *LRUCache) evictOldest() {
 	if element != nil {
 		item := element.Value.(*CacheItem)
 		c.removeItem(item)
+		metrics.Default().CacheEvictions.Inc()
 	}
 }
 

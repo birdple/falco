@@ -54,6 +54,9 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 		return nil, fmt.Errorf("failed to read input: %w", err)
 	}
 
+	// Capture input size for metrics before any potential release
+	inputSize := len(inputData)
+
 	// Generate cache key
 	cacheKey := p.generateCacheKey(inputData, params)
 
@@ -82,8 +85,11 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	}
 	defer img.Close()
 
-	// Detect format
+	// Detect format before releasing input buffer
 	format := p.detectFormat(inputData)
+
+	// Release input buffer to reduce memory pressure during processing
+	inputData = nil
 
 	// Apply transformations
 	if err := p.applyTransformations(img, params); err != nil {
@@ -101,12 +107,14 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	outputFormat = actualFormat
 
 	// Track processing size metrics
-	m.ImageProcessingSize.WithLabelValues("input").Observe(float64(len(inputData)))
+	m.ImageProcessingSize.WithLabelValues("input").Observe(float64(inputSize))
 	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(len(processedData)))
 
-	// Cache result
+	// Cache result and update metrics
 	if p.cache != nil {
 		p.cache.Set(cacheKey, processedData, 24*time.Hour)
+		m.CacheSize.Set(float64(p.cache.Size()))
+		m.CacheItemCount.Set(float64(p.cache.Len()))
 	}
 
 	return &ProcessedImage{
