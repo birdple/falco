@@ -128,6 +128,7 @@ func (s *Server) setupRouter() {
 
 	// Health check endpoint (no auth required)
 	r.Get("/health", s.handler.HandleHealth)
+	r.Head("/health", s.handler.HandleHealth)
 
 	// Docs endpoint
 	r.Get("/docs", s.handler.HandleDocs)
