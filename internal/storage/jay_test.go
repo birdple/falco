@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 	"time"
 
@@ -293,6 +292,3 @@ func TestJayStorage_GetStats_HTTP(t *testing.T) {
 		t.Fatalf("bad stats: %+v", stats)
 	}
 }
-
-// This imports package "strconv" elsewhere; keep it referenced to avoid unused.
-var _ = strconv.Itoa
