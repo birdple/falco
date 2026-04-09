@@ -17,15 +17,17 @@ import (
 
 // Handler serves the UI pages and HTMX partials.
 type Handler struct {
-	cfg      *config.Config
-	registry *storage.Registry
+	cfg        *config.Config
+	registry   *storage.Registry
+	cachedKeys map[string]config.KeyScope // computed once at startup
 }
 
 // NewHandler creates a new UI handler.
 func NewHandler(cfg *config.Config, registry *storage.Registry) *Handler {
 	return &Handler{
-		cfg:      cfg,
-		registry: registry,
+		cfg:        cfg,
+		registry:   registry,
+		cachedKeys: cfg.CollectAllKeys(),
 	}
 }
 
@@ -47,10 +49,9 @@ func (h *Handler) resolveKey(key string) *uiScope {
 		return &uiScope{IsAdmin: true, KeyName: "admin"}
 	}
 
-	// Check scoped keys
-	allKeys := h.cfg.CollectAllKeys()
+	// Check scoped keys (cached at startup)
 	var matched *uiScope
-	for keyVal, scope := range allKeys {
+	for keyVal, scope := range h.cachedKeys {
 		if subtle.ConstantTimeCompare([]byte(key), []byte(keyVal)) == 1 {
 			matched = &uiScope{
 				KeyName: scope.Name,
@@ -108,10 +109,10 @@ func (h *Handler) buildBucketItems(ctx context.Context, names []string) []views.
 			IsDefault: name == defaultName,
 		}
 
-		// Count images
+		// Count images via GetStats (avoids loading all objects)
 		if backend, err := h.registry.Get(name); err == nil {
-			if results, err := backend.List(ctx, ""); err == nil {
-				item.ImageCount = len(results)
+			if stats, err := backend.GetStats(ctx); err == nil {
+				item.ImageCount = int(stats.TotalImages)
 			}
 		}
 
@@ -358,16 +359,16 @@ func (h *Handler) buildDashboardData(ctx context.Context, scope *uiScope, bucket
 			})
 		}
 
-		// Stats
-		var totalSize int64
-		for _, img := range data.Images {
-			totalSize += img.Size
-		}
-		totalImages := int64(len(results))
-		detail.Stats = &views.BucketStats{
-			TotalImages: totalImages,
-			TotalSize:   totalSize,
-			TotalHuman:  humanizeBytes(totalSize),
+		// Stats via GetStats (avoids recomputing from full list)
+		if stats, err := backend.GetStats(ctx); err == nil {
+			detail.Stats = &views.BucketStats{
+				TotalImages: stats.TotalImages,
+				TotalSize:   stats.TotalSize,
+				TotalHuman:  humanizeBytes(stats.TotalSize),
+			}
+		} else {
+			logger.Warn().Err(err).Str("bucket", currentBucket).Msg("GetStats failed, showing zeroed stats")
+			detail.Stats = &views.BucketStats{}
 		}
 		data.BucketInfo = detail
 	}

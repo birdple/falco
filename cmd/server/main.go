@@ -9,9 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sony/gobreaker"
+
 	"github.com/birdple/falco/internal/api"
 	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/pkg/circuitbreaker"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
@@ -118,9 +121,9 @@ func main() {
 	if appCache == nil {
 		cacheSize := cfg.GetCacheSizeBytes()
 		if cacheSize > 0 {
-			lruCache := cache.NewLRUCache(cacheSize, cfg.GetCacheTTL())
-			appCache = lruCache
-			logger.Info().Int("cache_size_mb", cfg.Cache.SizeMB).Msg("LRU cache initialized")
+			shardedCache := cache.NewShardedCache(cacheSize, cfg.GetCacheTTL())
+			appCache = shardedCache
+			logger.Info().Int("cache_size_mb", cfg.Cache.SizeMB).Msg("Sharded LRU cache initialized")
 		}
 	}
 
@@ -216,7 +219,9 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, appCache processor.Cache) {
 	if appCache != nil {
 		logger.Info().Msg("Stopping cache...")
-		if lru, ok := appCache.(*cache.LRUCache); ok {
+		if sharded, ok := appCache.(*cache.ShardedCache); ok {
+			sharded.Stop()
+		} else if lru, ok := appCache.(*cache.LRUCache); ok {
 			lru.Stop()
 		} else if redis, ok := appCache.(*cache.RedisCache); ok {
 			redis.Stop()
@@ -226,8 +231,6 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 		logger.Info().Msg("Cache cleanup completed")
 	}
 
-	// Storage backends (S3, MinIO, filesystem) use pooled HTTP clients
-	// that are cleaned up by the Go runtime. No explicit close needed.
 	if storageBackend != nil {
 		logger.Info().Msg("Storage connections released")
 	}
@@ -280,7 +283,16 @@ func initializeStorage(cfg *config.Config) (*storage.Registry, error) {
 			primary = storage.NewReplicatedStorage(primary, targets)
 		}
 
-		finalBackends[name] = primary
+		// Wrap with circuit breaker for fault tolerance
+		cbSettings := circuitbreaker.DefaultSettings(name)
+		cbSettings.OnStateChange = func(cbName string, from, to gobreaker.State) {
+			logger.Warn().
+				Str("bucket", cbName).
+				Str("from", from.String()).
+				Str("to", to.String()).
+				Msg("Circuit breaker state change")
+		}
+		finalBackends[name] = circuitbreaker.NewStorageBackend(primary, cbSettings)
 	}
 
 	// Build registry
