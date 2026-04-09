@@ -16,6 +16,7 @@ func init() {
 	Register(StorageTypeS3, newS3StorageFromConfig)
 	Register(StorageTypeMinIO, newMinIOStorageFromConfig)
 	Register(StorageTypeR2, newR2StorageFromConfig)
+	Register(StorageTypeJay, newJayStorageFromConfig)
 }
 
 // Register registers a new storage backend factory
@@ -63,5 +64,17 @@ func newR2StorageFromConfig(config *StorageConfig) (StorageBackend, error) {
 		AccountID: config.R2AccountID,
 		AccessKey: config.R2AccessKey,
 		SecretKey: config.R2SecretKey,
+	})
+}
+
+// newJayStorageFromConfig adapter for Jay storage creation.
+func newJayStorageFromConfig(config *StorageConfig) (StorageBackend, error) {
+	return NewJayStorage(&JayConfig{
+		Addr:      config.JayAddr,
+		AdminAddr: config.JayAdminAddr,
+		TokenID:   config.JayTokenID,
+		Secret:    config.JayTokenSec,
+		Bucket:    config.JayBucket,
+		PoolSize:  config.JayPoolSize,
 	})
 }
