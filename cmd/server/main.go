@@ -327,6 +327,13 @@ func buildBucketBackend(bcfg config.BucketConfig) (storage.StorageBackend, error
 		R2AccountID: bcfg.AccountID,
 		R2AccessKey: bcfg.AccessKey,
 		R2SecretKey: bcfg.SecretKey,
+		// Jay fields
+		JayAddr:      bcfg.JayAddr,
+		JayAdminAddr: bcfg.JayAdminAddr,
+		JayTokenID:   bcfg.JayTokenID,
+		JayTokenSec:  bcfg.JayTokenSec,
+		JayBucket:    bcfg.Bucket,
+		JayPoolSize:  bcfg.JayPoolSize,
 	}
 
 	return storage.NewStorageBackend(storageConfig)
