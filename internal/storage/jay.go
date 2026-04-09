@@ -79,7 +79,7 @@ func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 		// HeadBucket fallback — if CreateBucket says it exists we're fine.
 		if _, headErr := c.HeadBucket(cfg.Bucket); headErr != nil {
 			_ = c.Close()
-			return nil, fmt.Errorf("jay: ensure bucket %q: %w", cfg.Bucket, err)
+			return nil, fmt.Errorf("jay: ensure bucket %q: create: %w; head: %v", cfg.Bucket, err, headErr)
 		}
 	}
 	return js, nil
