@@ -28,22 +28,45 @@ type fakeJayClient struct {
 }
 
 func (f *fakeJayClient) PutObject(bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error) {
+	if f.putFn == nil {
+		return nil, errors.New("fakeJayClient: unexpected PutObject call")
+	}
 	return f.putFn(bucket, key, data, size, opts)
 }
 func (f *fakeJayClient) GetObject(bucket, key string) (*jayclient.GetResult, error) {
+	if f.getFn == nil {
+		return nil, errors.New("fakeJayClient: unexpected GetObject call")
+	}
 	return f.getFn(bucket, key)
 }
 func (f *fakeJayClient) HeadObject(bucket, key string) (*jayclient.ObjectInfo, error) {
+	if f.headFn == nil {
+		return nil, errors.New("fakeJayClient: unexpected HeadObject call")
+	}
 	return f.headFn(bucket, key)
 }
-func (f *fakeJayClient) DeleteObject(bucket, key string) error { return f.delFn(bucket, key) }
+func (f *fakeJayClient) DeleteObject(bucket, key string) error {
+	if f.delFn == nil {
+		return errors.New("fakeJayClient: unexpected DeleteObject call")
+	}
+	return f.delFn(bucket, key)
+}
 func (f *fakeJayClient) ListObjects(bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+	if f.listFn == nil {
+		return nil, errors.New("fakeJayClient: unexpected ListObjects call")
+	}
 	return f.listFn(bucket, opts)
 }
 func (f *fakeJayClient) HeadBucket(name string) (*jayclient.BucketInfo, error) {
+	if f.hBucket == nil {
+		return nil, errors.New("fakeJayClient: unexpected HeadBucket call")
+	}
 	return f.hBucket(name)
 }
 func (f *fakeJayClient) CreateBucket(name string) (*jayclient.BucketInfo, error) {
+	if f.cBucket == nil {
+		return nil, errors.New("fakeJayClient: unexpected CreateBucket call")
+	}
 	return f.cBucket(name)
 }
 func (f *fakeJayClient) Close() error { return f.closeErr }
