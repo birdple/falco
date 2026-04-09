@@ -75,9 +75,6 @@ WORKDIR /app
 # Copia el binario desde la etapa 'builder'
 COPY --from=builder /app/falco-server .
 
-# Copia los archivos de configuración
-COPY --from=builder /app/configs ./configs
-
 # Copia la documentación de la API
 COPY --from=builder /app/docs ./docs
 
