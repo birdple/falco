@@ -56,6 +56,7 @@ func (v *validator) validateStorage(config *Config) error {
 		"s3":         true,
 		"minio":      true,
 		"r2":         true,
+		"jay":        true,
 	}
 
 	validModes := map[string]bool{
@@ -80,7 +81,7 @@ func (v *validator) validateStorage(config *Config) error {
 	// Validate each bucket
 	for name, bucket := range config.Storage.Buckets {
 		if !validTypes[bucket.Type] {
-			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, minio, or r2)", bucket.Type, name)
+			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, minio, r2, or jay)", bucket.Type, name)
 		}
 
 		// Validate backup refs

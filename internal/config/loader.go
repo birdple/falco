@@ -161,15 +161,20 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 
 	// Second pass: read all fields for each discovered bucket
 	fieldSuffixes := map[string]string{
-		"_TYPE":       "type",
-		"_BUCKET":     "bucket",
-		"_PATH":       "path",
-		"_REGION":     "region",
-		"_ENDPOINT":   "endpoint",
-		"_ACCOUNT_ID": "account_id",
-		"_ACCESS_KEY": "access_key",
-		"_SECRET_KEY": "secret_key",
-		"_SECURE":     "secure",
+		"_TYPE":         "type",
+		"_BUCKET":       "bucket",
+		"_PATH":         "path",
+		"_REGION":       "region",
+		"_ENDPOINT":     "endpoint",
+		"_ACCOUNT_ID":   "account_id",
+		"_ACCESS_KEY":   "access_key",
+		"_SECRET_KEY":   "secret_key",
+		"_SECURE":       "secure",
+		"_ADDR":         "addr",
+		"_ADMIN_ADDR":   "admin_addr",
+		"_TOKEN_ID":     "token_id",
+		"_TOKEN_SECRET": "token_secret",
+		"_POOL_SIZE":    "pool_size",
 	}
 
 	for name := range discovered {
@@ -177,11 +182,16 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 		for suffix, field := range fieldSuffixes {
 			if val := os.Getenv(envPrefix + suffix); val != "" {
 				configKey := fmt.Sprintf("storage.buckets.%s.%s", name, field)
-				if field == "secure" {
+				switch field {
+				case "secure":
 					if boolVal, err := strconv.ParseBool(val); err == nil {
 						v.Set(configKey, boolVal)
 					}
-				} else {
+				case "pool_size":
+					if intVal, err := strconv.Atoi(val); err == nil {
+						v.Set(configKey, intVal)
+					}
+				default:
 					v.Set(configKey, val)
 				}
 			}
