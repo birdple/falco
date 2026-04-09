@@ -1,6 +1,9 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Validator defines the interface for configuration validation
 type Validator interface {
@@ -33,6 +36,36 @@ func (v *validator) Validate(config *Config) error {
 		return fmt.Errorf("processing validation failed: %w", err)
 	}
 
+	if err := v.validateSecurity(config); err != nil {
+		return fmt.Errorf("security validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateSecurity enforces the "no silent insecure default" rule: if
+// API_KEY_REQUIRED is true an API key must be set; if HMAC_REQUIRED is true
+// both the HMAC key and salt must be set. The delivery route depends on HMAC
+// for access control because browsers cannot carry an API key, so if
+// API_KEY_REQUIRED is true we also require HMAC_REQUIRED to avoid leaving
+// /api/v1/images/* unauthenticated.
+func (v *validator) validateSecurity(config *Config) error {
+	if config.Security.APIKeyRequired && config.Security.APIKey == "" {
+		return fmt.Errorf("security.api_key_required=true but security.api_key is empty")
+	}
+	if config.Security.HMACRequired {
+		if config.Security.HMACKey == "" {
+			return fmt.Errorf("security.hmac_required=true but security.hmac_key is empty")
+		}
+		if config.Security.HMACKeySalt == "" {
+			return fmt.Errorf("security.hmac_required=true but security.hmac_salt is empty")
+		}
+	}
+	if config.Security.APIKeyRequired && !config.Security.HMACRequired {
+		return fmt.Errorf("security.api_key_required=true requires security.hmac_required=true " +
+			"because the image delivery route cannot be protected by API key alone " +
+			"(browsers cannot carry API keys on image URLs)")
+	}
 	return nil
 }
 
@@ -82,6 +115,11 @@ func (v *validator) validateStorage(config *Config) error {
 	for name, bucket := range config.Storage.Buckets {
 		if !validTypes[bucket.Type] {
 			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, minio, r2, or jay)", bucket.Type, name)
+		}
+
+		// Validate type-specific required fields
+		if err := v.validateBucketFields(name, bucket); err != nil {
+			return err
 		}
 
 		// Validate backup refs
@@ -192,6 +230,57 @@ func (v *validator) validateGroup(config *Config, groupName string, group GroupC
 		}
 	}
 
+	return nil
+}
+
+// validateBucketFields validates type-specific required fields for a bucket.
+// Without this, missing env vars like STORAGE_BUCKET_JAY_ADDR result in empty
+// strings that pass generic validation but cause confusing TCP dial errors at
+// runtime instead of a clear startup failure.
+func (v *validator) validateBucketFields(name string, bucket BucketConfig) error {
+	switch bucket.Type {
+	case "jay":
+		if bucket.JayAddr == "" {
+			return fmt.Errorf("bucket %q (type jay): addr is required (set STORAGE_BUCKET_%s_ADDR)", name, strings.ToUpper(name))
+		}
+		if bucket.JayAdminAddr == "" {
+			return fmt.Errorf("bucket %q (type jay): admin_addr is required (set STORAGE_BUCKET_%s_ADMIN_ADDR)", name, strings.ToUpper(name))
+		}
+		if bucket.Bucket == "" {
+			return fmt.Errorf("bucket %q (type jay): bucket name is required (set STORAGE_BUCKET_%s_BUCKET)", name, strings.ToUpper(name))
+		}
+		if bucket.JayTokenID == "" {
+			return fmt.Errorf("bucket %q (type jay): token_id is required (set STORAGE_BUCKET_%s_TOKEN_ID)", name, strings.ToUpper(name))
+		}
+		if bucket.JayTokenSec == "" {
+			return fmt.Errorf("bucket %q (type jay): token_secret is required (set STORAGE_BUCKET_%s_TOKEN_SECRET)", name, strings.ToUpper(name))
+		}
+	case "s3":
+		if bucket.Bucket == "" {
+			return fmt.Errorf("bucket %q (type s3): bucket name is required", name)
+		}
+		if bucket.Region == "" {
+			return fmt.Errorf("bucket %q (type s3): region is required", name)
+		}
+	case "minio":
+		if bucket.Bucket == "" {
+			return fmt.Errorf("bucket %q (type minio): bucket name is required", name)
+		}
+		if bucket.Endpoint == "" {
+			return fmt.Errorf("bucket %q (type minio): endpoint is required", name)
+		}
+	case "r2":
+		if bucket.Bucket == "" {
+			return fmt.Errorf("bucket %q (type r2): bucket name is required", name)
+		}
+		if bucket.AccountID == "" {
+			return fmt.Errorf("bucket %q (type r2): account_id is required", name)
+		}
+	case "filesystem":
+		if bucket.Path == "" {
+			return fmt.Errorf("bucket %q (type filesystem): path is required", name)
+		}
+	}
 	return nil
 }
 

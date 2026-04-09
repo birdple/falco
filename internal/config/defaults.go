@@ -37,11 +37,11 @@ func (d *defaultsProvider) setServerDefaults(v *viper.Viper) {
 }
 
 // setStorageDefaults sets storage default values.
-// If no buckets are configured, a default filesystem bucket is created.
+// No default bucket is registered: if the operator does not configure a bucket,
+// validation must fail at startup. This matches the birdple-v2 monorepo rule
+// that sensitive configuration has no implicit defaults.
 func (d *defaultsProvider) setStorageDefaults(v *viper.Viper) {
-	v.SetDefault("storage.default", "default")
-	v.SetDefault("storage.buckets.default.type", "filesystem")
-	v.SetDefault("storage.buckets.default.path", "./data/images")
+	// Intentionally empty. See validator.validateStorage.
 }
 
 // setCacheDefaults sets cache default values
@@ -64,16 +64,24 @@ func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
 	v.SetDefault("processing.max_dimensions.height", 4000)
 }
 
-// setSecurityDefaults sets security default values
+// setSecurityDefaults sets security default values.
+//
+// IMPORTANT: api_key_required and hmac_required have NO defaults. Both must be
+// set explicitly in the environment. This prevents a misconfigured deployment
+// from silently booting with no auth and no signing — previously the cause of
+// the "/api/v1/images/* is publicly readable" CRITICAL finding.
+//
+// Only values that are safe to default (format tweaks, rate limit knobs, CORS
+// development fallbacks) are set here.
 func (d *defaultsProvider) setSecurityDefaults(v *viper.Viper) {
-	v.SetDefault("security.api_key_required", false)
 	v.SetDefault("security.cors.origins", []string{"http://localhost:*", "https://localhost:*"})
 	v.SetDefault("security.cors.methods", []string{"GET", "POST", "OPTIONS"})
 	v.SetDefault("security.cors.headers", []string{"Content-Type", "Authorization"})
 	v.SetDefault("security.rate_limit.requests_per_minute", 1000)
 	v.SetDefault("security.rate_limit.burst", 100)
 	v.SetDefault("security.hmac_signature_size", 32)
-	v.SetDefault("security.hmac_required", false)
+	// api_key_required: NO default — must be explicit
+	// hmac_required: NO default — must be explicit
 }
 
 // setLoggingDefaults sets logging default values
