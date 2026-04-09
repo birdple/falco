@@ -190,11 +190,12 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 // setupServer configures the HTTP server
 func (s *Server) setupServer() {
 	s.server = &http.Server{
-		Addr:         s.config.GetServerAddress(),
-		Handler:      s.router,
-		ReadTimeout:  s.config.Server.ReadTimeout,
-		WriteTimeout: s.config.Server.WriteTimeout,
-		IdleTimeout:  s.config.Server.IdleTimeout,
+		Addr:              s.config.GetServerAddress(),
+		Handler:           s.router,
+		ReadTimeout:       s.config.Server.ReadTimeout,
+		WriteTimeout:      s.config.Server.WriteTimeout,
+		IdleTimeout:       s.config.Server.IdleTimeout,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 }
 
