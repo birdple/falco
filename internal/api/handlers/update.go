@@ -85,8 +85,9 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var existingSize int64
 	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {
-		if _, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
+		if body, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
 			existingSize = metadata.Size
+			body.Close() // Only need metadata, close body immediately
 		}
 	}
 
@@ -96,7 +97,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		Format:  req.Format,
 	}
 
-	processedImage, err := h.imageProcessor.Process(ctx, imageReader, params)
+	processedImage, err := h.imageProcessor.Process(ctx, imageReader, params, "")
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to process image")
 		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")

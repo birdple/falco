@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,8 +69,10 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 	json.NewEncoder(w).Encode(response)
 }
 
-// serveImage serves an image with proper headers
-func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *storage.ImageMetadata) {
+// serveImage serves an image with proper headers.
+// Uses http.ServeContent for automatic ETag 304, If-Modified-Since, and Range support.
+func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.Reader, metadata *storage.ImageMetadata) {
+	// Content-Type must be set before ServeContent so it doesn't sniff.
 	w.Header().Set("Content-Type", metadata.ContentType)
 
 	// Smart cache control based on metadata if available, otherwise defaults from config
@@ -96,20 +99,32 @@ func (h *Handler) serveImage(w http.ResponseWriter, reader io.Reader, metadata *
 	}
 
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d, immutable", maxAge, sMaxAge))
+	w.Header().Set("Vary", "Accept")
 
+	// ETag set before ServeContent so it handles If-None-Match automatically.
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())
 	w.Header().Set("ETag", etag)
 
-	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
-	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Vary", "Accept")
-
-	if _, err := io.Copy(w, reader); err != nil {
-		logger.Error().Err(err).
-			Str("image_id", metadata.ID).
-			Str("content_type", metadata.ContentType).
-			Msg("Failed to write image to response")
+	// Ensure reader implements io.ReadSeeker for http.ServeContent.
+	var rs io.ReadSeeker
+	if seeker, ok := reader.(io.ReadSeeker); ok {
+		rs = seeker
+	} else {
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			logger.Error().Err(err).
+				Str("image_id", metadata.ID).
+				Msg("Failed to read image data for serving")
+			h.sendError(w, http.StatusInternalServerError, "READ_ERROR", "Failed to read image data")
+			return
+		}
+		rs = bytes.NewReader(data)
 	}
+
+	// ServeContent handles If-None-Match (304), If-Modified-Since (304),
+	// and Range requests (206) automatically. Pass "" as name to skip
+	// Content-Type sniffing (we already set it above).
+	http.ServeContent(w, r, "", metadata.CreatedAt, rs)
 }
 
 // getStorageForBucket returns a storage backend instance for the specified bucket
@@ -151,6 +166,17 @@ func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket s
 	}
 
 	return h.getStorageBackendWithScope(scope, storageName, bucket)
+}
+
+// defaultStorageType returns the configured type of the default storage bucket
+// for use in Prometheus metric labels (replaces hardcoded "minio").
+func (h *Handler) defaultStorageType() string {
+	if h.config.Storage.Default != "" {
+		if b, ok := h.config.Storage.Buckets[h.config.Storage.Default]; ok && b.Type != "" {
+			return b.Type
+		}
+	}
+	return "unknown"
 }
 
 // getStorageBackendWithScope is the internal resolver.
