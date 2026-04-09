@@ -14,6 +14,16 @@ storage:
       type: filesystem
       path: "./data/images"
 
+    # Example: Jay backend (S3-compatible object store via native TCP protocol)
+    jay:
+      type: jay
+      addr: "jay:4012"
+      admin_addr: "jay:4010"
+      token_id: ""     # set via STORAGE_BUCKET_JAY_TOKEN_ID
+      token_secret: "" # set via STORAGE_BUCKET_JAY_TOKEN_SECRET
+      bucket: "falco-images"
+      pool_size: 4
+
     # Example: S3 bucket with sync backup to MinIO and async to R2
     # images:
     #   type: s3
