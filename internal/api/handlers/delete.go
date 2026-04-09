@@ -4,11 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/storage"
+)
+
+const (
+	// deleteWorkers is the number of concurrent goroutines used for prefix deletes.
+	deleteWorkers = 10
+	// listCap is the MaxKeys value used by storage.List; when the result set
+	// equals this number the response is likely truncated.
+	listCap = 1000
 )
 
 // HandleDelete handles deleting files or entire directories
@@ -33,6 +42,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var deletedKeys []string
+	var truncated bool
 
 	if req.Prefix != "" {
 		prefix := utils.NormalizeDirectoryPath(req.Prefix)
@@ -48,13 +58,36 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		for _, result := range results {
-			if err := storageBackend.Delete(ctx, result.Key); err != nil {
-				logger.Warn().Err(err).Str("key", result.Key).Msg("Failed to delete file")
-				continue
-			}
-			deletedKeys = append(deletedKeys, result.Key)
+		if len(results) >= listCap {
+			truncated = true
 		}
+
+		// Fan-out parallel deletes
+		keys := make(chan string, len(results))
+		for _, item := range results {
+			keys <- item.Key
+		}
+		close(keys)
+
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		for i := 0; i < deleteWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for key := range keys {
+					if err := storageBackend.Delete(ctx, key); err != nil {
+						logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
+						continue
+					}
+					mu.Lock()
+					deletedKeys = append(deletedKeys, key)
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
 	}
 
 	if len(req.Keys) > 0 {
@@ -72,9 +105,10 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := types.DeleteResponse{
-		Success: true,
-		Deleted: deletedKeys,
-		Count:   len(deletedKeys),
+		Success:   true,
+		Deleted:   deletedKeys,
+		Count:     len(deletedKeys),
+		Truncated: truncated,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

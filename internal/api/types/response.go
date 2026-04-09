@@ -71,8 +71,9 @@ type DirectoryInfo struct {
 
 // DeleteResponse represents the response for delete operations
 type DeleteResponse struct {
-	Success bool      `json:"success"`
-	Deleted []string  `json:"deleted,omitempty"` // List of deleted keys
-	Count   int       `json:"count"`
-	Error   *APIError `json:"error,omitempty"`
+	Success   bool      `json:"success"`
+	Deleted   []string  `json:"deleted,omitempty"` // List of deleted keys
+	Count     int       `json:"count"`
+	Truncated bool      `json:"truncated,omitempty"` // True when more items remain under the prefix (caller should repeat)
+	Error     *APIError `json:"error,omitempty"`
 }
