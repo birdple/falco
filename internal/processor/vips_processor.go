@@ -55,8 +55,11 @@ func (p *VipsProcessor) SetMaxConcurrency(n int) {
 	}
 }
 
-// Process processes an image with the given parameters
-func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *ProcessingParams) (*ProcessedImage, error) {
+// Process processes an image with the given parameters.
+// cacheKey should be obtained from GenerateCacheKey; pass "" to skip caching.
+// The caller is expected to check GetFromCache before calling Process on the
+// delivery path — this method no longer reads from cache, only writes.
+func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *ProcessingParams, cacheKey string) (*ProcessedImage, error) {
 	// Read input data
 	inputData, err := io.ReadAll(input)
 	if err != nil {
@@ -65,24 +68,6 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 
 	// Capture input size for metrics before any potential release
 	inputSize := len(inputData)
-
-	// Generate cache key
-	cacheKey := p.generateCacheKey(inputData, params)
-
-	// Check cache
-	m := metrics.Default()
-	if p.cache != nil {
-		if cachedData, found := p.cache.Get(cacheKey); found {
-			m.CacheHits.Inc()
-			return &ProcessedImage{
-				Data:     io.NopCloser(bytes.NewReader(cachedData)),
-				Metadata: &ImageMetadata{CreatedAt: time.Now()},
-				CacheKey: cacheKey,
-				Cached:   true,
-			}, nil
-		}
-		m.CacheMisses.Inc()
-	}
 
 	// Acquire processing slot (limits concurrent CPU-intensive operations)
 	if p.sem != nil {
@@ -126,11 +111,12 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	outputFormat = actualFormat
 
 	// Track processing size metrics
+	m := metrics.Default()
 	m.ImageProcessingSize.WithLabelValues("input").Observe(float64(inputSize))
 	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(len(processedData)))
 
-	// Cache result and update metrics
-	if p.cache != nil {
+	// Cache result under the caller-provided key (skip if empty)
+	if p.cache != nil && cacheKey != "" {
 		p.cache.Set(cacheKey, processedData, 24*time.Hour)
 		m.CacheSize.Set(float64(p.cache.Size()))
 		m.CacheItemCount.Set(float64(p.cache.Len()))
@@ -518,9 +504,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 	}
 
 	// Copy buffer data before returning to pool
-	result := make([]byte, buf.Len())
-	copy(result, buf.Bytes())
-	return result, format, nil
+	return bytes.Clone(buf.Bytes()), format, nil
 }
 
 // GetMetadata extracts metadata from an image
@@ -641,14 +625,36 @@ func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams, inputFor
 	return p.defaultFormat
 }
 
-// generateCacheKey generates a cache key including ALL transformation parameters.
-// Uses SHA-256 (truncated to 32 chars / 128 bits) for better collision resistance than MD5.
-func (p *VipsProcessor) generateCacheKey(inputData []byte, params *ProcessingParams) string {
-	// Use SHA-256 for better collision resistance (128 bits vs 64 bits with MD5)
-	inputHash := fmt.Sprintf("%x", sha256.Sum256(inputData))[:32]
+// GenerateCacheKey builds a deterministic cache key from a storage key and
+// processing parameters. The storage key (bucket:dir/filename) uniquely
+// identifies the original image without requiring a round-trip to the storage
+// backend, so the cache can be checked before any I/O.
+func (p *VipsProcessor) GenerateCacheKey(storageKey string, params *ProcessingParams) string {
+	return generateCacheKey(storageKey, params)
+}
+
+// GetFromCache returns cached processed image bytes for the given key.
+func (p *VipsProcessor) GetFromCache(key string) ([]byte, bool) {
+	if p.cache == nil {
+		return nil, false
+	}
+	data, found := p.cache.Get(key)
+	if found {
+		metrics.Default().CacheHits.Inc()
+	} else {
+		metrics.Default().CacheMisses.Inc()
+	}
+	return data, found
+}
+
+// generateCacheKey builds a cache key from storageKey + all transformation
+// parameters. The storageKey is hashed (SHA-256, truncated) to keep key
+// length bounded while avoiding collisions.
+func generateCacheKey(storageKey string, params *ProcessingParams) string {
+	keyHash := fmt.Sprintf("%x", sha256.Sum256([]byte(storageKey)))[:32]
 
 	var parts []string
-	parts = append(parts, inputHash)
+	parts = append(parts, keyHash)
 
 	// Size parameters
 	if params.Width > 0 || params.Height > 0 {

@@ -263,21 +263,40 @@ func (c *LRUCache) cleanup() {
 	for {
 		select {
 		case <-ticker.C:
-			c.mutex.Lock()
 			c.cleanupExpired()
-			c.mutex.Unlock()
 		case <-c.stopCleanup:
 			return
 		}
 	}
 }
 
-// cleanupExpired removes all expired items
+// cleanupExpired removes all expired items using chunked locking
+// to avoid holding the write lock for the entire iteration.
 func (c *LRUCache) cleanupExpired() {
+	// Collect expired keys under read lock
+	c.mutex.RLock()
 	now := time.Now()
-	for _, item := range c.items {
+	var expired []string
+	for key, item := range c.items {
 		if item.ttl > 0 && now.Sub(item.createdAt) > item.ttl {
-			c.removeItem(item)
+			expired = append(expired, key)
 		}
 	}
+	c.mutex.RUnlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	// Delete expired items under write lock
+	c.mutex.Lock()
+	for _, key := range expired {
+		if item, exists := c.items[key]; exists {
+			// Re-check expiry (could have been refreshed between locks)
+			if item.ttl > 0 && time.Since(item.createdAt) > item.ttl {
+				c.removeItem(item)
+			}
+		}
+	}
+	c.mutex.Unlock()
 }

@@ -99,8 +99,22 @@ type Cache interface {
 
 // ImageProcessor defines the interface for image processing
 type ImageProcessor interface {
-	// Process processes an image with the given parameters
-	Process(ctx context.Context, input io.Reader, params *ProcessingParams) (*ProcessedImage, error)
+	// Process processes an image with the given parameters.
+	// cacheKey is the pre-computed cache key (from GenerateCacheKey). When
+	// non-empty the result is stored in cache under that key. Pass "" to
+	// skip caching (e.g. upload/update paths).
+	Process(ctx context.Context, input io.Reader, params *ProcessingParams, cacheKey string) (*ProcessedImage, error)
+
+	// GenerateCacheKey builds a deterministic cache key from a storage key
+	// and processing parameters. The key is derivable from the URL alone,
+	// so the caller can check the cache BEFORE fetching the original from
+	// the storage backend.
+	GenerateCacheKey(storageKey string, params *ProcessingParams) string
+
+	// GetFromCache returns the cached processed image bytes for the given
+	// key, or (nil, false) on miss. Callers should use GenerateCacheKey to
+	// obtain the key.
+	GetFromCache(key string) ([]byte, bool)
 
 	// GetMetadata extracts metadata from an image without processing
 	GetMetadata(ctx context.Context, input io.Reader) (*ImageMetadata, error)
