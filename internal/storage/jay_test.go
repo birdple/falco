@@ -111,6 +111,12 @@ func TestJayStorage_MetadataRoundtrip(t *testing.T) {
 	if !got.CreatedAt.Equal(orig.CreatedAt) {
 		t.Fatalf("createdAt mismatch: %v vs %v", got.CreatedAt, orig.CreatedAt)
 	}
+	if got.OriginalName != orig.OriginalName {
+		t.Fatalf("OriginalName mismatch: %q vs %q", got.OriginalName, orig.OriginalName)
+	}
+	if got.ContentType != orig.ContentType {
+		t.Fatalf("ContentType mismatch: %q vs %q", got.ContentType, orig.ContentType)
+	}
 }
 
 func TestJayStorage_Retrieve_Success(t *testing.T) {
