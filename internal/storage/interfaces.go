@@ -91,6 +91,7 @@ const (
 	StorageTypeS3         StorageType = "s3"
 	StorageTypeMinIO      StorageType = "minio"
 	StorageTypeR2         StorageType = "r2"
+	StorageTypeJay        StorageType = "jay"
 )
 
 // ReplicationMode defines how primary and secondary storage interact
@@ -121,6 +122,13 @@ type StorageConfig struct {
 	R2AccountID string
 	R2AccessKey string
 	R2SecretKey string
+	// Jay-specific fields
+	JayAddr      string // native protocol address, e.g. "jay:4012"
+	JayAdminAddr string // HTTP address for GetStats (same port as S3 API), e.g. "jay:4010"
+	JayTokenID   string
+	JayTokenSec  string
+	JayBucket    string
+	JayPoolSize  int
 }
 
 // MinIOConfig holds MinIO storage configuration
