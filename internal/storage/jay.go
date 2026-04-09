@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -197,8 +198,8 @@ func (s *JayStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 	if s.adminAddr == "" {
 		return &StorageStats{}, nil
 	}
-	url := strings.TrimRight(s.adminAddr, "/") + "/_stats/" + s.bucket
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqURL := strings.TrimRight(s.adminAddr, "/") + "/_stats/" + url.PathEscape(s.bucket)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("jay: stats request: %w", err)
 	}
