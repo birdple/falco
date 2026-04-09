@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -30,15 +31,19 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// HMAC signature verification
-	if h.config.Security.HMACKey != "" || h.config.Security.HMACRequired {
+	// HMAC signature verification.
+	//
+	// HMAC_REQUIRED is the single switch: when true the signature MUST be
+	// present and valid, when false verification is skipped entirely (dev
+	// only). The config validator enforces that API_KEY_REQUIRED=true implies
+	// HMAC_REQUIRED=true, so production deployments cannot land here with an
+	// unprotected delivery route.
+	if h.config.Security.HMACRequired {
 		sig := r.URL.Query().Get("sig")
-
-		q := r.URL.Query()
-		q.Del("sig")
+		// VerifyURL canonicalizes the path internally (sorts query, strips sig).
 		signedPath := r.URL.Path
-		if len(q) > 0 {
-			signedPath = r.URL.Path + "?" + q.Encode()
+		if raw := r.URL.RawQuery; raw != "" {
+			signedPath = r.URL.Path + "?" + raw
 		}
 
 		if err := security.VerifyURL(
@@ -47,7 +52,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 			h.config.Security.HMACKey,
 			h.config.Security.HMACKeySalt,
 			h.config.Security.HMACSignatureSize,
-			h.config.Security.HMACRequired,
+			true,
 		); err != nil {
 			logger.Warn().Str("error", err.Error()).Msg("Invalid signature")
 			h.sendError(w, http.StatusForbidden, "INVALID_SIGNATURE", "Invalid or missing URL signature")
@@ -154,11 +159,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if gravity := r.URL.Query().Get("gravity"); gravity != "" {
-		validGravities := map[string]bool{
-			"center": true, "north": true, "south": true, "east": true, "west": true,
-			"northeast": true, "northwest": true, "southeast": true, "southwest": true,
-			"smart": true, "entropy": true,
-		}
 		if validGravities[gravity] {
 			params.Gravity = gravity
 		}
@@ -206,34 +206,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	params.AutoOrient = r.URL.Query().Get("orient") != "0"
 	params.StripMetadata = r.URL.Query().Get("meta") != "1"
 
-	// Retrieve original image
-	storageStart := time.Now()
-	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
-	storageDuration := time.Since(storageStart).Seconds()
-
 	m := metrics.Default()
-	if err != nil {
-		m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "error").Inc()
-		if storage.IsNotFound(err) {
-			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
-			return
-		}
-		logger.Error().Err(err).Msg("Failed to retrieve image")
-		h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
-		return
-	}
-	m.StorageOperationsTotal.WithLabelValues("retrieve", "minio", "success").Inc()
-	m.StorageOperationDuration.WithLabelValues("retrieve", "minio").Observe(storageDuration)
-	defer reader.Close()
 
-	// Non-image files: serve directly without any processing
-	isImage := utils.IsImageContentType(metadata.ContentType)
-	if !isImage {
-		h.serveImage(w, reader, metadata)
-		return
-	}
-
-	// Determine if processing is needed (image files only)
+	// Determine if the request carries explicit transformations (decidable
+	// from query params alone, before any storage I/O).
 	hasTransformations := params.Width != 0 || params.Height != 0 || params.Quality != 0 ||
 		params.CropW != 0 || params.CropH != 0 ||
 		params.Rotate != 0 || params.Flip != "" || params.Flop ||
@@ -242,24 +218,91 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		params.Gravity != "" || params.TrimEnabled ||
 		params.PaddingTop != 0 || params.PaddingRight != 0 || params.PaddingBottom != 0 || params.PaddingLeft != 0
 
+	// ── Cache-first path ──────────────────────────────────────────────
+	// When the request carries transformations or an explicit format, we
+	// can compute a cache key from (storageKey, params) alone — no
+	// storage round-trip needed. A cache hit serves the response
+	// immediately, skipping the Jay TCP fetch entirely.
+	wantsProcessing := hasTransformations || params.Format != ""
+	var cacheKey string
+
+	if wantsProcessing {
+		// Resolve output format now so the cache key is deterministic.
+		if params.Format == "" {
+			params.Format = h.config.Processing.DefaultFormat
+			if params.Format == "" {
+				params.Format = "webp"
+			}
+		}
+
+		cacheKey = h.imageProcessor.GenerateCacheKey(storageKey, params)
+		if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
+			contentType := h.imageProcessor.GetContentType(params.Format)
+			cachedMeta := &storage.ImageMetadata{
+				ID:          imageID,
+				ContentType: contentType,
+				Format:      params.Format,
+				Size:        int64(len(cachedData)),
+				MaxAge:      params.MaxAge,
+				SMaxAge:     params.SMaxAge,
+				CreatedAt:   time.Now(),
+			}
+			h.serveImage(w, r, bytes.NewReader(cachedData), cachedMeta)
+			return
+		}
+	}
+
+	// ── Cache miss (or raw delivery) — fetch from storage ─────────────
+	storageStart := time.Now()
+	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
+	storageDuration := time.Since(storageStart).Seconds()
+
+	if err != nil {
+		m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "error").Inc()
+		if storage.IsNotFound(err) {
+			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
+			return
+		}
+		logger.Error().Err(err).Msg("Failed to retrieve image")
+		h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
+		return
+	}
+	m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "success").Inc()
+	m.StorageOperationDuration.WithLabelValues("retrieve", h.defaultStorageType()).Observe(storageDuration)
+	defer reader.Close()
+
+	// Non-image files: serve directly without any processing
+	isImage := utils.IsImageContentType(metadata.ContentType)
+	if !isImage {
+		h.serveImage(w, r, reader, metadata)
+		return
+	}
+
+	// Re-evaluate processing need now that we have storage metadata
+	// (handles edge cases like unknown format in storage).
 	needsProcessing := hasTransformations ||
 		(params.Format != "" && params.Format != metadata.Format) ||
 		(metadata.Format == "" || metadata.ContentType == "" || metadata.ContentType == "application/octet-stream")
 
 	if !needsProcessing {
-		h.serveImage(w, reader, metadata)
+		h.serveImage(w, r, reader, metadata)
 		return
 	}
 
+	// Ensure format + cacheKey are set (handles the metadata-only edge
+	// case where wantsProcessing was false but needsProcessing is true).
 	if params.Format == "" {
 		params.Format = h.config.Processing.DefaultFormat
 		if params.Format == "" {
 			params.Format = "webp"
 		}
 	}
+	if cacheKey == "" {
+		cacheKey = h.imageProcessor.GenerateCacheKey(storageKey, params)
+	}
 
 	processStart := time.Now()
-	processedImage, err := h.imageProcessor.Process(ctx, reader, params)
+	processedImage, err := h.imageProcessor.Process(ctx, reader, params, cacheKey)
 	processDuration := time.Since(processStart).Seconds()
 
 	if err != nil {
@@ -282,11 +325,13 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		Height:       processedImage.Metadata.Height,
 		ContentType:  processedImage.Metadata.ContentType,
 		CreatedAt:    processedImage.Metadata.CreatedAt,
+		MaxAge:       params.MaxAge,
+		SMaxAge:      params.SMaxAge,
 	}
 
 	if storageMetadata.ContentType == "" {
 		storageMetadata.ContentType = h.imageProcessor.GetContentType(storageMetadata.Format)
 	}
 
-	h.serveImage(w, processedImage.Data, storageMetadata)
+	h.serveImage(w, r, processedImage.Data, storageMetadata)
 }

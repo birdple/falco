@@ -13,3 +13,11 @@ const (
 	FitContain = "contain"
 	FitFill    = "fill"
 )
+
+// validGravities is the set of accepted gravity values for smart cropping.
+// Hoisted to package level to avoid re-allocation on every delivery request.
+var validGravities = map[string]bool{
+	"center": true, "north": true, "south": true, "east": true, "west": true,
+	"northeast": true, "northwest": true, "southeast": true, "southwest": true,
+	"smart": true, "entropy": true,
+}

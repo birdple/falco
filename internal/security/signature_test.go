@@ -84,6 +84,44 @@ func TestVerifyMissingSignatureRequired(t *testing.T) {
 	saltHex := "520f986b998545b4785e0defbc4f3c1203f22de2374a3d53"
 
 	err := VerifyURL("", "/api/v1/images/abc123", keyHex, saltHex, 32, true)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "missing signature")
+	assert.ErrorIs(t, err, ErrMissingSignature)
+}
+
+// TestSignVerifyCanonicalization ensures a URL signed with one param order
+// verifies when the client later sends the params in a different order.
+// This was the root cause of the HMAC canonicalization HIGH finding.
+func TestSignVerifyCanonicalization(t *testing.T) {
+	keyHex := "943b421c9eb07c830af81030552c86009268de4a7405e1de8b52c3c88f703df2"
+	saltHex := "520f986b998545b4785e0defbc4f3c1203f22de2374a3d53"
+
+	// Sign in "natural" order a user might choose.
+	signed := "/api/v1/images/abc?w=800&h=600&format=webp"
+	sig, err := SignURL(signed, keyHex, saltHex, 32)
+	require.NoError(t, err)
+
+	// Verify with reordered query string.
+	reordered := "/api/v1/images/abc?format=webp&h=600&w=800"
+	err = VerifyURL(sig, reordered, keyHex, saltHex, 32, true)
+	assert.NoError(t, err)
+
+	// Also verify with a dangling "sig" in the path — Canonicalize must drop it.
+	withSig := "/api/v1/images/abc?h=600&w=800&format=webp&sig=junk"
+	err = VerifyURL(sig, withSig, keyHex, saltHex, 32, true)
+	assert.NoError(t, err)
+}
+
+func TestCanonicalize(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/foo", "/foo"},
+		{"/foo?", "/foo"},
+		{"/foo?a=1", "/foo?a=1"},
+		{"/foo?b=2&a=1", "/foo?a=1&b=2"},
+		{"/foo?b=2&a=1&sig=x", "/foo?a=1&b=2"},
+		{"/foo?sig=x", "/foo"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, Canonicalize(c.in), "in=%q", c.in)
+	}
 }
