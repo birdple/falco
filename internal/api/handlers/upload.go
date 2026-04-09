@@ -48,6 +48,12 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	contentType := r.Header.Get("Content-Type")
 
+	// Limit request body size to prevent OOM from oversized uploads.
+	maxBytes := int64(h.config.Processing.MaxFileSizeMB) * 1024 * 1024
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	}
+
 	var imageReader io.Reader
 	var filename string
 	var quality int
@@ -198,12 +204,14 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if exists {
 		logger.Info().Str("image_id", imageID).Msg("Image already exists, returning existing")
 
-		_, metadata, err := storageBackend.Retrieve(ctx, storageKey)
+		body, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to retrieve existing image metadata")
 			h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
 			return
 		}
+		// Close immediately — we only need metadata, not the body.
+		body.Close()
 
 		imageURL := utils.BuildImageURL(imageID, bucket, directory)
 
@@ -242,7 +250,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		processedImage, procErr := h.imageProcessor.Process(ctx, imageReader, &processor.ProcessingParams{
 			Quality: quality,
 			Format:  format,
-		})
+		}, "")
 		if procErr != nil {
 			logger.Error().Err(procErr).Msg("Failed to process image")
 			h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
@@ -261,6 +269,14 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		storeReader = processedImage.Data
 	} else {
+		// Block dangerous content types that can execute code in browsers
+		// (SVG with embedded JS, HTML, XML with XSLT, etc.)
+		if utils.IsDangerousContentType(detectedType) {
+			h.sendError(w, http.StatusUnsupportedMediaType, "DANGEROUS_CONTENT_TYPE",
+				fmt.Sprintf("Content type %q is not allowed; SVG, HTML, and XML uploads are rejected for security", detectedType))
+			return
+		}
+
 		// Passthrough: store file as-is without processing
 		ext := filepath.Ext(filename)
 		if ext != "" {

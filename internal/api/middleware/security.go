@@ -54,13 +54,24 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-		// Alpine.js requires 'unsafe-eval' for expression evaluation (x-data, @click, etc.)
+		// Strict CSP for API and image delivery routes — no unsafe-eval needed.
 		csp := "default-src 'self'; " +
-			"script-src 'self' 'unsafe-eval'; " +
+			"script-src 'self'; " +
 			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
 			"font-src 'self' https://fonts.gstatic.com; " +
 			"img-src 'self' data:; " +
 			"connect-src 'self'"
+
+		// Dashboard UI uses Alpine.js which requires 'unsafe-eval' for x-data/@click.
+		// Scoped to UI routes only so API/image paths keep the strict policy.
+		if isUIPath(r.URL.Path) {
+			csp = "default-src 'self'; " +
+				"script-src 'self' 'unsafe-eval'; " +
+				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+				"font-src 'self' https://fonts.gstatic.com; " +
+				"img-src 'self' data:; " +
+				"connect-src 'self'"
+		}
 
 		if strings.HasPrefix(r.URL.Path, "/docs") {
 			csp = "default-src 'self' https://cdn.redoc.ly; " +
@@ -78,6 +89,16 @@ func SecurityHeaders(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isUIPath reports whether the request targets a dashboard/UI route that
+// requires a relaxed CSP (Alpine.js needs 'unsafe-eval'). API, image, and
+// metrics routes are excluded so they keep the strict default policy.
+func isUIPath(path string) bool {
+	if path == "/" || path == "/dashboard" {
+		return true
+	}
+	return strings.HasPrefix(path, "/ui/") || strings.HasPrefix(path, "/static/")
 }
 
 // RestrictedFileServer serves only files with known safe extensions.

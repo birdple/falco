@@ -45,6 +45,25 @@ func IsImageContentType(contentType string) bool {
 		!strings.Contains(ct, "svg") // SVG is not raster, skip processing
 }
 
+// IsDangerousContentType returns true for content types that can execute
+// code when rendered in a browser (SVG, HTML, XML, XHTML). These must
+// never be stored and served back with their original Content-Type.
+func IsDangerousContentType(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	switch {
+	case strings.Contains(ct, "svg"):
+		return true
+	case strings.Contains(ct, "html"):
+		return true
+	case ct == "text/xml" || ct == "application/xml" || strings.HasSuffix(ct, "+xml"):
+		return true
+	case strings.Contains(ct, "javascript"):
+		return true
+	default:
+		return false
+	}
+}
+
 // DetectContentType uses http.DetectContentType on the first 512 bytes
 // and returns the detected MIME type.
 func DetectContentType(data []byte) string {
