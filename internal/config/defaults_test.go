@@ -16,10 +16,9 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	assert.Equal(t, 8080, v.GetInt("server.port"))
 	assert.Equal(t, "0.0.0.0", v.GetString("server.host"))
 
-	// Storage defaults
-	assert.Equal(t, "default", v.GetString("storage.default"))
-	assert.Equal(t, "filesystem", v.GetString("storage.buckets.default.type"))
-	assert.Equal(t, "./data/images", v.GetString("storage.buckets.default.path"))
+	// Storage defaults — intentionally empty; buckets must be configured explicitly
+	assert.Equal(t, "", v.GetString("storage.default"))
+	assert.Equal(t, "", v.GetString("storage.buckets.default.type"))
 
 	// Cache defaults
 	assert.Equal(t, 256, v.GetInt("cache.size_mb"))

@@ -98,10 +98,16 @@ func TestValidator_InvalidBucketType(t *testing.T) {
 
 func TestValidator_ValidBucketTypes(t *testing.T) {
 	v := NewValidator()
-	for _, bucketType := range []string{"filesystem", "s3", "minio", "r2"} {
+	buckets := map[string]BucketConfig{
+		"filesystem": {Type: "filesystem", Path: "/tmp/images"},
+		"s3":         {Type: "s3", Bucket: "my-bucket", Region: "us-east-1"},
+		"minio":      {Type: "minio", Bucket: "my-bucket", Endpoint: "localhost:9000"},
+		"r2":         {Type: "r2", Bucket: "my-bucket", AccountID: "abc123"},
+	}
+	for bucketType, bucketCfg := range buckets {
 		t.Run(bucketType, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Storage.Buckets["local"] = BucketConfig{Type: bucketType}
+			cfg.Storage.Buckets["local"] = bucketCfg
 			err := v.Validate(cfg)
 			assert.NoError(t, err)
 		})
@@ -113,6 +119,7 @@ func TestValidator_BackupTargetNotFound(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.Buckets["local"] = BucketConfig{
 		Type: "filesystem",
+		Path: "/tmp/images",
 		Backups: []BackupRef{
 			{Target: "nonexistent", Mode: "sync"},
 		},
@@ -127,6 +134,7 @@ func TestValidator_BackupSelfReference(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.Buckets["local"] = BucketConfig{
 		Type: "filesystem",
+		Path: "/tmp/images",
 		Backups: []BackupRef{
 			{Target: "local", Mode: "sync"},
 		},
@@ -139,9 +147,10 @@ func TestValidator_BackupSelfReference(t *testing.T) {
 func TestValidator_ValidBackup(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Storage.Buckets["backup"] = BucketConfig{Type: "s3"}
+	cfg.Storage.Buckets["backup"] = BucketConfig{Type: "s3", Bucket: "backup-bucket", Region: "us-east-1"}
 	cfg.Storage.Buckets["local"] = BucketConfig{
 		Type: "filesystem",
+		Path: "/tmp/images",
 		Backups: []BackupRef{
 			{Target: "backup", Mode: "sync"},
 			{Target: "backup", Mode: "async"},
@@ -165,7 +174,7 @@ func TestValidator_GroupBucketNotFound(t *testing.T) {
 func TestValidator_SubgroupBucketNotInParent(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Storage.Buckets["other"] = BucketConfig{Type: "s3"}
+	cfg.Storage.Buckets["other"] = BucketConfig{Type: "s3", Bucket: "other-bucket", Region: "us-east-1"}
 	cfg.Storage.Groups = map[string]GroupConfig{
 		"g": {
 			Buckets: []string{"local"},

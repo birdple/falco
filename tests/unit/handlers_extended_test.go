@@ -56,7 +56,7 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 
 	// Setup mocks
 	mockStorage.On("Exists", mock.Anything, mock.Anything).Return(false, nil)
-	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything).
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),
 			Metadata: &processor.ImageMetadata{
@@ -160,10 +160,14 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 	}
 
 	// Setup mocks
+	mockProcessor.On("ValidateFormat", "webp").Return(true)
+	mockProcessor.On("GenerateCacheKey", mock.Anything, mock.Anything).Return("test-cache-key")
+	mockProcessor.On("GetFromCache", "test-cache-key").Return([]byte(nil), false)
+
 	mockStorage.On("Retrieve", mock.Anything, "test-key").
 		Return(io.NopCloser(bytes.NewReader(imageData)), expectedMetadata, nil)
 
-	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything).
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),
 			Metadata: &processor.ImageMetadata{
@@ -174,8 +178,6 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 				Height:      100,
 			},
 		}, nil)
-
-	mockProcessor.On("ValidateFormat", "webp").Return(true)
 
 	// Request with transformation parameters
 	req := httptest.NewRequest("GET", "/delivery/test-key?w=100&h=100&f=webp&q=80", nil)
@@ -375,39 +377,17 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	req := httptest.NewRequest("GET", "/health", nil)
 
 	mockStorage.On("Health", mock.Anything).Return(errors.New("storage unavailable"))
-	mockStorage.On("GetStats", mock.Anything).Return(&storage.StorageStats{}, nil).Maybe()
 
 	w := httptest.NewRecorder()
 	h.HandleHealth(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "storage unavailable")
+	assert.Contains(t, w.Body.String(), "unhealthy")
 	mockStorage.AssertExpectations(t)
 }
 
-func TestHandleHealth_GetStatsError(t *testing.T) {
-	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
-
-	cfg := &config.Config{}
-
-
-	startTime := time.Now()
-
-	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
-
-	req := httptest.NewRequest("GET", "/health", nil)
-
-	mockStorage.On("Health", mock.Anything).Return(nil)
-	mockStorage.On("GetStats", mock.Anything).Return((*storage.StorageStats)(nil), errors.New("stats error"))
-
-	w := httptest.NewRecorder()
-	h.HandleHealth(w, req)
-
-	// Should still return 200 because Health() succeeded
-	assert.Equal(t, http.StatusOK, w.Code)
-	mockStorage.AssertExpectations(t)
-}
+// Removed TestHandleHealth_GetStatsError: health endpoint no longer calls GetStats()
+// (health is a lean load-balancer probe; verbose stats belong in /metrics).
 
 // Tests for HandleUpdate
 func TestHandleUpdate_Success(t *testing.T) {
@@ -437,7 +417,7 @@ func TestHandleUpdate_Success(t *testing.T) {
 	mockStorage.On("Exists", mock.Anything, "test-key").Return(false, nil)
 	
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
-	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything).
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),
 			Metadata: &processor.ImageMetadata{

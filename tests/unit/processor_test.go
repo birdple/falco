@@ -31,7 +31,7 @@ func TestImageProcessor_Process(t *testing.T) {
 		Format: "webp",
 	}
 
-	result, err := proc.Process(context.Background(), &buf, params)
+	result, err := proc.Process(context.Background(), &buf, params, "")
 	require.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "webp", result.Metadata.Format)

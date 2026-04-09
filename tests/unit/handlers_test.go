@@ -45,7 +45,7 @@ func TestHandleUpload_BinarySuccess(t *testing.T) {
 
 	mockStorage.On("Exists", mock.Anything, mock.Anything).Return(false, nil)
 
-	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything).
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),
 			Metadata: &processor.ImageMetadata{
@@ -90,7 +90,9 @@ func TestHandleDelivery_Success(t *testing.T) {
 	mockStorage.On("Retrieve", mock.Anything, "test-key").
 		Return(io.NopCloser(bytes.NewReader(imageData)), expectedMetadata, nil)
 
-	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything).
+	mockProcessor.On("GenerateCacheKey", mock.Anything, mock.Anything).Return("test-cache-key").Maybe()
+	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),
 			Metadata: &processor.ImageMetadata{
@@ -186,10 +188,6 @@ func TestHandleHealth_Success(t *testing.T) {
 	req := httptest.NewRequest("GET", "/health", nil)
 
 	mockStorage.On("Health", mock.Anything).Return(nil)
-	mockStorage.On("GetStats", mock.Anything).Return(&storage.StorageStats{
-		TotalImages: 10,
-		TotalSize:   1024000,
-	}, nil)
 
 	w := httptest.NewRecorder()
 	h.HandleHealth(w, req)

@@ -204,9 +204,106 @@ func (_c *MockImageProcessor_GetMetadata_Call) RunAndReturn(run func(ctx context
 	return _c
 }
 
+// GenerateCacheKey provides a mock function for the type MockImageProcessor
+func (_mock *MockImageProcessor) GenerateCacheKey(storageKey string, params *processor.ProcessingParams) string {
+	ret := _mock.Called(storageKey, params)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GenerateCacheKey")
+	}
+
+	var r0 string
+	if returnFunc, ok := ret.Get(0).(func(string, *processor.ProcessingParams) string); ok {
+		r0 = returnFunc(storageKey, params)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	return r0
+}
+
+// MockImageProcessor_GenerateCacheKey_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GenerateCacheKey'
+type MockImageProcessor_GenerateCacheKey_Call struct {
+	*mock.Call
+}
+
+func (_e *MockImageProcessor_Expecter) GenerateCacheKey(storageKey interface{}, params interface{}) *MockImageProcessor_GenerateCacheKey_Call {
+	return &MockImageProcessor_GenerateCacheKey_Call{Call: _e.mock.On("GenerateCacheKey", storageKey, params)}
+}
+
+func (_c *MockImageProcessor_GenerateCacheKey_Call) Run(run func(storageKey string, params *processor.ProcessingParams)) *MockImageProcessor_GenerateCacheKey_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string), args[1].(*processor.ProcessingParams))
+	})
+	return _c
+}
+
+func (_c *MockImageProcessor_GenerateCacheKey_Call) Return(s string) *MockImageProcessor_GenerateCacheKey_Call {
+	_c.Call.Return(s)
+	return _c
+}
+
+func (_c *MockImageProcessor_GenerateCacheKey_Call) RunAndReturn(run func(string, *processor.ProcessingParams) string) *MockImageProcessor_GenerateCacheKey_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// GetFromCache provides a mock function for the type MockImageProcessor
+func (_mock *MockImageProcessor) GetFromCache(key string) ([]byte, bool) {
+	ret := _mock.Called(key)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetFromCache")
+	}
+
+	var r0 []byte
+	var r1 bool
+	if returnFunc, ok := ret.Get(0).(func(string) ([]byte, bool)); ok {
+		return returnFunc(key)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string) []byte); ok {
+		r0 = returnFunc(key)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]byte)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(string) bool); ok {
+		r1 = returnFunc(key)
+	} else {
+		r1 = ret.Get(1).(bool)
+	}
+	return r0, r1
+}
+
+// MockImageProcessor_GetFromCache_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetFromCache'
+type MockImageProcessor_GetFromCache_Call struct {
+	*mock.Call
+}
+
+func (_e *MockImageProcessor_Expecter) GetFromCache(key interface{}) *MockImageProcessor_GetFromCache_Call {
+	return &MockImageProcessor_GetFromCache_Call{Call: _e.mock.On("GetFromCache", key)}
+}
+
+func (_c *MockImageProcessor_GetFromCache_Call) Run(run func(key string)) *MockImageProcessor_GetFromCache_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string))
+	})
+	return _c
+}
+
+func (_c *MockImageProcessor_GetFromCache_Call) Return(data []byte, found bool) *MockImageProcessor_GetFromCache_Call {
+	_c.Call.Return(data, found)
+	return _c
+}
+
+func (_c *MockImageProcessor_GetFromCache_Call) RunAndReturn(run func(string) ([]byte, bool)) *MockImageProcessor_GetFromCache_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Process provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) Process(ctx context.Context, input io.Reader, params *processor.ProcessingParams) (*processor.ProcessedImage, error) {
-	ret := _mock.Called(ctx, input, params)
+func (_mock *MockImageProcessor) Process(ctx context.Context, input io.Reader, params *processor.ProcessingParams, cacheKey string) (*processor.ProcessedImage, error) {
+	ret := _mock.Called(ctx, input, params, cacheKey)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Process")
@@ -214,18 +311,18 @@ func (_mock *MockImageProcessor) Process(ctx context.Context, input io.Reader, p
 
 	var r0 *processor.ProcessedImage
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, io.Reader, *processor.ProcessingParams) (*processor.ProcessedImage, error)); ok {
-		return returnFunc(ctx, input, params)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, io.Reader, *processor.ProcessingParams, string) (*processor.ProcessedImage, error)); ok {
+		return returnFunc(ctx, input, params, cacheKey)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, io.Reader, *processor.ProcessingParams) *processor.ProcessedImage); ok {
-		r0 = returnFunc(ctx, input, params)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, io.Reader, *processor.ProcessingParams, string) *processor.ProcessedImage); ok {
+		r0 = returnFunc(ctx, input, params, cacheKey)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*processor.ProcessedImage)
 		}
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, io.Reader, *processor.ProcessingParams) error); ok {
-		r1 = returnFunc(ctx, input, params)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, io.Reader, *processor.ProcessingParams, string) error); ok {
+		r1 = returnFunc(ctx, input, params, cacheKey)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -241,11 +338,12 @@ type MockImageProcessor_Process_Call struct {
 //   - ctx context.Context
 //   - input io.Reader
 //   - params *processor.ProcessingParams
-func (_e *MockImageProcessor_Expecter) Process(ctx interface{}, input interface{}, params interface{}) *MockImageProcessor_Process_Call {
-	return &MockImageProcessor_Process_Call{Call: _e.mock.On("Process", ctx, input, params)}
+//   - cacheKey string
+func (_e *MockImageProcessor_Expecter) Process(ctx interface{}, input interface{}, params interface{}, cacheKey interface{}) *MockImageProcessor_Process_Call {
+	return &MockImageProcessor_Process_Call{Call: _e.mock.On("Process", ctx, input, params, cacheKey)}
 }
 
-func (_c *MockImageProcessor_Process_Call) Run(run func(ctx context.Context, input io.Reader, params *processor.ProcessingParams)) *MockImageProcessor_Process_Call {
+func (_c *MockImageProcessor_Process_Call) Run(run func(ctx context.Context, input io.Reader, params *processor.ProcessingParams, cacheKey string)) *MockImageProcessor_Process_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -259,10 +357,12 @@ func (_c *MockImageProcessor_Process_Call) Run(run func(ctx context.Context, inp
 		if args[2] != nil {
 			arg2 = args[2].(*processor.ProcessingParams)
 		}
+		arg3 := args[3].(string)
 		run(
 			arg0,
 			arg1,
 			arg2,
+			arg3,
 		)
 	})
 	return _c
@@ -273,7 +373,7 @@ func (_c *MockImageProcessor_Process_Call) Return(processedImage *processor.Proc
 	return _c
 }
 
-func (_c *MockImageProcessor_Process_Call) RunAndReturn(run func(ctx context.Context, input io.Reader, params *processor.ProcessingParams) (*processor.ProcessedImage, error)) *MockImageProcessor_Process_Call {
+func (_c *MockImageProcessor_Process_Call) RunAndReturn(run func(ctx context.Context, input io.Reader, params *processor.ProcessingParams, cacheKey string) (*processor.ProcessedImage, error)) *MockImageProcessor_Process_Call {
 	_c.Call.Return(run)
 	return _c
 }
