@@ -10,13 +10,17 @@ FROM golang:1.26-alpine AS builder
 # IMPORTANTE: Alpine 3.22 tiene vips 8.16.1 que no incluye constantes necesarias
 # (VIPS_INTENT_AUTO, VIPS_KERNEL_MKS2013, VIPS_KERNEL_MKS2021)
 # Por eso usamos Alpine Edge que tiene vips 8.17+
-RUN apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
-    --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main \
-    gcc \
-    g++ \
-    musl-dev \
-    vips-dev \
-    pkgconf
+RUN apk upgrade --no-cache \
+        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main \
+        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
+    && apk add --no-cache \
+        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main \
+        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
+        gcc \
+        g++ \
+        musl-dev \
+        vips-dev \
+        pkgconf
 
 # Establece el directorio de trabajo
 WORKDIR /app
