@@ -40,9 +40,14 @@ function falcoApp() {
             this.dark = !this.dark;
         },
 
-        logout() {
+        async logout() {
             localStorage.removeItem('falco_key');
-            document.cookie = 'falco_key=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+            // La cookie es HttpOnly, solo el servidor puede expirarla.
+            try {
+                await fetch('/ui/logout', { method: 'POST', credentials: 'same-origin' });
+            } catch (_) {
+                // Ignorar — igualmente redirigimos al login.
+            }
             window.location.href = '/';
         }
     };

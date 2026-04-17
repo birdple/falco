@@ -120,6 +120,7 @@ func (s *Server) setupRouter() {
 	r.Get("/", s.uiHandler.Login)
 	r.Get("/dashboard", s.uiHandler.Dashboard)
 	r.Post("/ui/auth", s.uiHandler.AuthPost)
+	r.Post("/ui/logout", s.uiHandler.LogoutPost)
 	r.Get("/ui/content", s.uiHandler.Content)
 
 	// Static files (embedded in binary)

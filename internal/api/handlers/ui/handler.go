@@ -190,6 +190,20 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// LogoutPost clears the session cookie. Needed because the cookie is HttpOnly
+// and cannot be cleared from JavaScript.
+func (h *Handler) LogoutPost(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "falco_key",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
 // Dashboard renders the main dashboard page.
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	key := getKeyFromRequest(r)
