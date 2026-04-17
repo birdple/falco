@@ -94,9 +94,9 @@ USER appuser
 # Expone el puerto
 EXPOSE 8080
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+# Healthcheck — usa $PORT para respetar el puerto real del deploy (PaaS suelen inyectar PORT=3000)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider "http://localhost:${PORT:-8080}/health" || exit 1
 
 # Comando de ejecución
 CMD ["./falco-server"]
