@@ -62,8 +62,8 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.URL) > 2048 {
-		h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL too long (max 2048 characters)")
+	if len(req.URL) > MaxURLLength {
+		h.sendError(w, http.StatusBadRequest, "INVALID_URL", fmt.Sprintf("URL too long (max %d characters)", MaxURLLength))
 		return
 	}
 

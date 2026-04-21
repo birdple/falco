@@ -5,6 +5,10 @@ package handlers
 const (
 	// MinDimensionPixels is the minimum allowed dimension for image resize operations
 	MinDimensionPixels = 16
+
+	// MaxURLLength caps externally-supplied URLs (JSON upload, update).
+	// Matches typical browser/address-bar limits and prevents SSRF payload bloat.
+	MaxURLLength = 2048
 )
 
 // Fit mode constants for image resizing

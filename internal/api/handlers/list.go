@@ -17,25 +17,8 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	storageName := r.URL.Query().Get("storage")
-
-	bucket := r.URL.Query().Get("b")
-	if bucket == "" {
-		bucket = r.URL.Query().Get("bucket")
-	}
-
-	prefix := r.URL.Query().Get("p")
-	if prefix == "" {
-		prefix = r.URL.Query().Get("prefix")
-	}
-	if prefix == "" {
-		prefix = r.URL.Query().Get("d")
-	}
-	if prefix == "" {
-		prefix = r.URL.Query().Get("dir")
-	}
-	if prefix == "" {
-		prefix = r.URL.Query().Get("directory")
-	}
+	bucket := utils.GetQueryParam(r, "b", "bucket")
+	prefix := utils.GetQueryParam(r, "p", "prefix", "d", "dir", "directory")
 
 	prefix = utils.NormalizeDirectoryPath(prefix)
 	if err := utils.ValidateDirectoryPath(prefix); err != nil {

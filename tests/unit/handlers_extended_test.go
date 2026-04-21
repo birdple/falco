@@ -55,7 +55,6 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	// Setup mocks
-	mockStorage.On("Exists", mock.Anything, mock.Anything).Return(false, nil)
 	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),

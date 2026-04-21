@@ -43,8 +43,6 @@ func TestHandleUpload_BinarySuccess(t *testing.T) {
 	req := httptest.NewRequest("POST", "/upload", bytes.NewReader(imageData))
 	req.Header.Set("Content-Type", "image/jpeg")
 
-	mockStorage.On("Exists", mock.Anything, mock.Anything).Return(false, nil)
-
 	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
 			Data: io.NopCloser(bytes.NewReader(imageData)),

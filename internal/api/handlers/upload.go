@@ -16,7 +16,6 @@ import (
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/hashutil"
 	"github.com/birdple/falco/internal/pkg/httputil"
-	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -26,19 +25,8 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	storageName := r.URL.Query().Get("storage")
-
-	bucket := r.URL.Query().Get("b")
-	if bucket == "" {
-		bucket = r.URL.Query().Get("bucket")
-	}
-
-	directory := r.URL.Query().Get("d")
-	if directory == "" {
-		directory = r.URL.Query().Get("dir")
-	}
-	if directory == "" {
-		directory = r.URL.Query().Get("directory")
-	}
+	bucket := utils.GetQueryParam(r, "b", "bucket")
+	directory := utils.GetQueryParam(r, "d", "dir", "directory")
 
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
@@ -148,15 +136,14 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if len(uploadReq.URL) > 2048 {
-			h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL too long (max 2048 characters)")
+		if len(uploadReq.URL) > MaxURLLength {
+			h.sendError(w, http.StatusBadRequest, "INVALID_URL", fmt.Sprintf("URL too long (max %d characters)", MaxURLLength))
 			return
 		}
 
 		maxSize := h.config.GetMaxFileSizeBytes()
 		imageData, _, err = httputil.DownloadURL(ctx, h.httpClient, uploadReq.URL, maxSize)
 		if err != nil {
-			logger.Error().Err(err).Msg("Failed to download image from URL")
 			h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
 			return
 		}
@@ -196,47 +183,13 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exists, err := storageBackend.Exists(ctx, storageKey)
-	if err != nil {
-		logger.Warn().Err(err).Msg("Failed to check image existence")
-	}
-
-	if exists {
-		logger.Info().Str("image_id", imageID).Msg("Image already exists, returning existing")
-
-		body, metadata, err := storageBackend.Retrieve(ctx, storageKey)
-		if err != nil {
-			logger.Error().Err(err).Msg("Failed to retrieve existing image metadata")
-			h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
-			return
-		}
-		// Close immediately — we only need metadata, not the body.
-		body.Close()
-
-		imageURL := utils.BuildImageURL(imageID, bucket, directory)
-
-		response := types.UploadResponse{
-			Success: true,
-			Data: types.UploadData{
-				ID:           imageID,
-				URL:          imageURL,
-				OriginalName: metadata.OriginalName,
-				Format:       metadata.Format,
-				Size:         metadata.Size,
-				Dimensions: types.Dimensions{
-					Width:  metadata.Width,
-					Height: metadata.Height,
-				},
-				CreatedAt: metadata.CreatedAt,
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(response)
-		return
-	}
-
+	// Dedup-by-key: the storageKey is derived from a content hash of the raw
+	// upload, so identical uploads land on the same key. The Jay backend is
+	// idempotent by key — overwriting with the same bytes is a no-op at the
+	// storage layer. We therefore skip the previous Exists + Retrieve-discard
+	// round-trips and rely on Store alone. Callers still get the stable
+	// `{id, url}` response, which is what dedup semantics actually guarantee.
+	//
 	// Detect content type to decide: process as image or store as passthrough
 	detectedType := utils.DetectContentType(imageData)
 	isImage := utils.IsImageContentType(detectedType)
@@ -252,8 +205,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			Format:  format,
 		}, "")
 		if procErr != nil {
-			logger.Error().Err(procErr).Msg("Failed to process image")
-			h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
+			h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", fmt.Sprintf("Failed to process image: %v", procErr))
 			return
 		}
 
@@ -295,8 +247,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	err = storageBackend.Store(ctx, storageKey, storeReader, &storedMeta)
 	if err != nil {
-		logger.Error().Err(err).Msg("Failed to store file")
-		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", "Failed to store file")
+		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", fmt.Sprintf("Failed to store file: %v", err))
 		return
 	}
 

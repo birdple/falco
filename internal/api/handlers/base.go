@@ -1,11 +1,11 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	apimw "github.com/birdple/falco/internal/api/middleware"
@@ -48,7 +48,13 @@ func (h *Handler) SetRegistry(r *storage.Registry) {
 	h.storageRegistry = r
 }
 
-// sendError sends a JSON error response with enhanced logging
+// sendError sends a JSON error response. Logs at a level based on statusCode:
+//   - 5xx -> Error
+//   - 4xx -> Warn
+//   - other -> Info
+//
+// Callers should NOT log the same error before calling sendError; this is the
+// single place where the API error response is recorded.
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message string) {
 	response := types.UploadResponse{
 		Success: false,
@@ -58,7 +64,14 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 		},
 	}
 
-	logger.Warn().
+	event := logger.Info()
+	switch {
+	case statusCode >= 500:
+		event = logger.Error()
+	case statusCode >= 400:
+		event = logger.Warn()
+	}
+	event.
 		Str("error_code", code).
 		Int("status_code", statusCode).
 		Str("error_message", message).
@@ -105,26 +118,43 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())
 	w.Header().Set("ETag", etag)
 
-	// Ensure reader implements io.ReadSeeker for http.ServeContent.
-	var rs io.ReadSeeker
-	if seeker, ok := reader.(io.ReadSeeker); ok {
-		rs = seeker
-	} else {
-		data, err := io.ReadAll(reader)
-		if err != nil {
-			logger.Error().Err(err).
-				Str("image_id", metadata.ID).
-				Msg("Failed to read image data for serving")
-			h.sendError(w, http.StatusInternalServerError, "READ_ERROR", "Failed to read image data")
-			return
-		}
-		rs = bytes.NewReader(data)
+	// If the reader is seekable, use http.ServeContent so clients get
+	// automatic If-None-Match (304), If-Modified-Since (304), and
+	// Range (206) handling. Pass "" as name to skip Content-Type sniffing
+	// (already set above).
+	if rs, ok := reader.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, "", metadata.CreatedAt, rs)
+		return
 	}
 
-	// ServeContent handles If-None-Match (304), If-Modified-Since (304),
-	// and Range requests (206) automatically. Pass "" as name to skip
-	// Content-Type sniffing (we already set it above).
-	http.ServeContent(w, r, "", metadata.CreatedAt, rs)
+	// Non-seekable reader (e.g. Jay's io.ReadCloser): stream directly with
+	// io.Copy instead of buffering the whole body into memory. This keeps
+	// memory flat regardless of image size. Range requests are not supported
+	// on this path — clients that rely on ranges must hit a seekable backend
+	// or the LRU cache path, which already delivers a bytes.Reader.
+	if metadata.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(metadata.Size, 10))
+	}
+	w.Header().Set("Accept-Ranges", "none")
+	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
+
+	// Honor If-None-Match for the streaming path too (no body transfer on 304).
+	if match := r.Header.Get("If-None-Match"); match != "" && match == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if _, err := io.Copy(w, reader); err != nil {
+		// Headers are already flushed by io.Copy on first write; we can only log.
+		logger.Warn().Err(err).
+			Str("image_id", metadata.ID).
+			Msg("Failed to stream image body to client")
+	}
 }
 
 // getStorageForBucket returns a storage backend instance for the specified bucket
