@@ -116,6 +116,7 @@ func (l *loader) getEnvMappings() map[string]string {
 		"API_KEY":           "security.api_key",
 		"CORS_ORIGINS":      "security.cors.origins",
 		"RATE_LIMIT_RPM":    "security.rate_limit.requests_per_minute",
+		"TRUSTED_PROXIES":   "security.trusted_proxies",
 		"HMAC_KEY":          "security.hmac_key",
 		"HMAC_SALT":         "security.hmac_salt",
 		"HMAC_SIGNATURE_SIZE": "security.hmac_signature_size",
@@ -524,6 +525,18 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 		}
 	case key == "security.cors.origins":
 		v.Set(key, strings.Split(value, ","))
+	case key == "security.trusted_proxies":
+		// Comma-separated CIDRs / IPs. Empty entries are pruned so that a
+		// stray trailing comma does not produce a bogus empty string entry
+		// (which parseCIDRs would skip anyway, but makes logs clearer).
+		parts := strings.Split(value, ",")
+		trimmed := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				trimmed = append(trimmed, s)
+			}
+		}
+		v.Set(key, trimmed)
 	default:
 		v.Set(key, value)
 	}

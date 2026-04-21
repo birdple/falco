@@ -78,7 +78,9 @@ func (s *Server) setupRouter() {
 	// Security middleware
 	r.Use(apimw.SecurityHeaders)
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// apimw.RealIP replaces chi's middleware.RealIP, which trusts
+	// X-Forwarded-For / X-Real-IP unconditionally. See realip.go.
+	r.Use(apimw.RealIP)
 	r.Use(apimw.ZerologRequestLogger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
@@ -88,8 +90,23 @@ func (s *Server) setupRouter() {
 	sizeLimiter := apimw.NewRequestSizeLimiter(maxRequestSize)
 	r.Use(sizeLimiter.Handler)
 
-	// Compression middleware
-	r.Use(middleware.Compress(5))
+	// Compression middleware — only for text-like responses. Do NOT compress
+	// image/* bodies: webp/jpeg/png/avif are already compressed, so gzipping
+	// them on the fly wastes CPU and usually grows the payload. chi's Compress
+	// accepts a variadic allowlist of content types; anything not in the list
+	// is streamed through untouched.
+	r.Use(middleware.Compress(
+		5,
+		"text/html",
+		"text/plain",
+		"text/css",
+		"text/javascript",
+		"application/javascript",
+		"application/json",
+		"application/yaml",
+		"application/xml",
+		"image/svg+xml",
+	))
 
 	// Metrics middleware
 	if s.config.Development.EnableMetrics {

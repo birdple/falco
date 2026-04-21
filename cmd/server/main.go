@@ -39,10 +39,15 @@ func main() {
 
 	logger.Info().Msg("Starting Falco Image Processing Service")
 
-	// Configure trusted proxies for X-Forwarded-For / X-Real-IP header trust
+	// Configure trusted proxies for X-Forwarded-For / X-Real-IP header trust.
+	// Loopback is always trusted; an empty TRUSTED_PROXIES env var means no
+	// external proxy is trusted (fail-closed) — operators must opt into
+	// trusting their reverse-proxy/load-balancer subnet explicitly.
+	httputil.SetTrustedProxies(cfg.Security.TrustedProxies)
 	if len(cfg.Security.TrustedProxies) > 0 {
-		httputil.SetTrustedProxies(cfg.Security.TrustedProxies)
 		logger.Info().Strs("trusted_proxies", cfg.Security.TrustedProxies).Msg("Trusted proxies configured")
+	} else {
+		logger.Info().Msg("No TRUSTED_PROXIES set; only loopback is trusted to forward client IPs")
 	}
 
 	// Initialize VIPS

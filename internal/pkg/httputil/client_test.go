@@ -26,7 +26,7 @@ func TestGetClientIP_RemoteAddr(t *testing.T) {
 
 func TestGetClientIP_XForwardedFor(t *testing.T) {
 	oldProxies := trustedProxyCIDRs
-	trustedProxyCIDRs = nil // trust all
+	SetTrustedProxies([]string{"10.0.0.0/8"})
 	defer func() { trustedProxyCIDRs = oldProxies }()
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -39,12 +39,44 @@ func TestGetClientIP_XForwardedFor(t *testing.T) {
 
 func TestGetClientIP_XRealIP(t *testing.T) {
 	oldProxies := trustedProxyCIDRs
-	trustedProxyCIDRs = nil
+	SetTrustedProxies([]string{"10.0.0.0/8"})
 	defer func() { trustedProxyCIDRs = oldProxies }()
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("X-Real-IP", "203.0.113.50")
+
+	ip := GetClientIP(req)
+	assert.Equal(t, "203.0.113.50", ip)
+}
+
+// TestGetClientIP_FailClosedNoAllowlist verifies that when the allowlist is
+// empty (default on unconfigured deploys), forwarded headers from a public IP
+// are ignored — the direct peer address wins.
+func TestGetClientIP_FailClosedNoAllowlist(t *testing.T) {
+	oldProxies := trustedProxyCIDRs
+	trustedProxyCIDRs = nil
+	defer func() { trustedProxyCIDRs = oldProxies }()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.50:1234"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	ip := GetClientIP(req)
+	assert.Equal(t, "203.0.113.50", ip)
+}
+
+// TestGetClientIP_LoopbackAlwaysTrusted verifies that calls from 127.0.0.1
+// continue to be trusted as proxies without explicit configuration. This
+// covers health checks, local dev, and Docker host-network scenarios.
+func TestGetClientIP_LoopbackAlwaysTrusted(t *testing.T) {
+	oldProxies := trustedProxyCIDRs
+	SetTrustedProxies(nil) // collapses to loopback-only
+	defer func() { trustedProxyCIDRs = oldProxies }()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.50")
 
 	ip := GetClientIP(req)
 	assert.Equal(t, "203.0.113.50", ip)
@@ -81,20 +113,27 @@ func TestSetTrustedProxies(t *testing.T) {
 	oldProxies := trustedProxyCIDRs
 	defer func() { trustedProxyCIDRs = oldProxies }()
 
+	// Loopback (127.0.0.0/8 + ::1/128) is always included: +2 on every call.
+	const loopbackEntries = 2
+
 	SetTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.1.1"})
-	assert.Len(t, trustedProxyCIDRs, 3)
+	assert.Len(t, trustedProxyCIDRs, loopbackEntries+3)
 
 	// Bare IP should be converted to /32
 	SetTrustedProxies([]string{"1.2.3.4"})
-	assert.Len(t, trustedProxyCIDRs, 1)
+	assert.Len(t, trustedProxyCIDRs, loopbackEntries+1)
 
-	// IPv6 bare IP
+	// IPv6 bare IP (duplicate of loopback ::1 is allowed — just counts twice)
 	SetTrustedProxies([]string{"::1"})
-	assert.Len(t, trustedProxyCIDRs, 1)
+	assert.Len(t, trustedProxyCIDRs, loopbackEntries+1)
 
 	// Invalid CIDR should be skipped
 	SetTrustedProxies([]string{"invalid", "10.0.0.0/8"})
-	assert.Len(t, trustedProxyCIDRs, 1)
+	assert.Len(t, trustedProxyCIDRs, loopbackEntries+1)
+
+	// Empty list collapses to loopback-only (fail-closed baseline).
+	SetTrustedProxies(nil)
+	assert.Len(t, trustedProxyCIDRs, loopbackEntries)
 }
 
 func TestGetUserAgent(t *testing.T) {

@@ -10,16 +10,22 @@ import (
 	"time"
 )
 
-// trustedProxyCIDRs holds the parsed trusted proxy networks.
-// Set via SetTrustedProxies at startup. When empty, forwarded headers
-// (X-Forwarded-For, X-Real-IP) are trusted from any source (legacy behavior).
-var trustedProxyCIDRs []*net.IPNet
+// defaultTrustedLoopbacks are the CIDRs always trusted as proxies when no
+// explicit allowlist is configured. Loopback is safe because only processes on
+// the same host can originate packets with these source addresses.
+var defaultTrustedLoopbacks = []string{"127.0.0.0/8", "::1/128"}
 
-// SetTrustedProxies parses and stores the list of trusted proxy CIDRs/IPs.
-// Call once at startup. When set, X-Forwarded-For and X-Real-IP headers
-// are only trusted if the direct connection comes from a trusted proxy.
-func SetTrustedProxies(cidrs []string) {
-	trustedProxyCIDRs = nil
+// trustedProxyCIDRs holds the parsed trusted proxy networks.
+// Set via SetTrustedProxies at startup. When empty, only loopback addresses
+// are trusted to set X-Forwarded-For / X-Real-IP — this fail-closed default
+// prevents spoofed forwarded headers from bypassing per-IP rate limiting.
+var trustedProxyCIDRs = parseCIDRs(defaultTrustedLoopbacks)
+
+// parseCIDRs converts a list of CIDRs or bare IPs into *net.IPNet values.
+// Bare IPs are promoted to /32 (IPv4) or /128 (IPv6). Invalid entries are
+// silently skipped — the caller is expected to have already validated input.
+func parseCIDRs(cidrs []string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
 	for _, cidr := range cidrs {
 		if !strings.Contains(cidr, "/") {
 			// Bare IP — make it a /32 or /128
@@ -33,14 +39,28 @@ func SetTrustedProxies(cidrs []string) {
 		if err != nil {
 			continue
 		}
-		trustedProxyCIDRs = append(trustedProxyCIDRs, network)
+		out = append(out, network)
 	}
+	return out
 }
 
-// isTrustedProxy checks if the remote address is from a trusted proxy
+// SetTrustedProxies parses and stores the list of trusted proxy CIDRs/IPs.
+// Call once at startup. Loopback (127.0.0.0/8, ::1/128) is always included so
+// that local health checks and dev setups keep working. When the provided
+// list is empty, the set collapses to loopback-only (fail-closed).
+func SetTrustedProxies(cidrs []string) {
+	combined := make([]string, 0, len(cidrs)+len(defaultTrustedLoopbacks))
+	combined = append(combined, defaultTrustedLoopbacks...)
+	combined = append(combined, cidrs...)
+	trustedProxyCIDRs = parseCIDRs(combined)
+}
+
+// isTrustedProxy checks if the remote address is from a trusted proxy.
+// Fail-closed: if the allowlist is empty (misconfiguration) no forwarded
+// header is trusted. See package doc on trustedProxyCIDRs.
 func isTrustedProxy(remoteIP string) bool {
 	if len(trustedProxyCIDRs) == 0 {
-		return true // no trusted proxies configured — trust all (legacy)
+		return false
 	}
 	ip := net.ParseIP(remoteIP)
 	if ip == nil {
@@ -52,6 +72,13 @@ func isTrustedProxy(remoteIP string) bool {
 		}
 	}
 	return false
+}
+
+// IsTrustedProxy is the exported form of isTrustedProxy, used by the
+// Falco-owned RealIP middleware (internal/api/middleware/realip.go) to gate
+// X-Forwarded-For / X-Real-IP rewriting.
+func IsTrustedProxy(remoteIP string) bool {
+	return isTrustedProxy(remoteIP)
 }
 
 // GetClientIP extracts the client IP address from the request.
