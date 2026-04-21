@@ -39,9 +39,12 @@ Todas las variables marcadas **obligatorias** deben estar en `.env` — sin defa
 | `STORAGE_BUCKET_JAY_POOL_SIZE` | no (default 4) | Tamaño del pool de conexiones TCP |
 | `API_KEY` | sí | API key para autenticar uploads |
 | `HMAC_KEY`, `HMAC_SALT` | sí | Firma HMAC de URLs |
+| `HMAC_REQUIRED` | sí (sin default) | `true` activa verificación HMAC en delivery. Cuando es `false`, delivery ya NO queda abierto: cae al path de API-key + scope en `HandleDelivery`. |
+| `HMAC_REQUIRE_EXPIRY` | sí (sin default, fail-closed) | `true` obliga a que todas las URLs firmadas traigan `?exp=<unix>` y que no hayan expirado. `false` acepta URLs sin expiry (sólo compat temporal). Se lee vía `os.Getenv` — si falta, `/api/v1/images/*` devuelve 500. |
 | `CACHE_SIZE_MB` | no (default 256) | Cache LRU en MB |
 | `DEFAULT_FORMAT` | no (default webp) | Formato de salida por default |
 | `DEFAULT_QUALITY` | no (default 85) | Calidad JPEG/WebP |
+| `TRUSTED_PROXIES` | no (default vacío → solo loopback `127.0.0.0/8`, `::1/128`) | Lista separada por comas de CIDRs/IPs de proxies confiables. Solo desde estas direcciones se respetan `X-Forwarded-For` / `X-Real-IP`; fail-closed si no se configura. Detrás de Nginx/Traefik/ELB hay que listar la subred del proxy o el rate-limit per-IP no cuenta al cliente real. |
 
 ## Estructura (lo no obvio)
 
@@ -84,8 +87,60 @@ cliente → GET /api/v1/images/{id}?w=400 → LRU cache?
 ## Gotchas
 
 - **libvips en el host**: dev local requiere libvips instalado (`brew install vips` en macOS, `apt install libvips-dev` en Linux). El Dockerfile ya lo incluye.
-- **Único backend**: el upstream de Falco soporta múltiples backends (s3/minio/r2/filesystem). **No los uses** — el único backend en birdple-v2 es `jay`. La lógica de backups multi-target tampoco está en uso aquí.
 - **Cache LRU in-memory**: reinicio del contenedor pierde la cache, pero los originales están seguros en Jay.
 - **HMAC URL signing**: deshabilitado en dev (`HMAC_REQUIRED=false`). Activarlo antes de exponer Falco públicamente.
 - **Actualizar cliente nativo de Jay**: después de un tag nuevo en `github.com/ivangsm/jay`, correr `cd falco && go get -u github.com/ivangsm/jay@latest && go mod tidy` y levantar los tests.
 - **Arranca después de Jay**: `depends_on.jay.condition: service_healthy` en docker-compose. Si Jay no arranca, Falco no arranca.
+
+---
+
+## Falco es upstream público — no borrar funcionalidad upstream
+
+Falco es un proyecto **open-source público**. La configuración en birdple-v2 (jay + LRU + API key simple + HMAC) es **una de muchas posibles**. Los siguientes módulos existen intencionalmente aunque birdple-v2 no los use — otros usuarios del proyecto sí pueden necesitarlos:
+
+### Storage backends soportados upstream
+
+Registrados en [`internal/storage/factory.go`](./internal/storage/factory.go) y disponibles para cualquier usuario de Falco:
+
+| Archivo | Backend | Estado en birdple-v2 | Estado upstream |
+|---|---|---|---|
+| `internal/storage/jay.go` | Jay (protocolo binario nativo) | ✅ En uso | Específico de birdple |
+| `internal/storage/s3.go` | AWS S3 | No usado | ✅ Funcional |
+| `internal/storage/minio.go` | MinIO | No usado | ✅ Funcional |
+| `internal/storage/r2.go` | Cloudflare R2 | No usado | ✅ Funcional |
+| `internal/storage/filesystem.go` | Filesystem local | No usado | ✅ Funcional |
+
+**No remover** ninguno de estos, ni sus campos en `StorageConfig`, ni sus ramas en `config/validator.go`. Son parte de la API pública de Falco.
+
+### ReplicatedStorage (primary + N backups)
+
+[`internal/storage/replicated.go`](./internal/storage/replicated.go) implementa replicación sync/async/read-fallback a múltiples backends. **birdple-v2 no lo configura**, pero es una feature válida del proyecto — usuarios pueden replicar S3 → R2, o jay → filesystem para backups. No remover.
+
+### Redis cache
+
+[`internal/cache/redis.go`](./internal/cache/redis.go) + `ENABLE_REDIS` / `REDIS_URL` envs. **birdple-v2 usa LRU in-memory**, pero Redis es la opción correcta para:
+- Múltiples instancias de Falco compartiendo cache
+- Persistencia de cache a través de reinicios
+- Cache más grande que la RAM de un solo contenedor
+
+No remover — es una decisión operativa, no dead code.
+
+### Scoped API keys, groups, subgroups
+
+Toda la lógica de auto-discovery en [`internal/config/loader.go`](./internal/config/loader.go) (funciones `discoverBucketsFromEnv`, `discoverGroupsFromEnv`, `discoverSubgroupsFromEnv`, `discoverBucketKeysFromEnv`, etc.) más [`internal/api/middleware/scoped_auth.go`](./internal/api/middleware/scoped_auth.go) permiten:
+
+- Keys con acceso limitado a buckets específicos
+- Agrupar buckets lógicamente (groups / subgroups)
+- Keys por-grupo y por-subgrupo
+
+**birdple-v2 usa la auth simple** (una sola `API_KEY`), por lo que `ScopedAPIKeyAuth.HasScopedKeys()` devuelve false y se cae al fallback `APIKeyAuth`. Esto es intencional — otros usuarios multi-tenant sí lo necesitan. No remover.
+
+### Regla para auditorías
+
+Cualquier auditoría que recomiende borrar estos módulos como "dead code" está aplicando el criterio incorrecto. El criterio correcto es:
+
+1. ¿Lo usa birdple-v2? → puede que no.
+2. ¿Es parte de la superficie pública de Falco? → **sí** (todos los anteriores).
+3. ¿Lo necesitan otros usuarios de Falco? → sí, por eso existe.
+
+Solo se remueve código si (1) no lo usa birdple-v2 **y** (2) no es parte de la API pública upstream.
