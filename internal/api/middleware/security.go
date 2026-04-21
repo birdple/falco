@@ -134,7 +134,12 @@ type APIKeyAuth struct {
 	exemptPathPrefixes []string
 }
 
-// NewAPIKeyAuth creates a new API key authentication middleware
+// NewAPIKeyAuth creates a new API key authentication middleware.
+//
+// The /api/v1/images/ prefix is exempt by default because delivery is gated
+// by HMAC (the URL signature authorizes the caller). Deployments that run
+// with HMAC_REQUIRED=false must call SetDeliveryExempt(false) so delivery
+// still requires a valid API key.
 func NewAPIKeyAuth(apiKey string) *APIKeyAuth {
 	exemptPaths := map[string]bool{
 		"/health": true,
@@ -150,6 +155,49 @@ func NewAPIKeyAuth(apiKey string) *APIKeyAuth {
 		exemptPaths:        exemptPaths,
 		exemptPathPrefixes: exemptPathPrefixes,
 	}
+}
+
+// SetDeliveryExempt toggles whether the /api/v1/images/ prefix bypasses API
+// key auth. The default is true (HMAC gates delivery). Pass false to require
+// API keys on delivery in dev/non-HMAC deployments.
+func (a *APIKeyAuth) SetDeliveryExempt(exempt bool) {
+	const deliveryPrefix = "/api/v1/images/"
+	filtered := make([]string, 0, len(a.exemptPathPrefixes))
+	seen := false
+	for _, p := range a.exemptPathPrefixes {
+		if p == deliveryPrefix {
+			seen = true
+			if exempt {
+				filtered = append(filtered, p)
+			}
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	if exempt && !seen {
+		filtered = append(filtered, deliveryPrefix)
+	}
+	a.exemptPathPrefixes = filtered
+}
+
+// AuthenticateRequest returns true when the request carries a valid API key.
+// This is used by handlers (e.g. delivery) that need to enforce API-key auth
+// from inside the handler because their route is not wrapped by Handler.
+// When the middleware was constructed with an empty apiKey, authentication
+// is considered disabled and this method returns true for any request.
+func (a *APIKeyAuth) AuthenticateRequest(r *http.Request) bool {
+	if a.apiKey == "" {
+		return true
+	}
+	providedKey := r.Header.Get("X-API-Key")
+	if providedKey == "" {
+		providedKey = r.Header.Get("Authorization")
+		providedKey, _ = strings.CutPrefix(providedKey, "Bearer ")
+	}
+	if providedKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.apiKey)) == 1
 }
 
 // Handler returns the middleware handler

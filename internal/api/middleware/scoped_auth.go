@@ -41,6 +41,14 @@ func GetScope(ctx context.Context) *APIScope {
 	return scope
 }
 
+// WithScope returns a new context with the given APIScope attached. Handlers
+// that run outside the middleware chain (e.g. delivery when HMAC is not
+// required) use this to publish the scope so downstream helpers like
+// getStorageBackendScoped can enforce it.
+func WithScope(ctx context.Context, scope *APIScope) context.Context {
+	return context.WithValue(ctx, scopeContextKey, scope)
+}
+
 // ScopedAPIKeyAuth provides API key authentication with optional scoped access.
 // It checks the provided key against the admin key and all collected scoped keys
 // (from bucket-level keys, group keys, and subgroup keys).
@@ -49,11 +57,23 @@ type ScopedAPIKeyAuth struct {
 	scopedKeys         map[string]*APIScope // key value -> scope
 	exemptPaths        map[string]bool
 	exemptPathPrefixes []string
+	// exemptDeliveryWhenHMACPublic is true only when HMAC_REQUIRED=true. In
+	// that mode the HMAC signature itself authorizes access to a specific
+	// path, so the delivery prefix "/api/v1/images/" can bypass API-key
+	// auth (browsers can't carry keys). When HMAC is NOT required the
+	// exemption is dropped and delivery must authenticate like any other
+	// route.
+	exemptDeliveryWhenHMACPublic bool
 }
 
 // NewScopedAPIKeyAuth creates a new scoped API key auth middleware.
 // It uses Config.CollectAllKeys() to resolve all bucket/group/subgroup keys
 // into a flat key -> scope map.
+//
+// By default the "/api/v1/images/" prefix is exempt — the delivery route is
+// gated by HMAC, which authorizes the specific URL rather than the caller.
+// Callers that wish to protect delivery with API-key + scope (because HMAC
+// is not required in their deployment) must call SetDeliveryExempt(false).
 func NewScopedAPIKeyAuth(adminKey string, cfg *config.Config) *ScopedAPIKeyAuth {
 	allKeys := cfg.CollectAllKeys()
 
@@ -82,7 +102,62 @@ func NewScopedAPIKeyAuth(adminKey string, cfg *config.Config) *ScopedAPIKeyAuth 
 			"/ui/",
 			"/static/",
 		},
+		exemptDeliveryWhenHMACPublic: true,
 	}
+}
+
+// SetDeliveryExempt toggles whether the "/api/v1/images/" prefix bypasses
+// API-key + scope checks. True is the default (HMAC gates delivery). Set to
+// false when HMAC_REQUIRED=false so scope still applies to delivery.
+func (a *ScopedAPIKeyAuth) SetDeliveryExempt(exempt bool) {
+	a.exemptDeliveryWhenHMACPublic = exempt
+	// Rebuild the prefix list to match.
+	filtered := make([]string, 0, len(a.exemptPathPrefixes))
+	seen := false
+	for _, p := range a.exemptPathPrefixes {
+		if p == "/api/v1/images/" {
+			seen = true
+			if exempt {
+				filtered = append(filtered, p)
+			}
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	if exempt && !seen {
+		filtered = append(filtered, "/api/v1/images/")
+	}
+	a.exemptPathPrefixes = filtered
+}
+
+// AuthenticateRequest resolves the scope for a request without being an HTTP
+// middleware. Returns the resolved scope (admin or scoped) or nil when the
+// provided key matches nothing. This is used by handlers that serve routes
+// not wrapped by Handler (e.g. delivery when HMAC is not required).
+func (a *ScopedAPIKeyAuth) AuthenticateRequest(r *http.Request) (*APIScope, bool) {
+	providedKey := r.Header.Get("X-API-Key")
+	if providedKey == "" {
+		providedKey = r.Header.Get("Authorization")
+		providedKey, _ = strings.CutPrefix(providedKey, "Bearer ")
+	}
+	if providedKey == "" {
+		return nil, false
+	}
+
+	if a.adminKey != "" && subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.adminKey)) == 1 {
+		return &APIScope{IsAdmin: true}, true
+	}
+
+	var matched *APIScope
+	for key, scope := range a.scopedKeys {
+		if subtle.ConstantTimeCompare([]byte(providedKey), []byte(key)) == 1 {
+			matched = scope
+		}
+	}
+	if matched == nil {
+		return nil, false
+	}
+	return matched, true
 }
 
 // HasScopedKeys returns true if there are any scoped keys configured.

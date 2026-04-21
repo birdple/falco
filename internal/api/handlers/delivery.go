@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
@@ -16,6 +19,46 @@ import (
 	"github.com/birdple/falco/internal/security"
 	"github.com/birdple/falco/internal/storage"
 )
+
+// authenticateAndScope authenticates a delivery request via X-API-Key /
+// Authorization when HMAC is not gating the route. Returns the resolved
+// APIScope (possibly admin) and true on success; false on any auth failure.
+//
+// It honors scoped API keys (bucket/group/subgroup keys from scoped_auth.go)
+// when they exist, and falls back to the admin API key otherwise. This keeps
+// upstream multi-tenant deployments working while closing the bypass that
+// previously exempted /api/v1/images/ from all auth.
+func (h *Handler) authenticateAndScope(r *http.Request) (*apimw.APIScope, bool) {
+	// Prefer scoped auth when any scoped keys are configured.
+	scopedAuth := apimw.NewScopedAPIKeyAuth(h.config.Security.APIKey, h.config)
+	if scopedAuth.HasScopedKeys() {
+		return scopedAuth.AuthenticateRequest(r)
+	}
+	// No scoped keys — the birdple-v2 simple case. Validate the admin key
+	// directly and yield an admin scope (unrestricted).
+	simple := apimw.NewAPIKeyAuth(h.config.Security.APIKey)
+	if !simple.AuthenticateRequest(r) {
+		return nil, false
+	}
+	return &apimw.APIScope{IsAdmin: true}, true
+}
+
+// hmacRequireExpiry reads HMAC_REQUIRE_EXPIRY from the environment. Per the
+// monorepo "no insecure default" rule, this variable MUST be set explicitly;
+// the function returns an error if it is missing or unparseable. Callers
+// should reject the request when the error is non-nil rather than pick a
+// default.
+func hmacRequireExpiry() (bool, error) {
+	raw := strings.TrimSpace(os.Getenv("HMAC_REQUIRE_EXPIRY"))
+	if raw == "" {
+		return false, fmt.Errorf("HMAC_REQUIRE_EXPIRY is not set")
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("HMAC_REQUIRE_EXPIRY invalid: %w", err)
+	}
+	return v, nil
+}
 
 // HandleDelivery handles image delivery requests with optional transformations
 func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
@@ -31,50 +74,68 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// HMAC signature verification.
-	//
-	// HMAC_REQUIRED is the single switch: when true the signature MUST be
-	// present and valid, when false verification is skipped entirely (dev
-	// only). The config validator enforces that API_KEY_REQUIRED=true implies
-	// HMAC_REQUIRED=true, so production deployments cannot land here with an
-	// unprotected delivery route.
+	// Validate the ID portion (last path segment). The chi "*" wildcard can
+	// match directory/id combinations, so we only validate the final segment
+	// and rely on ValidateDirectoryPath (below) for the directory portion.
+	finalSegment := imageID
+	if i := strings.LastIndexByte(imageID, '/'); i >= 0 {
+		finalSegment = imageID[i+1:]
+	}
+	if !utils.IsValidImageID(finalSegment) {
+		h.sendError(w, http.StatusBadRequest, "INVALID_ID", "Invalid image id")
+		return
+	}
+
+	// ── Access control for delivery ────────────────────────────────────
+	// Two regimes:
+	//   (a) HMAC_REQUIRED=true  — delivery is public-by-HMAC. The URL
+	//       signature authorizes the specific path+query, so no API key
+	//       is required (browsers can't carry one on image URLs).
+	//   (b) HMAC_REQUIRED=false — fall back to API-key + scope enforcement
+	//       so delivery is not left wide open in dev/misconfigured setups.
 	if h.config.Security.HMACRequired {
 		sig := r.URL.Query().Get("sig")
-		// VerifyURL canonicalizes the path internally (sorts query, strips sig).
 		signedPath := r.URL.Path
 		if raw := r.URL.RawQuery; raw != "" {
 			signedPath = r.URL.Path + "?" + raw
 		}
 
-		if err := security.VerifyURL(
+		requireExpiry, expErr := hmacRequireExpiry()
+		if expErr != nil {
+			// Fail closed per monorepo rule: no default for this variable.
+			logger.Error().Err(expErr).Msg("HMAC_REQUIRE_EXPIRY misconfigured")
+			h.sendError(w, http.StatusInternalServerError, "CONFIG_ERROR", "server HMAC expiry policy not configured")
+			return
+		}
+
+		if err := security.VerifyURLWithPolicy(
 			sig,
 			signedPath,
 			h.config.Security.HMACKey,
 			h.config.Security.HMACKeySalt,
 			h.config.Security.HMACSignatureSize,
 			true,
+			requireExpiry,
 		); err != nil {
 			logger.Warn().Str("error", err.Error()).Msg("Invalid signature")
 			h.sendError(w, http.StatusForbidden, "INVALID_SIGNATURE", "Invalid or missing URL signature")
+			return
+		}
+	} else if h.config.Security.APIKeyRequired {
+		// Delivery without HMAC — require an API key and honor scope so a
+		// scoped key cannot be abused to read buckets outside its scope.
+		if scope, ok := h.authenticateAndScope(r); ok {
+			r = r.WithContext(apimw.WithScope(r.Context(), scope))
+		} else {
+			h.sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "API key required")
 			return
 		}
 	}
 
 	// Get storage, bucket, and directory parameters
 	storageName := r.URL.Query().Get("storage")
-
-	bucket := r.URL.Query().Get("b")
-	if bucket == "" {
-		bucket = r.URL.Query().Get("bucket")
-	}
-
-	directory := r.URL.Query().Get("d")
-	if directory == "" {
-		directory = r.URL.Query().Get("dir")
-	}
-	if directory == "" {
-		directory = r.URL.Query().Get("directory")
-	}
+	bucket := utils.GetQueryParam(r, "b", "bucket")
+	directory := utils.GetQueryParam(r, "d", "dir", "directory")
 
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
