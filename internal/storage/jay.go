@@ -244,6 +244,9 @@ func metaToMap(m *ImageMetadata) map[string]string {
 	if m.SMaxAge > 0 {
 		out["smaxage"] = strconv.Itoa(m.SMaxAge)
 	}
+	if m.OwnerID != "" {
+		out["owner-id"] = m.OwnerID
+	}
 	return out
 }
 
@@ -255,6 +258,7 @@ func mapToMeta(m map[string]string, size int64, etag string) *ImageMetadata {
 		ContentType:  m["content-type"],
 		Size:         size,
 		ETag:         etag,
+		OwnerID:      m["owner-id"],
 	}
 	if w, err := strconv.Atoi(m["width"]); err == nil {
 		im.Width = w

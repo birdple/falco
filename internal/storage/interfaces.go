@@ -20,6 +20,13 @@ type ImageMetadata struct {
 	SMaxAge      int       `json:"smaxage,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	ETag         string    `json:"etag,omitempty"`
+	// OwnerID is the opaque identifier (supplied by the caller via X-Owner-Id
+	// on upload) of the entity that owns this image. Falco does not interpret
+	// it — it is used only to enforce per-image authorization on mutating
+	// operations (delete/update). Empty means legacy/unowned: the image was
+	// uploaded before owner tracking existed and may only be mutated by an
+	// admin-scoped API key.
+	OwnerID string `json:"owner_id,omitempty"`
 }
 
 // ListResult holds information about a listed object

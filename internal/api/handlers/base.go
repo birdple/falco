@@ -198,6 +198,69 @@ func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket s
 	return h.getStorageBackendWithScope(scope, storageName, bucket)
 }
 
+// checkOwnership verifies that the authenticated caller is allowed to mutate
+// the object at `key` in `backend`. Rules:
+//
+//   - Admin-scoped keys (scope == nil || scope.IsAdmin) always pass.
+//   - Otherwise the caller MUST present X-Owner-Id and it MUST match the
+//     object's stored owner-id metadata.
+//   - Objects with an empty stored owner-id are legacy (uploaded before
+//     owner tracking). They are treated as immutable for scoped keys —
+//     only admin keys may mutate them. This is fail-closed: we do not
+//     allow any caller to "claim" a legacy image by supplying a matching
+//     empty header.
+//
+// Returns nil on allow, an error describing the denial reason otherwise.
+// Missing keys return storage.ErrImageNotFound so callers can distinguish
+// "not found" from "forbidden" and map to the correct HTTP status.
+func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend, key string) error {
+	scope := apimw.GetScope(r.Context())
+	if scope == nil || scope.IsAdmin {
+		return nil
+	}
+
+	// Retrieve metadata. The storage interface has no Head-with-metadata, so
+	// we use Retrieve and immediately close the body — this matches the
+	// pattern already used in HandleUpdate's existing-size lookup.
+	body, metadata, err := backend.Retrieve(r.Context(), key)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		body.Close()
+	}
+
+	storedOwner := ""
+	if metadata != nil {
+		storedOwner = metadata.OwnerID
+	}
+
+	callerOwner := r.Header.Get("X-Owner-Id")
+
+	if storedOwner == "" {
+		// Legacy / unowned object — only admin may mutate, and admin is
+		// already handled above. Deny for scoped callers regardless of what
+		// header they send.
+		logger.Warn().
+			Str("key", key).
+			Str("key_name", scope.KeyName).
+			Msg("Denied mutation of legacy (unowned) image by scoped key")
+		return fmt.Errorf("image has no recorded owner; admin scope required")
+	}
+
+	if callerOwner == "" {
+		return fmt.Errorf("X-Owner-Id header is required")
+	}
+	if callerOwner != storedOwner {
+		logger.Warn().
+			Str("key", key).
+			Str("key_name", scope.KeyName).
+			Msg("Owner mismatch on mutation attempt")
+		return fmt.Errorf("caller is not the owner of this image")
+	}
+	return nil
+}
+
 // defaultStorageType returns the configured type of the default storage bucket
 // for use in Prometheus metric labels (replaces hardcoded "minio").
 func (h *Handler) defaultStorageType() string {

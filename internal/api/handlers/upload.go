@@ -183,6 +183,13 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Owner identity is supplied by the caller (opaque string, typically a
+	// user id from the upstream service). Stored on the object and enforced
+	// on mutating operations — see HandleDelete / HandleUpdate. Empty is
+	// allowed for admin-driven uploads; those images can then only be
+	// mutated by an admin-scoped key.
+	ownerID := r.Header.Get("X-Owner-Id")
+
 	// Dedup-by-key: the storageKey is derived from a content hash of the raw
 	// upload, so identical uploads land on the same key. The Jay backend is
 	// idempotent by key — overwriting with the same bytes is a no-op at the
@@ -218,6 +225,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			Height:       processedImage.Metadata.Height,
 			ContentType:  processedImage.Metadata.ContentType,
 			CreatedAt:    processedImage.Metadata.CreatedAt,
+			OwnerID:      ownerID,
 		}
 		storeReader = processedImage.Data
 	} else {
@@ -241,6 +249,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			Size:         int64(len(imageData)),
 			ContentType:  detectedType,
 			CreatedAt:    time.Now(),
+			OwnerID:      ownerID,
 		}
 		storeReader = bytes.NewReader(imageData)
 	}

@@ -62,7 +62,10 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			truncated = true
 		}
 
-		// Fan-out parallel deletes
+		// Fan-out parallel deletes. Per-key ownership check runs INSIDE the
+		// worker — a scoped caller must not be able to delete another user's
+		// image by passing a shared prefix. Admin scope bypasses the check
+		// inside checkOwnership.
 		keys := make(chan string, len(results))
 		for _, item := range results {
 			keys <- item.Key
@@ -77,6 +80,14 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			go func() {
 				defer wg.Done()
 				for key := range keys {
+					if ownErr := h.checkOwnership(r, storageBackend, key); ownErr != nil {
+						if storage.IsNotFound(ownErr) {
+							logger.Warn().Str("key", key).Msg("File not found for deletion")
+							continue
+						}
+						logger.Warn().Err(ownErr).Str("key", key).Msg("Ownership check failed; skipping delete")
+						continue
+					}
 					if err := storageBackend.Delete(ctx, key); err != nil {
 						logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
 						continue
@@ -92,6 +103,14 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	if len(req.Keys) > 0 {
 		for _, key := range req.Keys {
+			if ownErr := h.checkOwnership(r, storageBackend, key); ownErr != nil {
+				if storage.IsNotFound(ownErr) {
+					logger.Warn().Str("key", key).Msg("File not found for deletion")
+					continue
+				}
+				logger.Warn().Err(ownErr).Str("key", key).Msg("Ownership check failed; skipping delete")
+				continue
+			}
 			if err := storageBackend.Delete(ctx, key); err != nil {
 				if storage.IsNotFound(err) {
 					logger.Warn().Str("key", key).Msg("File not found for deletion")

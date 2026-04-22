@@ -83,6 +83,16 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce per-image ownership BEFORE any mutation. Admin scope bypasses.
+	if ownErr := h.checkOwnership(r, storageBackend, req.Key); ownErr != nil {
+		if storage.IsNotFound(ownErr) {
+			h.sendError(w, http.StatusNotFound, "NOT_FOUND", "Image not found")
+			return
+		}
+		h.sendError(w, http.StatusForbidden, "FORBIDDEN", ownErr.Error())
+		return
+	}
+
 	var existingSize int64
 	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {
 		if body, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
