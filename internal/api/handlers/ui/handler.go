@@ -179,6 +179,7 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 		Value:    body.Key,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   86400 * 7, // 7 days
 	})
@@ -198,6 +199,7 @@ func (h *Handler) LogoutPost(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
