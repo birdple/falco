@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/birdple/falco/internal/version"
 )
 
 // HandleHealth handles health check requests for load balancers and monitoring.
@@ -21,7 +23,7 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 
 	health := map[string]interface{}{
 		"status":  overallStatus,
-		"version": "1.0.0",
+		"version": version.Version,
 		"uptime":  time.Since(h.startTime).String(),
 	}
 
