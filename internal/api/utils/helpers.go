@@ -172,10 +172,10 @@ func BuildImageURL(imageID, bucket, directory string) string {
 	params := []string{}
 
 	if bucket != "" {
-		params = append(params, fmt.Sprintf("b=%s", bucket))
+		params = append(params, fmt.Sprintf("b=%s", url.QueryEscape(bucket)))
 	}
 	if directory != "" {
-		params = append(params, fmt.Sprintf("d=%s", directory))
+		params = append(params, fmt.Sprintf("d=%s", url.QueryEscape(directory)))
 	}
 
 	if len(params) > 0 {
