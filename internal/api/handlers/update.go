@@ -94,9 +94,13 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var existingSize int64
+	var existingOwnerID string
 	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {
 		if body, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
 			existingSize = metadata.Size
+			if metadata != nil {
+				existingOwnerID = metadata.OwnerID
+			}
 			body.Close() // Only need metadata, close body immediately
 		}
 	}
@@ -126,6 +130,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		Height:       processedImage.Metadata.Height,
 		ContentType:  processedImage.Metadata.ContentType,
 		CreatedAt:    processedImage.Metadata.CreatedAt,
+		OwnerID:      existingOwnerID,
 	})
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to store image")
