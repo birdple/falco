@@ -70,7 +70,11 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 	} else if strings.Contains(contentType, "multipart/form-data") {
-		err := r.ParseMultipartForm(32 << 20)
+		maxFormBytes := maxBytes
+		if maxFormBytes <= 0 {
+			maxFormBytes = 32 << 20
+		}
+		err := r.ParseMultipartForm(maxFormBytes)
 		if err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse multipart form")
 			return
