@@ -157,26 +157,6 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	}
 }
 
-// getStorageForBucket returns a storage backend instance for the specified bucket
-func (h *Handler) getStorageForBucket(bucket string) storage.StorageBackend {
-	if bucket == "" {
-		return h.storage
-	}
-
-	if bucketAware, ok := h.storage.(storage.BucketAware); ok {
-		return bucketAware.WithBucket(bucket)
-	}
-
-	return h.storage
-}
-
-// getStorageBackend resolves a storage backend by name (from registry) and
-// optional bucket override. If storageName is empty, uses the default backend.
-// Enforces scoped API key restrictions from the request context.
-func (h *Handler) getStorageBackend(storageName, bucket string) (storage.StorageBackend, error) {
-	return h.getStorageBackendWithScope(nil, storageName, bucket)
-}
-
 // getStorageBackendScoped resolves a storage backend and enforces scope from the request.
 func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket string) (storage.StorageBackend, error) {
 	scope := apimw.GetScope(r.Context())
