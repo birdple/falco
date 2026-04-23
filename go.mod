@@ -11,7 +11,7 @@ require (
 	github.com/cshum/vipsgen v1.3.9
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-chi/cors v1.2.2
-	github.com/ivangsm/jay v0.4.1
+	github.com/ivangsm/jay v0.5.0
 	github.com/joho/godotenv v1.5.1
 	github.com/minio/minio-go/v7 v7.0.100
 	github.com/prometheus/client_golang v1.23.2
