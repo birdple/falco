@@ -684,6 +684,9 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	if params.Flip != "" {
 		parts = append(parts, fmt.Sprintf("flip%s", params.Flip))
 	}
+	if params.Flop {
+		parts = append(parts, "flop")
+	}
 
 	// Color adjustments
 	if params.Brightness != 0 {
@@ -697,6 +700,9 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	}
 	if params.Saturation != 0 {
 		parts = append(parts, fmt.Sprintf("sat%.0f", params.Saturation))
+	}
+	if params.Hue != 0 {
+		parts = append(parts, fmt.Sprintf("hue%d", params.Hue))
 	}
 
 	// Effects
