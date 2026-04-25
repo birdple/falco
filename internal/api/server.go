@@ -173,8 +173,9 @@ func (s *Server) setupRouter() {
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		// Public endpoint
+		// Public endpoints
 		r.Get("/images/*", s.handler.HandleDelivery)
+		r.Get("/proxy/*", s.handler.HandleProxy)
 
 		// Protected endpoints
 		r.Group(func(r chi.Router) {
