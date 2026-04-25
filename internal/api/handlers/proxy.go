@@ -30,8 +30,15 @@ const defaultProxyAllowedHosts = "lh3.googleusercontent.com,lh4.googleuserconten
 const proxyMaxBodyBytes = 10 * 1024 * 1024
 
 // defaultProxyMaxWidth is the fallback max width applied when no w/h params
-// are provided. Override with PROXY_MAX_WIDTH env var.
-const defaultProxyMaxWidth = 1200
+// are provided. Override with PROXY_MAX_WIDTH env var. Sized to trigger a
+// downscale on BGG's __itemrep@2x variant (~984 px wide).
+const defaultProxyMaxWidth = 600
+
+// defaultProxyQuality is the fallback webp/jpeg quality applied when no q
+// param is provided. Override with PROXY_DEFAULT_QUALITY env var. Lower than
+// delivery's 85 because proxy images come from external CDNs and never need
+// archival quality.
+const defaultProxyQuality = 75
 
 // proxyAllowedHosts parses PROXY_ALLOWED_HOSTS from the environment, falling
 // back to defaultProxyAllowedHosts. Returns a map for O(1) lookup.
@@ -241,10 +248,10 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	params.StripMetadata = r.URL.Query().Get("meta") != "1"
 
 	// ── 5b. Safety-net max width ──────────────────────────────────────
-	// When neither w nor h was supplied, cap width at PROXY_MAX_WIDTH (default
-	// 1200) so cache misses on full-resolution originals don't propagate huge
-	// files to the browser. Height is left unset so libvips scales
-	// proportionally — no cropping.
+	// When neither w nor h was supplied, cap width at PROXY_MAX_WIDTH so
+	// cache misses on full-resolution originals don't propagate huge files
+	// to the browser. Height is left unset so libvips scales proportionally
+	// — no cropping.
 	if params.Width == 0 && params.Height == 0 {
 		maxW := defaultProxyMaxWidth
 		if v := os.Getenv("PROXY_MAX_WIDTH"); v != "" {
@@ -253,6 +260,19 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		params.Width = maxW
+	}
+
+	// ── 5c. Default proxy quality ─────────────────────────────────────
+	// When no ?q= was supplied, use a lower default than delivery (85) since
+	// proxy images come from external CDNs and don't need archival quality.
+	if params.Quality == 0 {
+		proxyQ := defaultProxyQuality
+		if v := os.Getenv("PROXY_DEFAULT_QUALITY"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 100 {
+				proxyQ = parsed
+			}
+		}
+		params.Quality = proxyQ
 	}
 
 	// ── 6. Cache key + LRU hit ────────────────────────────────────────

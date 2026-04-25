@@ -43,7 +43,9 @@ Todas las variables marcadas **obligatorias** deben estar en `.env` — sin defa
 | `HMAC_REQUIRE_EXPIRY` | sí (sin default, fail-closed) | `true` obliga a que todas las URLs firmadas traigan `?exp=<unix>` y que no hayan expirado. `false` acepta URLs sin expiry (sólo compat temporal). Se lee vía `os.Getenv` — si falta, `/api/v1/images/*` devuelve 500. |
 | `CACHE_SIZE_MB` | no (default 256) | Cache LRU en MB |
 | `DEFAULT_FORMAT` | no (default webp) | Formato de salida por default |
-| `DEFAULT_QUALITY` | no (default 85) | Calidad JPEG/WebP |
+| `DEFAULT_QUALITY` | no (default 85) | Calidad JPEG/WebP para delivery (`/api/v1/images/{id}`) |
+| `PROXY_MAX_WIDTH` | no (default 600) | Cap de ancho aplicado al proxy externo cuando no se pasa `?w` ni `?h`. Calibrado para activar resize en BGG `__itemrep@2x` (~984 px). |
+| `PROXY_DEFAULT_QUALITY` | no (default 75) | Calidad webp/jpeg aplicada en `/api/v1/proxy/*` cuando no se pasa `?q`. Más bajo que delivery porque las imágenes proxy vienen de CDNs externos. |
 | `TRUSTED_PROXIES` | no (default vacío → solo loopback `127.0.0.0/8`, `::1/128`) | Lista separada por comas de CIDRs/IPs de proxies confiables. Solo desde estas direcciones se respetan `X-Forwarded-For` / `X-Real-IP`; fail-closed si no se configura. Detrás de Nginx/Traefik/ELB hay que listar la subred del proxy o el rate-limit per-IP no cuenta al cliente real. |
 
 ## Estructura (lo no obvio)
