@@ -18,6 +18,16 @@ const (
 	FitFill    = "fill"
 )
 
+// AllowedImageExtensions maps URL path extensions to the canonical format
+// names accepted by the image processor. Shared by delivery and proxy handlers.
+var AllowedImageExtensions = map[string]string{
+	"webp": "webp",
+	"jpg":  "jpeg",
+	"jpeg": "jpeg",
+	"png":  "png",
+	"avif": "avif",
+}
+
 // validGravities is the set of accepted gravity values for smart cropping.
 // Hoisted to package level to avoid re-allocation on every delivery request.
 var validGravities = map[string]bool{

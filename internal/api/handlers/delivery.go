@@ -81,6 +81,25 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	if i := strings.LastIndexByte(imageID, '/'); i >= 0 {
 		finalSegment = imageID[i+1:]
 	}
+
+	// Strip a known image extension from the path segment (e.g. /images/abc123.webp).
+	// The stripped extension acts as a format default when no ?f= query param is given.
+	// This lets Cloudflare cache the URL by file extension without any query-string tricks.
+	extFormat := ""
+	if dot := strings.LastIndexByte(finalSegment, '.'); dot >= 0 {
+		possibleExt := strings.ToLower(finalSegment[dot+1:])
+		if mapped, ok := AllowedImageExtensions[possibleExt]; ok {
+			extFormat = mapped
+			// Remove the extension from both the local segment and the full imageID.
+			finalSegment = finalSegment[:dot]
+			imageID = imageID[:len(imageID)-len(possibleExt)-1]
+		} else {
+			// Has a dot but not a known extension → reject to avoid ambiguity.
+			h.sendError(w, http.StatusBadRequest, "INVALID_ID", "Invalid image id")
+			return
+		}
+	}
+
 	if !utils.IsValidImageID(finalSegment) {
 		h.sendError(w, http.StatusBadRequest, "INVALID_ID", "Invalid image id")
 		return
@@ -196,6 +215,9 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 			h.sendError(w, http.StatusBadRequest, "INVALID_FORMAT", "Unsupported format")
 			return
 		}
+	} else if extFormat != "" {
+		// Extension in path acts as format default when no ?f= is given.
+		params.Format = extFormat
 	}
 
 	if maxAge := r.URL.Query().Get("maxage"); maxAge != "" {
