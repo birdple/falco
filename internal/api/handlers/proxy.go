@@ -29,6 +29,10 @@ const defaultProxyAllowedHosts = "lh3.googleusercontent.com,lh4.googleuserconten
 // proxyMaxBodyBytes caps the external image body to 10 MB.
 const proxyMaxBodyBytes = 10 * 1024 * 1024
 
+// defaultProxyMaxWidth is the fallback max width applied when no w/h params
+// are provided. Override with PROXY_MAX_WIDTH env var.
+const defaultProxyMaxWidth = 1200
+
 // proxyAllowedHosts parses PROXY_ALLOWED_HOSTS from the environment, falling
 // back to defaultProxyAllowedHosts. Returns a map for O(1) lookup.
 func proxyAllowedHosts() map[string]struct{} {
@@ -235,6 +239,21 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 
 	params.AutoOrient = r.URL.Query().Get("orient") != "0"
 	params.StripMetadata = r.URL.Query().Get("meta") != "1"
+
+	// ── 5b. Safety-net max width ──────────────────────────────────────
+	// When neither w nor h was supplied, cap width at PROXY_MAX_WIDTH (default
+	// 1200) so cache misses on full-resolution originals don't propagate huge
+	// files to the browser. Height is left unset so libvips scales
+	// proportionally — no cropping.
+	if params.Width == 0 && params.Height == 0 {
+		maxW := defaultProxyMaxWidth
+		if v := os.Getenv("PROXY_MAX_WIDTH"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+				maxW = parsed
+			}
+		}
+		params.Width = maxW
+	}
 
 	// ── 6. Cache key + LRU hit ────────────────────────────────────────
 	cacheKey := proxyCacheKey(
