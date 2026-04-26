@@ -117,7 +117,6 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	}
 
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d, immutable", maxAge, sMaxAge))
-	w.Header().Set("Vary", "Accept")
 
 	// ETag set before ServeContent so it handles If-None-Match automatically.
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())

@@ -328,7 +328,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 				Size:        int64(len(cachedData)),
 				MaxAge:      params.MaxAge,
 				SMaxAge:     params.SMaxAge,
-				CreatedAt:   time.Now(),
+				// Stable epoch so ETag/Last-Modified don't change between
+				// LRU cache miss and hit — content is content-addressed via
+				// id, so any timestamp here would be arbitrary.
+				CreatedAt: time.Unix(0, 0),
 			}
 			h.serveImage(w, r, bytes.NewReader(cachedData), cachedMeta)
 			return
