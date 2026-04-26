@@ -42,6 +42,8 @@ func ZerologRequestLogger(next http.Handler) http.Handler {
 			Int("size", wrapped.size).
 			Dur("duration", time.Since(start)).
 			Str("ip", httputil.GetClientIP(r)).
+			Str("user_agent", httputil.GetUserAgent(r)).
+			Str("referer", r.Referer()).
 			Str("request_id", middleware.GetReqID(r.Context())).
 			Msg("request")
 	})
