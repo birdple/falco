@@ -144,8 +144,9 @@ type APIKeyAuth struct {
 // still requires a valid API key.
 func NewAPIKeyAuth(apiKey string) *APIKeyAuth {
 	exemptPaths := map[string]bool{
-		"/health": true,
-		"/":       true,
+		"/health":     true,
+		"/robots.txt": true,
+		"/":           true,
 	}
 
 	exemptPathPrefixes := []string{

@@ -93,9 +93,10 @@ func NewScopedAPIKeyAuth(adminKey string, cfg *config.Config) *ScopedAPIKeyAuth 
 		adminKey:   adminKey,
 		scopedKeys: skMap,
 		exemptPaths: map[string]bool{
-			"/health":    true,
-			"/":          true,
-			"/dashboard": true,
+			"/health":     true,
+			"/robots.txt": true,
+			"/":           true,
+			"/dashboard":  true,
 		},
 		exemptPathPrefixes: []string{
 			"/api/v1/images/",

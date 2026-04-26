@@ -148,6 +148,14 @@ func (s *Server) setupRouter() {
 	r.Get("/health", s.handler.HandleHealth)
 	r.Head("/health", s.handler.HandleHealth)
 
+	// robots.txt — disallow all crawlers. Falco is a CDN/origin for images,
+	// not indexable content.
+	r.Get("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	})
+
 	// Docs endpoint
 	r.Get("/docs", s.handler.HandleDocs)
 	r.Get("/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
