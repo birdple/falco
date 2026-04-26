@@ -88,6 +88,11 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	// Content-Type must be set before ServeContent so it doesn't sniff.
 	w.Header().Set("Content-Type", metadata.ContentType)
 
+	// Images are public-by-design (HMAC signing protects against tampering, not
+	// sharing). Emitting a wildcard ACAO lets cross-origin canvas/snapdom reads
+	// work without per-origin CORS allowlisting, matching the proxy path.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
 	// Smart cache control based on metadata if available, otherwise defaults from config
 	maxAge := h.config.Cache.DefaultMaxAge
 	sMaxAge := h.config.Cache.DefaultSMaxAge
