@@ -47,6 +47,8 @@ Todas las variables marcadas **obligatorias** deben estar en `.env` — sin defa
 | `PROXY_MAX_WIDTH` | no (default 600) | Cap de ancho aplicado al proxy externo cuando no se pasa `?w` ni `?h`. Calibrado para activar resize en BGG `__itemrep@2x` (~984 px). |
 | `PROXY_DEFAULT_QUALITY` | no (default 75) | Calidad webp/jpeg aplicada en `/api/v1/proxy/*` cuando no se pasa `?q`. Más bajo que delivery porque las imágenes proxy vienen de CDNs externos. |
 | `TRUSTED_PROXIES` | no (default vacío → solo loopback `127.0.0.0/8`, `::1/128`) | Lista separada por comas de CIDRs/IPs de proxies confiables. Solo desde estas direcciones se respetan `X-Forwarded-For` / `X-Real-IP`; fail-closed si no se configura. Detrás de Nginx/Traefik/ELB hay que listar la subred del proxy o el rate-limit per-IP no cuenta al cliente real. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no (default vacío → OTel apagado) | Endpoint OTLP gRPC del collector (ej. `otel-collector:4317`). Si está vacío, telemetry queda apagado en silencio — útil para dev local sin collector. Si está seteado, se exportan traces y metrics. |
+| `OTEL_DEPLOYMENT_ENV` | no (default `development`) | Valor del recurso `deployment.environment` en spans/metrics (`development` / `staging` / `production`). |
 
 ## Estructura (lo no obvio)
 
@@ -73,8 +75,8 @@ cliente → GET /api/v1/images/{id}?w=400 → LRU cache?
 
 - **Recibe HTTP de:** nadie todavía (la adopción por `birdple-api` / `birdple` / `colibri` es trabajo de specs futuras)
 - **Habla con:** `jay:4012` por protocolo binario nativo. Falco es el único consumidor nativo del stack (dogfooding intencional)
-- **Métricas:** `GET /metrics` (Prometheus)
-- **OTel traces:** exportados a `otel-collector:4318`
+- **Métricas:** `GET /metrics` (Prometheus, scrape local) + OTel metrics vía OTLP gRPC al collector cuando `OTEL_EXPORTER_OTLP_ENDPOINT` está seteado
+- **OTel traces:** exportados vía OTLP gRPC al endpoint en `OTEL_EXPORTER_OTLP_ENDPOINT` (típicamente `otel-collector:4317`). Init está en [`internal/telemetry`](./internal/telemetry/), que replica el patrón canónico de `auk`/`owl`. Sin endpoint, telemetry queda apagado.
 
 ## Endpoints principales
 

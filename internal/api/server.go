@@ -20,6 +20,7 @@ import (
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/internal/telemetry"
 	"github.com/birdple/falco/web"
 )
 
@@ -217,9 +218,12 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 
 // setupServer configures the HTTP server
 func (s *Server) setupServer() {
+	// Wrap the chi router with OTel HTTP instrumentation so every request
+	// gets a span with method/route/status. No-op when OTEL_EXPORTER_OTLP_ENDPOINT
+	// is unset (the global tracer provider stays at the default no-op).
 	s.server = &http.Server{
 		Addr:              s.config.GetServerAddress(),
-		Handler:           s.router,
+		Handler:           telemetry.WrapHandler(s.router, "falco"),
 		ReadTimeout:       s.config.Server.ReadTimeout,
 		WriteTimeout:      s.config.Server.WriteTimeout,
 		IdleTimeout:       s.config.Server.IdleTimeout,

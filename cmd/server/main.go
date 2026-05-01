@@ -19,6 +19,7 @@ import (
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/internal/telemetry"
 	"github.com/cshum/vipsgen/vips"
 )
 
@@ -38,6 +39,14 @@ func main() {
 	})
 
 	logger.Info().Msg("Starting Falco Image Processing Service")
+
+	// Initialize OpenTelemetry. Non-fatal: if OTEL_EXPORTER_OTLP_ENDPOINT is
+	// unset, telemetry is silently skipped (avoids "connection refused" spam
+	// in local dev). Shutdown runs before HTTP shutdown below to flush spans.
+	otelShutdown, err := telemetry.Init(context.Background(), "falco")
+	if err != nil {
+		logger.Warn().Err(err).Msg("telemetry init failed, continuing without")
+	}
 
 	// Configure trusted proxies for X-Forwarded-For / X-Real-IP header trust.
 	// Loopback is always trusted; an empty TRUSTED_PROXIES env var means no
@@ -174,6 +183,13 @@ func main() {
 	defer shutdownCancel()
 
 	logger.Info().Msg("Initiating graceful shutdown...")
+
+	// Phase 0: Flush in-flight OTel spans/metrics before tearing down servers.
+	if otelShutdown != nil {
+		if err := otelShutdown(shutdownCtx); err != nil {
+			logger.Warn().Err(err).Msg("Telemetry shutdown error")
+		}
+	}
 
 	// Phase 1: Stop accepting new requests
 	logger.Info().Msg("Phase 1: Stopping server (no new requests)")
