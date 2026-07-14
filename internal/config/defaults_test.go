@@ -25,7 +25,7 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	assert.Equal(t, 24, v.GetInt("cache.ttl_hours"))
 
 	// Processing defaults
-	assert.Equal(t, 10, v.GetInt("processing.max_file_size_mb"))
+	assert.Equal(t, 5, v.GetInt("processing.max_file_size_mb"))
 	assert.Equal(t, 85, v.GetInt("processing.default_quality"))
 	assert.Equal(t, "webp", v.GetString("processing.default_format"))
 	assert.Equal(t, 4, v.GetInt("processing.concurrent_workers"))
