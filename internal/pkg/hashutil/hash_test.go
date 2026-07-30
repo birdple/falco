@@ -70,7 +70,7 @@ func TestGenerateImageIDFromData_Deterministic(t *testing.T) {
 }
 
 var smallData = []byte("hello world")
-var mediumData = make([]byte, 64*1024)   // 64 KB
+var mediumData = make([]byte, 64*1024)    // 64 KB
 var largeData = make([]byte, 4*1024*1024) // 4 MB
 
 func BenchmarkGenerateSHA256_Small(b *testing.B) {

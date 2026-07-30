@@ -210,7 +210,7 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 			return fmt.Errorf("smart resize failed: %w", err)
 		}
 	} else if params.Width > 0 || params.Height > 0 {
-	// Resize with upscaling protection
+		// Resize with upscaling protection
 		// Prevent upscaling attacks - limit requested dimensions to original or max dimensions
 		originalWidth := img.Width()
 		originalHeight := img.Height()

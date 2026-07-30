@@ -37,7 +37,6 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 		},
 	}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -87,7 +86,6 @@ func TestHandleUpload_JSONWithURL(t *testing.T) {
 		},
 	}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -119,7 +117,6 @@ func TestHandleUpload_InvalidQuality(t *testing.T) {
 		},
 	}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -143,8 +140,6 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Processing.MaxDimensions.Width = 4000
 	cfg.Processing.MaxDimensions.Height = 4000
-
-
 
 	startTime := time.Now()
 
@@ -201,8 +196,6 @@ func TestHandleDelivery_InvalidWidth(t *testing.T) {
 	cfg.Processing.MaxDimensions.Width = 4000
 	cfg.Processing.MaxDimensions.Height = 4000
 
-
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -226,8 +219,6 @@ func TestHandleDelivery_InvalidFormat(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Processing.MaxDimensions.Width = 4000
 	cfg.Processing.MaxDimensions.Height = 4000
-
-
 
 	startTime := time.Now()
 
@@ -253,7 +244,6 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 
@@ -293,7 +283,6 @@ func TestHandleDelete_MissingParameters(t *testing.T) {
 
 	cfg := &config.Config{}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -316,7 +305,6 @@ func TestHandleList_WithPrefix(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 
@@ -345,7 +333,6 @@ func TestHandleList_StorageError(t *testing.T) {
 
 	cfg := &config.Config{}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -367,7 +354,6 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 
@@ -395,7 +381,6 @@ func TestHandleUpdate_Success(t *testing.T) {
 
 	cfg := &config.Config{}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -414,7 +399,7 @@ func TestHandleUpdate_Success(t *testing.T) {
 	// Mock expectations
 	mockProcessor.On("ValidateFormat", "webp").Return(true)
 	mockStorage.On("Exists", mock.Anything, "test-key").Return(false, nil)
-	
+
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(&processor.ProcessedImage{
@@ -442,7 +427,6 @@ func TestHandleUpdate_InvalidJSON(t *testing.T) {
 
 	cfg := &config.Config{}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -462,7 +446,6 @@ func TestHandleUpdate_MissingURL(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 
@@ -490,7 +473,6 @@ func TestHandleUpdate_MissingBucket(t *testing.T) {
 
 	cfg := &config.Config{}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -516,7 +498,6 @@ func TestHandleUpdate_MissingKey(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 
@@ -544,7 +525,6 @@ func TestHandleUpdate_InvalidQuality(t *testing.T) {
 
 	cfg := &config.Config{}
 
-
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
@@ -571,7 +551,6 @@ func TestHandleUpdate_InvalidFormat(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 
@@ -603,7 +582,6 @@ func TestHandleDocs(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	cfg := &config.Config{}
-
 
 	startTime := time.Now()
 

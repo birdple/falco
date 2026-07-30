@@ -105,8 +105,8 @@ const (
 type ReplicationMode string
 
 const (
-	ReplicationSync        ReplicationMode = "sync"
-	ReplicationAsync       ReplicationMode = "async"
+	ReplicationSync         ReplicationMode = "sync"
+	ReplicationAsync        ReplicationMode = "async"
 	ReplicationReadFallback ReplicationMode = "read-fallback"
 )
 

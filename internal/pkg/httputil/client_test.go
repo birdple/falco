@@ -174,7 +174,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"8.8.8.8", false},
 		{"203.0.113.50", false},
 		{"1.1.1.1", false},
-		{"::1", true},             // IPv6 loopback
+		{"::1", true}, // IPv6 loopback
 	}
 
 	for _, tt := range tests {

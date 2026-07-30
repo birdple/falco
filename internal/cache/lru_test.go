@@ -111,8 +111,8 @@ func TestLRUCache_Size(t *testing.T) {
 	cache := NewLRUCache(1024*1024, time.Hour)
 	defer cache.Stop()
 
-	cache.Set("key1", []byte("hello"), 0)       // 5 bytes
-	cache.Set("key2", []byte("world!!"), 0)      // 7 bytes
+	cache.Set("key1", []byte("hello"), 0)   // 5 bytes
+	cache.Set("key2", []byte("world!!"), 0) // 7 bytes
 
 	assert.Equal(t, int64(12), cache.Size())
 }
