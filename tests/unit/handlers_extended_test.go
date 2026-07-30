@@ -265,6 +265,11 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockStorage.On("Delete", mock.Anything, "images/2024/img1.jpg").Return(nil)
 	mockStorage.On("Delete", mock.Anything, "images/2024/img2.jpg").Return(nil)
 
+	// Borrar el original tiene que tirar también sus variantes cacheadas, o la
+	// imagen se sigue sirviendo desde RAM hasta 24 h después de "borrada".
+	mockProcessor.On("InvalidateCacheForKey", "images/2024/img1.jpg").Return(0)
+	mockProcessor.On("InvalidateCacheForKey", "images/2024/img2.jpg").Return(0)
+
 	w := httptest.NewRecorder()
 	h.HandleDelete(w, req)
 

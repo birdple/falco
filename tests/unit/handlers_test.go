@@ -162,6 +162,9 @@ func TestHandleDelete_Success(t *testing.T) {
 	mockStorage.On("Delete", mock.Anything, "test-key").
 		Return(nil)
 
+	// Borrar el original también tira sus variantes cacheadas.
+	mockProcessor.On("InvalidateCacheForKey", "test-key").Return(0)
+
 	w := httptest.NewRecorder()
 	h.HandleDelete(w, req)
 

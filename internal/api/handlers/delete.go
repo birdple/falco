@@ -42,6 +42,12 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var deletedKeys []string
+	// Claves que se pidió borrar y no se borraron. Antes se contaban sólo en el
+	// log y la respuesta salía `success: true` igual: con jay caído, el usuario
+	// pedía "borrar mis fotos", recibía `{"success":true,"count":0}`, y
+	// birdple-api lo asentaba como borrado. Las fotos seguían ahí y nadie
+	// reintentaba.
+	var failedKeys []string
 	var truncated bool
 
 	if req.Prefix != "" {
@@ -82,16 +88,24 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 				for key := range keys {
 					if ownErr := h.checkOwnership(r, storageBackend, key); ownErr != nil {
 						if storage.IsNotFound(ownErr) {
+							// Ya no existe: el resultado que pedía el llamador.
 							logger.Warn().Str("key", key).Msg("File not found for deletion")
 							continue
 						}
 						logger.Warn().Err(ownErr).Str("key", key).Msg("Ownership check failed; skipping delete")
+						mu.Lock()
+						failedKeys = append(failedKeys, key)
+						mu.Unlock()
 						continue
 					}
 					if err := storageBackend.Delete(ctx, key); err != nil {
 						logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
+						mu.Lock()
+						failedKeys = append(failedKeys, key)
+						mu.Unlock()
 						continue
 					}
+					h.invalidateCache(key)
 					mu.Lock()
 					deletedKeys = append(deletedKeys, key)
 					mu.Unlock()
@@ -109,6 +123,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				logger.Warn().Err(ownErr).Str("key", key).Msg("Ownership check failed; skipping delete")
+				failedKeys = append(failedKeys, key)
 				continue
 			}
 			if err := storageBackend.Delete(ctx, key); err != nil {
@@ -117,20 +132,46 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
+				failedKeys = append(failedKeys, key)
 				continue
 			}
+			h.invalidateCache(key)
 			deletedKeys = append(deletedKeys, key)
 		}
 	}
 
+	// Un borrado que no borró todo lo que se le pidió NO es un éxito. El
+	// llamador tiene que poder distinguirlo para reintentar.
 	response := types.DeleteResponse{
-		Success:   true,
+		Success:   len(failedKeys) == 0,
 		Deleted:   deletedKeys,
+		Failed:    failedKeys,
 		Count:     len(deletedKeys),
 		Truncated: truncated,
 	}
 
+	status := http.StatusOK
+	if len(failedKeys) > 0 {
+		logger.Error().
+			Int("deleted", len(deletedKeys)).
+			Int("failed", len(failedKeys)).
+			Msg("Delete completed with failures")
+		status = http.StatusMultiStatus
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(response)
+}
+
+// invalidateCache drops every cached variant of a key that no longer exists (or
+// whose bytes changed). Sin esto, `LRUCache.Delete` existía y no lo llamaba
+// nadie: la imagen borrada se seguía sirviendo hasta 24 h desde RAM.
+func (h *Handler) invalidateCache(key string) {
+	if h.imageProcessor == nil {
+		return
+	}
+	if n := h.imageProcessor.InvalidateCacheForKey(key); n > 0 {
+		logger.Debug().Str("key", key).Int("variants", n).Msg("Invalidated cached variants")
+	}
 }
