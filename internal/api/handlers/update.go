@@ -138,6 +138,11 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Los bytes cambiaron pero la clave de cache no —se deriva de key+params—,
+	// así que sin invalidar se seguía entregando la versión vieja hasta 24 h y
+	// el update parecía no haberse aplicado.
+	h.invalidateCache(req.Key)
+
 	newSize := processedImage.Metadata.Size
 	savedBytes := existingSize - newSize
 	savedPercent := float64(0)

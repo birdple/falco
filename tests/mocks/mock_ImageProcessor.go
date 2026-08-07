@@ -301,6 +301,49 @@ func (_c *MockImageProcessor_GetFromCache_Call) RunAndReturn(run func(string) ([
 	return _c
 }
 
+// InvalidateCacheForKey provides a mock function for the type MockImageProcessor
+func (_mock *MockImageProcessor) InvalidateCacheForKey(storageKey string) int {
+	ret := _mock.Called(storageKey)
+
+	if len(ret) == 0 {
+		panic("no return value specified for InvalidateCacheForKey")
+	}
+
+	var r0 int
+	if returnFunc, ok := ret.Get(0).(func(string) int); ok {
+		r0 = returnFunc(storageKey)
+	} else {
+		r0 = ret.Get(0).(int)
+	}
+	return r0
+}
+
+// MockImageProcessor_InvalidateCacheForKey_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'InvalidateCacheForKey'
+type MockImageProcessor_InvalidateCacheForKey_Call struct {
+	*mock.Call
+}
+
+func (_e *MockImageProcessor_Expecter) InvalidateCacheForKey(storageKey interface{}) *MockImageProcessor_InvalidateCacheForKey_Call {
+	return &MockImageProcessor_InvalidateCacheForKey_Call{Call: _e.mock.On("InvalidateCacheForKey", storageKey)}
+}
+
+func (_c *MockImageProcessor_InvalidateCacheForKey_Call) Run(run func(storageKey string)) *MockImageProcessor_InvalidateCacheForKey_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string))
+	})
+	return _c
+}
+
+func (_c *MockImageProcessor_InvalidateCacheForKey_Call) Return(n int) *MockImageProcessor_InvalidateCacheForKey_Call {
+	_c.Call.Return(n)
+	return _c
+}
+
+func (_c *MockImageProcessor_InvalidateCacheForKey_Call) RunAndReturn(run func(string) int) *MockImageProcessor_InvalidateCacheForKey_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Process provides a mock function for the type MockImageProcessor
 func (_mock *MockImageProcessor) Process(ctx context.Context, input io.Reader, params *processor.ProcessingParams, cacheKey string) (*processor.ProcessedImage, error) {
 	ret := _mock.Called(ctx, input, params, cacheKey)

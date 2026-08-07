@@ -116,6 +116,17 @@ type ImageProcessor interface {
 	// obtain the key.
 	GetFromCache(key string) ([]byte, bool)
 
+	// InvalidateCacheForKey drops every cached variant of a storage key and
+	// returns how many entries were removed.
+	//
+	// Un objeto puede estar cacheado en tantas variantes como combinaciones de
+	// parámetros se hayan pedido, y todas comparten el prefijo
+	// `sha256(storageKey)`. Sin esto, borrar o reemplazar una imagen no tenía
+	// ningún efecto sobre lo que se venía sirviendo: la foto borrada seguía
+	// entregándose hasta 24 h desde RAM —un problema de privacidad, no sólo de
+	// consistencia— y un update parecía no aplicarse.
+	InvalidateCacheForKey(storageKey string) int
+
 	// GetMetadata extracts metadata from an image without processing
 	GetMetadata(ctx context.Context, input io.Reader) (*ImageMetadata, error)
 

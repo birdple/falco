@@ -210,7 +210,7 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 			return fmt.Errorf("smart resize failed: %w", err)
 		}
 	} else if params.Width > 0 || params.Height > 0 {
-	// Resize with upscaling protection
+		// Resize with upscaling protection
 		// Prevent upscaling attacks - limit requested dimensions to original or max dimensions
 		originalWidth := img.Width()
 		originalHeight := img.Height()
@@ -631,6 +631,30 @@ func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams, inputFor
 // backend, so the cache can be checked before any I/O.
 func (p *VipsProcessor) GenerateCacheKey(storageKey string, params *ProcessingParams) string {
 	return generateCacheKey(storageKey, params)
+}
+
+// InvalidateCacheForKey drops every cached variant of a storage key.
+//
+// Todas las variantes de un mismo objeto comparten el prefijo
+// `sha256(storageKey)[:32]` que arma `generateCacheKey`, así que basta con
+// barrer las claves por ese prefijo. Es O(n) sobre las claves de la cache, pero
+// sólo corre en borrado y en update, que son raros comparados con las lecturas.
+func (p *VipsProcessor) InvalidateCacheForKey(storageKey string) int {
+	if p.cache == nil {
+		return 0
+	}
+
+	prefix := fmt.Sprintf("%x", sha256.Sum256([]byte(storageKey)))[:32]
+
+	removed := 0
+	for _, key := range p.cache.Keys() {
+		if strings.HasPrefix(key, prefix) {
+			p.cache.Delete(key)
+			removed++
+		}
+	}
+
+	return removed
 }
 
 // GetFromCache returns cached processed image bytes for the given key.

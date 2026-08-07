@@ -107,16 +107,16 @@ func isUIPath(path string) bool {
 func RestrictedFileServer(root http.FileSystem) http.Handler {
 	fs := http.FileServer(root)
 	allowedExtensions := map[string]bool{
-		".css":  true,
-		".js":   true,
-		".ico":  true,
-		".png":  true,
-		".jpg":  true,
-		".jpeg": true,
-		".svg":  true,
-		".woff": true,
+		".css":   true,
+		".js":    true,
+		".ico":   true,
+		".png":   true,
+		".jpg":   true,
+		".jpeg":  true,
+		".svg":   true,
+		".woff":  true,
 		".woff2": true,
-		".ttf":  true,
+		".ttf":   true,
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

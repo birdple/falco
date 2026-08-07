@@ -185,9 +185,9 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"name":    scope.KeyName,
-		"admin":   scope.IsAdmin,
+		"ok":    true,
+		"name":  scope.KeyName,
+		"admin": scope.IsAdmin,
 	})
 }
 

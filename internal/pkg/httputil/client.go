@@ -191,12 +191,12 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 		"127.0.0.0/8",
 		"169.254.0.0/16", // Link-local / AWS metadata
 		"0.0.0.0/8",
-		"100.64.0.0/10",  // Carrier-grade NAT
+		"100.64.0.0/10", // Carrier-grade NAT
 		"192.0.0.0/24",
-		"198.18.0.0/15",  // Benchmarking
-		"fc00::/7",       // IPv6 unique local
-		"fe80::/10",      // IPv6 link-local
-		"::1/128",        // IPv6 loopback
+		"198.18.0.0/15", // Benchmarking
+		"fc00::/7",      // IPv6 unique local
+		"fe80::/10",     // IPv6 link-local
+		"::1/128",       // IPv6 loopback
 	}
 
 	for _, cidr := range privateRanges {
