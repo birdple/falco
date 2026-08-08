@@ -1,21 +1,17 @@
 # ----------------------------------------
 # Build stage (Etapa de Compilación)
 # ----------------------------------------
-FROM golang:1.26-alpine AS builder
+# Pin explícito a Alpine 3.24 (no el "alpine" flotante de la imagen de Go) para
+# que el builder y el runtime queden siempre en la misma versión de Alpine.
+FROM golang:1.26-alpine3.24 AS builder
 
 # Instala las dependencias necesarias para compilar con vips
 # - gcc, g++, musl-dev: Compilador C/C++ para CGO
 # - vips-dev: Librería libvips y sus headers (necesita 8.17+ para vipsgen 1.1+)
 # - pkgconf: pkg-config para detectar librerías
-# IMPORTANTE: Alpine 3.22 tiene vips 8.16.1 que no incluye constantes necesarias
-# (VIPS_INTENT_AUTO, VIPS_KERNEL_MKS2013, VIPS_KERNEL_MKS2021)
-# Por eso usamos Alpine Edge que tiene vips 8.17+
-RUN apk upgrade --no-cache \
-        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main \
-        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
-    && apk add --no-cache \
-        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main \
-        --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
+# Alpine 3.24 trae vips-dev 8.18.2 en el repo community (habilitado por defecto),
+# ya no hace falta el repo edge que usábamos cuando 3.22 traía 8.16.1.
+RUN apk add --no-cache \
         gcc \
         g++ \
         musl-dev \
@@ -53,9 +49,9 @@ RUN CGO_ENABLED=1 go build \
 # ----------------------------------------
 # Runtime stage (Etapa de Ejecución)
 # ----------------------------------------
-# IMPORTANTE: Usar Alpine Edge para que las librerías coincidan con el build stage
-# Si se usa Alpine 3.22, habrá errores de símbolos faltantes (symbol not found)
-FROM alpine:edge
+# Misma versión de Alpine que el builder (3.24) para que la vips runtime
+# coincida en versión (ABI) con la vips-dev usada al compilar.
+FROM alpine:3.24
 
 # Instala las dependencias de ejecución
 # - ca-certificates: Certificados SSL
