@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -336,9 +339,120 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 			h.serveImage(w, r, bytes.NewReader(cachedData), cachedMeta)
 			return
 		}
+
+		// Cache miss with an explicit transform: cacheKey is already known,
+		// so dedup the retrieve+process work across concurrent requests for
+		// the same (storageKey, params) — same fix as HandleProxy's
+		// singleflight, and the same shape of bug (N concurrent requests for
+		// the same resize each paying their own Jay round-trip + decode +
+		// encode). Deliberately built on context.Background(), not
+		// r.Context(): this work is shared, so one client disconnecting must
+		// not cancel it for siblings still waiting on it.
+		v, sfErr, _ := h.sf.Do(cacheKey, func() (any, error) {
+			if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
+				return &deliveryResult{
+					data: cachedData,
+					meta: &storage.ImageMetadata{
+						ID: imageID, ContentType: h.imageProcessor.GetContentType(params.Format),
+						Format: params.Format, Size: int64(len(cachedData)),
+						MaxAge: params.MaxAge, SMaxAge: params.SMaxAge, CreatedAt: time.Unix(0, 0),
+					},
+				}, nil
+			}
+
+			retrieveCtx, retrieveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer retrieveCancel()
+			storageStart := time.Now()
+			reader, metadata, err := storageBackend.Retrieve(retrieveCtx, storageKey)
+			storageDuration := time.Since(storageStart).Seconds()
+			if err != nil {
+				m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "error").Inc()
+				if storage.IsNotFound(err) {
+					return nil, &fetchError{http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found"}
+				}
+				logger.Error().Err(err).Msg("Failed to retrieve image")
+				return nil, &fetchError{http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image"}
+			}
+			m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "success").Inc()
+			m.StorageOperationDuration.WithLabelValues("retrieve", h.defaultStorageType()).Observe(storageDuration)
+			defer reader.Close()
+
+			// Non-image, or metadata reveals no processing is actually
+			// needed (mirrors the top-level needsProcessing re-check):
+			// buffer and serve as-is. Buffering (unlike the raw-delivery
+			// path below) is required here because this result may be
+			// shared with sibling callers waiting on sf.Do.
+			isImage := utils.IsImageContentType(metadata.ContentType)
+			needsProcessing := hasTransformations ||
+				(params.Format != "" && params.Format != metadata.Format) ||
+				(metadata.Format == "" || metadata.ContentType == "" || metadata.ContentType == "application/octet-stream")
+			if !isImage || !needsProcessing {
+				data, err := io.ReadAll(reader)
+				if err != nil {
+					logger.Error().Err(err).Msg("Failed to read raw image body")
+					return nil, &fetchError{http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to read image"}
+				}
+				return &deliveryResult{data: data, meta: metadata}, nil
+			}
+
+			processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer processCancel()
+			// Duration (split into semaphore_wait + transform) is recorded
+			// inside Process() itself now — see vips_processor.go — so only
+			// the pass/fail counter, which needs the format labels, stays here.
+			processedImage, err := h.imageProcessor.Process(processCtx, reader, params, cacheKey)
+			if err != nil {
+				m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
+				logger.Error().Err(err).Msg("Failed to process image")
+				return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+			}
+			m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
+			defer processedImage.Data.Close()
+
+			data, err := io.ReadAll(processedImage.Data)
+			if err != nil {
+				logger.Error().Err(err).Msg("Failed to read processed image")
+				return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
+			}
+
+			storageMetadata := &storage.ImageMetadata{
+				ID:           processedImage.Metadata.ID,
+				OriginalName: processedImage.Metadata.OriginalName,
+				Format:       processedImage.Metadata.Format,
+				Size:         processedImage.Metadata.Size,
+				Width:        processedImage.Metadata.Width,
+				Height:       processedImage.Metadata.Height,
+				ContentType:  processedImage.Metadata.ContentType,
+				CreatedAt:    processedImage.Metadata.CreatedAt,
+				MaxAge:       params.MaxAge,
+				SMaxAge:      params.SMaxAge,
+			}
+			if storageMetadata.ContentType == "" {
+				storageMetadata.ContentType = h.imageProcessor.GetContentType(storageMetadata.Format)
+			}
+			return &deliveryResult{data: data, meta: storageMetadata}, nil
+		})
+
+		if sfErr != nil {
+			var fe *fetchError
+			if errors.As(sfErr, &fe) {
+				h.sendError(w, fe.status, fe.code, fe.message)
+			} else {
+				logger.Error().Err(sfErr).Msg("Unexpected delivery singleflight error")
+				h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to deliver image")
+			}
+			return
+		}
+		result := v.(*deliveryResult)
+		h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
+		return
 	}
 
-	// ── Cache miss (or raw delivery) — fetch from storage ─────────────
+	// ── Raw delivery (no explicit transform requested) — fetch from
+	// storage and stream directly. No dedup here: there's no CPU-heavy
+	// work to share, and streaming (vs. the buffered path above) keeps
+	// memory flat regardless of file size — worth preserving for the
+	// common case of downloading a large original as-is.
 	storageStart := time.Now()
 	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 	storageDuration := time.Since(storageStart).Seconds()
@@ -377,6 +491,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure format + cacheKey are set (handles the metadata-only edge
 	// case where wantsProcessing was false but needsProcessing is true).
+	// Not deduplicated: cacheKey couldn't be known before this retrieve, so
+	// there's no key to dedup on ahead of time. Rare in practice — the
+	// common "unknown storage format" case is handled by upload-time
+	// metadata, not discovered here.
 	if params.Format == "" {
 		params.Format = h.config.Processing.DefaultFormat
 		if params.Format == "" {
@@ -387,9 +505,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		cacheKey = h.imageProcessor.GenerateCacheKey(storageKey, params)
 	}
 
-	processStart := time.Now()
+	// Duration (split into semaphore_wait + transform) is recorded inside
+	// Process() itself now — see vips_processor.go — so only the pass/fail
+	// counter, which needs the format labels, stays here.
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params, cacheKey)
-	processDuration := time.Since(processStart).Seconds()
 
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
@@ -398,7 +517,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
-	m.ImageProcessingDuration.WithLabelValues("transform").Observe(processDuration)
 
 	defer processedImage.Data.Close()
 
@@ -420,4 +538,12 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.serveImage(w, r, processedImage.Data, storageMetadata)
+}
+
+// deliveryResult is the singleflight.Do payload shared across every request
+// waiting on the same cacheKey — must be safe to read concurrently, hence
+// plain bytes rather than a one-shot io.ReadCloser.
+type deliveryResult struct {
+	data []byte
+	meta *storage.ImageMetadata
 }
