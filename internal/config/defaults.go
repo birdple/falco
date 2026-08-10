@@ -59,6 +59,7 @@ func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
 	v.SetDefault("processing.default_quality", 85)
 	v.SetDefault("processing.default_format", "webp")
 	v.SetDefault("processing.concurrent_workers", 4)
+	v.SetDefault("processing.webp_effort", 4)
 	v.SetDefault("processing.supported_formats", []string{"jpeg", "png", "webp"})
 	v.SetDefault("processing.max_dimensions.width", 2048)
 	v.SetDefault("processing.max_dimensions.height", 2048)

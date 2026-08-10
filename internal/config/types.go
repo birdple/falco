@@ -101,6 +101,7 @@ type ProcessingConfig struct {
 	DefaultQuality    int      `mapstructure:"default_quality"`
 	DefaultFormat     string   `mapstructure:"default_format"`
 	ConcurrentWorkers int      `mapstructure:"concurrent_workers"`
+	WebPEffort        int      `mapstructure:"webp_effort"`
 	SupportedFormats  []string `mapstructure:"supported_formats"`
 	MaxDimensions     struct {
 		Width  int `mapstructure:"width"`
