@@ -3,6 +3,7 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -257,4 +258,61 @@ func TestGetCurrentBucket_NonBucketAware(t *testing.T) {
 
 	// Should return empty string for non-BucketAware backends
 	assert.Equal(t, "", cb.GetCurrentBucket())
+}
+
+// Un objeto que no existe no es una avería del backend, y contarlo como tal
+// tumbaba el bucket entero: cinco lecturas seguidas de imágenes cuyas filas
+// sobrevivieron a sus bytes abrían el breaker, y la siguiente **subida** moría
+// con "circuit breaker is open" durante los 30 s del timeout.
+func TestNotFoundDoesNotTripTheBreaker(t *testing.T) {
+	mb := new(mockBackend)
+	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, storage.ErrImageNotFound)
+
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+
+	// Muy por encima del umbral de 5 fallos consecutivos.
+	for range 10 {
+		_, _, err := cb.Retrieve(context.Background(), "missing")
+		// El error se sigue reportando a quien llama: sólo no cuenta acá.
+		require.ErrorIs(t, err, storage.ErrImageNotFound)
+	}
+
+	assert.False(t, cb.IsOpen(), "un 404 no puede abrir el breaker")
+	assert.Equal(t, gobreaker.StateClosed, cb.State())
+}
+
+// Y la subida que venía detrás sigue pasando, que es lo que de verdad se rompía.
+func TestStoreStillWorksAfterManyNotFounds(t *testing.T) {
+	mb := new(mockBackend)
+	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, storage.ErrImageNotFound)
+	mb.On("Store", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+	for range 10 {
+		_, _, _ = cb.Retrieve(context.Background(), "missing")
+	}
+
+	err := cb.Store(context.Background(), "nueva", strings.NewReader("bytes"), nil)
+	assert.NoError(t, err)
+}
+
+// La contracara: una avería de verdad tiene que seguir abriéndolo.
+func TestRealFailuresStillTripTheBreaker(t *testing.T) {
+	mb := new(mockBackend)
+	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, errors.New("connection refused"))
+
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+	for range 5 {
+		_, _, _ = cb.Retrieve(context.Background(), "cualquiera")
+	}
+
+	assert.True(t, cb.IsOpen(), "un backend caído SÍ debe abrir el breaker")
+}
+
+func TestIsBackendFailure(t *testing.T) {
+	assert.False(t, IsBackendFailure(nil))
+	assert.False(t, IsBackendFailure(storage.ErrImageNotFound))
+	assert.False(t, IsBackendFailure(fmt.Errorf("envuelto: %w", storage.ErrImageNotFound)))
+	assert.True(t, IsBackendFailure(errors.New("connection refused")))
+	assert.True(t, IsBackendFailure(storage.ErrStorageUnavailable))
 }

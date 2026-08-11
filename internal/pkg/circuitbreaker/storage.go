@@ -29,6 +29,29 @@ type CircuitBreakerSettings struct {
 	ReadyToTrip func(counts gobreaker.Counts) bool
 	// OnStateChange is called whenever the state of the circuit breaker changes
 	OnStateChange func(name string, from gobreaker.State, to gobreaker.State)
+	// IsSuccessful decides whether an error counts against the breaker.
+	// If nil, IsBackendFailure is used.
+	IsSuccessful func(err error) bool
+}
+
+// IsBackendFailure reports whether err should count against the circuit breaker.
+//
+// A missing object is NOT a backend failure: the backend answered, correctly,
+// that the key does not exist. Counting it as one is how a screen listing a few
+// images whose rows outlived their bytes trips the breaker — and an open
+// breaker rejects every other operation on the bucket, uploads included.
+//
+// That is not hypothetical. With the default of 5 consecutive failures, a
+// client rendering a handful of dangling image URLs opened the breaker and the
+// next upload died with "circuit breaker is open" for the whole 30 s timeout —
+// a read problem taking writes down with it, and a self-sustaining one: failed
+// uploads leave more dangling URLs, which trip the breaker again.
+//
+// The breaker exists for a backend that is down or unreachable. `ErrImageNotFound`
+// is a normal answer and is reported to the caller either way; it just does not
+// count here.
+func IsBackendFailure(err error) bool {
+	return err != nil && !storage.IsNotFound(err)
 }
 
 // DefaultSettings returns default circuit breaker settings
@@ -42,6 +65,7 @@ func DefaultSettings(name string) CircuitBreakerSettings {
 			// Trip after 5 consecutive failures
 			return counts.ConsecutiveFailures >= 5
 		},
+		IsSuccessful: func(err error) bool { return !IsBackendFailure(err) },
 	}
 }
 
@@ -53,6 +77,15 @@ type StorageBackend struct {
 
 // NewStorageBackend creates a new circuit breaker wrapped storage backend
 func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSettings) *StorageBackend {
+	// El default vive acá y no sólo en `DefaultSettings` porque un llamador
+	// puede construir `CircuitBreakerSettings{}` a mano: con `IsSuccessful` en
+	// nil, gobreaker cuenta como fallo **todo** error no nulo, y volvería el
+	// "no existe" a tumbar el bucket entero.
+	isSuccessful := settings.IsSuccessful
+	if isSuccessful == nil {
+		isSuccessful = func(err error) bool { return !IsBackendFailure(err) }
+	}
+
 	cbSettings := gobreaker.Settings{
 		Name:          settings.Name,
 		MaxRequests:   settings.MaxRequests,
@@ -60,6 +93,7 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 		Timeout:       settings.Timeout,
 		ReadyToTrip:   settings.ReadyToTrip,
 		OnStateChange: settings.OnStateChange,
+		IsSuccessful:  isSuccessful,
 	}
 
 	return &StorageBackend{
