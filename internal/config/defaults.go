@@ -55,7 +55,11 @@ func (d *defaultsProvider) setCacheDefaults(v *viper.Viper) {
 
 // setProcessingDefaults sets processing default values
 func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
-	v.SetDefault("processing.max_file_size_mb", 5)
+	// 10 MB, alineado con `config.yaml`, los dos docker-compose y el límite que
+	// validan birdple-api y la app. El default compilado era 5 y nadie lo veía
+	// porque todos los ambientes fijan la variable: un deploy que la olvidara
+	// habría rechazado con 413 imágenes que el resto del stack da por buenas.
+	v.SetDefault("processing.max_file_size_mb", 10)
 	v.SetDefault("processing.default_quality", 85)
 	v.SetDefault("processing.default_format", "webp")
 	v.SetDefault("processing.concurrent_workers", 4)
