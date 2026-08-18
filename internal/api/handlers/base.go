@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -155,6 +156,41 @@ func (h *Handler) recallFailure(key string) (*fetchError, bool) {
 	return &fetchError{status: entry.Status, code: entry.Code, message: entry.Message}, true
 }
 
+// dropOriginVary removes the Origin token from the Vary response header,
+// leaving every other token untouched.
+//
+// The CORS middleware adds `Vary: Origin` to every response it handles, but
+// the delivery and proxy paths overwrite Access-Control-Allow-Origin with a
+// literal `*` regardless of who asked (see serveImage). The bytes and the
+// headers are therefore identical for every Origin, so advertising the
+// variance only shards downstream caches over a variant that never differs.
+//
+// Only tokens already present when the handler runs are rewritten. The
+// compression middleware appends `Vary: Accept-Encoding` later, from
+// WriteHeader, so its token is added after this runs and survives.
+func dropOriginVary(w http.ResponseWriter) {
+	values := w.Header().Values("Vary")
+	if len(values) == 0 {
+		return
+	}
+
+	kept := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" || strings.EqualFold(token, "Origin") {
+				continue
+			}
+			kept = append(kept, token)
+		}
+	}
+
+	w.Header().Del("Vary")
+	for _, token := range kept {
+		w.Header().Add("Vary", token)
+	}
+}
+
 // serveImage serves an image with proper headers.
 // Uses http.ServeContent for automatic ETag 304, If-Modified-Since, and Range support.
 func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.Reader, metadata *storage.ImageMetadata) {
@@ -165,6 +201,9 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	// sharing). Emitting a wildcard ACAO lets cross-origin canvas/snapdom reads
 	// work without per-origin CORS allowlisting, matching the proxy path.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// ...which makes the CORS middleware's `Vary: Origin` a lie: this
+	// response is byte-identical for every Origin.
+	dropOriginVary(w)
 
 	// Smart cache control based on metadata if available, otherwise defaults from config
 	maxAge := h.config.Cache.DefaultMaxAge
