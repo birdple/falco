@@ -51,7 +51,7 @@ func BenchmarkIsValidImageID_Invalid(b *testing.B) {
 func TestIsValidImageID_MaxLength(t *testing.T) {
 	// Create a valid 100-char ID
 	id := ""
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		id += "a"
 	}
 	assert.True(t, IsValidImageID(id))

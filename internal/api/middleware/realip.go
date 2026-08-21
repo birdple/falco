@@ -68,7 +68,7 @@ func realIPFor(r *http.Request) string {
 // malformed header cannot corrupt RemoteAddr.
 func extractForwardedIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for _, candidate := range strings.Split(xff, ",") {
+		for candidate := range strings.SplitSeq(xff, ",") {
 			candidate = strings.TrimSpace(candidate)
 			if candidate != "" && net.ParseIP(candidate) != nil {
 				return candidate
