@@ -1,3 +1,13 @@
+//go:build integration
+
+// Estos tests hablan con un MinIO REAL. Sin el tag quedaban dentro de
+// `go test ./...`: aunque hacen t.Skip cuando no hay servidor, igual intentan
+// conectarse en cada corrida, y el TestMinIOStorage_StorageConfig apunta a
+// localhost:9000 fijo — o sea que si alguien tiene un MinIO local, la suite le
+// crea y le borra buckets de verdad.
+//
+// cache_test.go NO lleva el tag a propósito: es un test en memoria que no
+// necesita infraestructura y no hay razón para sacarlo de la corrida normal.
 package integration
 
 import (
@@ -5,7 +15,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,7 +303,7 @@ func TestMinIOStorage_RealImageOperations(t *testing.T) {
 
 	// List local images directory
 	localImagesDir := "images"
-	files, err := ioutil.ReadDir(localImagesDir)
+	files, err := os.ReadDir(localImagesDir)
 	require.NoError(t, err)
 
 	if len(files) == 0 {
@@ -318,7 +327,7 @@ func TestMinIOStorage_RealImageOperations(t *testing.T) {
 
 func testRealImageUploadAndRetrieve(t *testing.T, ctx context.Context, minioStorage *storage.MinIOStorage, localPath, fileName string) {
 	// Read local image file
-	localData, err := ioutil.ReadFile(localPath)
+	localData, err := os.ReadFile(localPath)
 	require.NoError(t, err)
 
 	t.Logf("Testing image: %s (size: %d bytes)", fileName, len(localData))
