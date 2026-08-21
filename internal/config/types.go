@@ -21,6 +21,14 @@ type ServerConfig struct {
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	IdleTimeout     time.Duration `mapstructure:"idle_timeout"`
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+	// MaxHeaderBytes es el tope de bytes de cabecera que el servidor acepta
+	// por request. Sin él la stdlib usa 1 MB, que para un CDN de imágenes
+	// público es mucho más de lo que cualquier cliente legítimo necesita.
+	MaxHeaderBytes int `mapstructure:"max_header_bytes"`
+	// MaxHeaderValueCount es el tope de CANTIDAD de valores de cabecera
+	// (net/http, Go 1.27). Complementa a MaxHeaderBytes: miles de cabeceras
+	// diminutas pesan poco en bytes pero caras en parseo.
+	MaxHeaderValueCount int `mapstructure:"max_header_value_count"`
 }
 
 // StorageConfig holds the unified storage configuration based on bucket groups.
@@ -97,37 +105,51 @@ type CacheConfig struct {
 
 // ProcessingConfig holds image processing configuration
 type ProcessingConfig struct {
-	MaxFileSizeMB     int      `mapstructure:"max_file_size_mb"`
-	DefaultQuality    int      `mapstructure:"default_quality"`
-	DefaultFormat     string   `mapstructure:"default_format"`
-	ConcurrentWorkers int      `mapstructure:"concurrent_workers"`
-	WebPEffort        int      `mapstructure:"webp_effort"`
-	SupportedFormats  []string `mapstructure:"supported_formats"`
-	MaxDimensions     struct {
-		Width  int `mapstructure:"width"`
-		Height int `mapstructure:"height"`
-	} `mapstructure:"max_dimensions"`
+	MaxFileSizeMB     int           `mapstructure:"max_file_size_mb"`
+	DefaultQuality    int           `mapstructure:"default_quality"`
+	DefaultFormat     string        `mapstructure:"default_format"`
+	ConcurrentWorkers int           `mapstructure:"concurrent_workers"`
+	WebPEffort        int           `mapstructure:"webp_effort"`
+	SupportedFormats  []string      `mapstructure:"supported_formats"`
+	MaxDimensions     MaxDimensions `mapstructure:"max_dimensions"`
+}
+
+// MaxDimensions acota el tamaño de salida. Es un tipo con nombre y no un
+// struct anónimo para que se pueda construir en un literal: anónimo, el único
+// modo de poblarlo era asignar campo por campo después de crear el Config.
+type MaxDimensions struct {
+	Width  int `mapstructure:"width"`
+	Height int `mapstructure:"height"`
 }
 
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
-	APIKeyRequired bool   `mapstructure:"api_key_required"`
-	APIKey         string `mapstructure:"api_key"`
-	CORS           struct {
-		Origins []string `mapstructure:"origins"`
-		Methods []string `mapstructure:"methods"`
-		Headers []string `mapstructure:"headers"`
-	} `mapstructure:"cors"`
-	RateLimit struct {
-		RequestsPerMinute int `mapstructure:"requests_per_minute"`
-		Burst             int `mapstructure:"burst"`
-	} `mapstructure:"rate_limit"`
-	TrustedProxies []string `mapstructure:"trusted_proxies"`
+	APIKeyRequired bool            `mapstructure:"api_key_required"`
+	APIKey         string          `mapstructure:"api_key"`
+	CORS           CORSConfig      `mapstructure:"cors"`
+	RateLimit      RateLimitConfig `mapstructure:"rate_limit"`
+	TrustedProxies []string        `mapstructure:"trusted_proxies"`
 	// HMAC URL signing
 	HMACKey           string `mapstructure:"hmac_key"`
 	HMACKeySalt       string `mapstructure:"hmac_salt"`
 	HMACSignatureSize int    `mapstructure:"hmac_signature_size"`
 	HMACRequired      bool   `mapstructure:"hmac_required"`
+}
+
+// CORSConfig y RateLimitConfig son tipos con nombre por la misma razón que
+// MaxDimensions: como structs anónimos no se podían escribir en un literal.
+
+// CORSConfig holds the CORS policy.
+type CORSConfig struct {
+	Origins []string `mapstructure:"origins"`
+	Methods []string `mapstructure:"methods"`
+	Headers []string `mapstructure:"headers"`
+}
+
+// RateLimitConfig holds the per-IP rate limit.
+type RateLimitConfig struct {
+	RequestsPerMinute int `mapstructure:"requests_per_minute"`
+	Burst             int `mapstructure:"burst"`
 }
 
 // LoggingConfig holds logging configuration

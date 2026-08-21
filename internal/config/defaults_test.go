@@ -15,6 +15,8 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	// Server defaults
 	assert.Equal(t, 8080, v.GetInt("server.port"))
 	assert.Equal(t, "0.0.0.0", v.GetString("server.host"))
+	assert.Equal(t, 64*1024, v.GetInt("server.max_header_bytes"))
+	assert.Equal(t, 100, v.GetInt("server.max_header_value_count"))
 
 	// Storage defaults — intentionally empty; buckets must be configured explicitly
 	assert.Equal(t, "", v.GetString("storage.default"))

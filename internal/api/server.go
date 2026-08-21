@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -180,6 +181,37 @@ func (s *Server) setupRouter() {
 		})
 	}
 
+	// pprof — apagado salvo que ENABLE_PPROF=true. El router es chi explícito,
+	// así que el import en blanco de net/http/pprof (que se cuelga solo del
+	// DefaultServeMux) no alcanza: hay que montar las rutas a mano.
+	//
+	// Va detrás de la misma API key que /metrics: un perfil de heap o de
+	// goroutines expone rutas de código y estado interno del proceso.
+	//
+	// Además del índice estándar se monta explícitamente el perfil
+	// `goroutineleak` (nuevo en Go 1.27), que es el que sirve para cazar las
+	// goroutines fire-and-forget de ReplicatedStorage: se lanzan con
+	// context.Background(), no las espera ningún WaitGroup y el shutdown no las
+	// contempla.
+	if s.config.Development.EnablePprof {
+		r.Group(func(r chi.Router) {
+			if s.config.Security.APIKeyRequired {
+				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
+				r.Use(apiKeyAuth.Handler)
+			}
+			r.Get("/debug/pprof/", pprof.Index)
+			r.Get("/debug/pprof/cmdline", pprof.Cmdline)
+			r.Get("/debug/pprof/profile", pprof.Profile)
+			r.Get("/debug/pprof/symbol", pprof.Symbol)
+			r.Post("/debug/pprof/symbol", pprof.Symbol)
+			r.Get("/debug/pprof/trace", pprof.Trace)
+			// pprof.Index ya sirve cualquier perfil registrado por nombre,
+			// goroutineleak incluido, cuando la ruta cuelga de /debug/pprof/.
+			r.Get("/debug/pprof/{profile}", pprof.Index)
+		})
+		logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ — do not enable in production without an API key")
+	}
+
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoints
@@ -228,6 +260,12 @@ func (s *Server) setupServer() {
 		WriteTimeout:      s.config.Server.WriteTimeout,
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Topes de cabecera: falco es un CDN de imágenes de cara pública detrás
+		// de Cloudflare. MaxHeaderBytes acota el peso y MaxHeaderValueCount
+		// (Go 1.27) la cantidad; sin este último, miles de cabeceras diminutas
+		// pasan el tope de bytes y aun así cuestan parseo.
+		MaxHeaderBytes:      s.config.Server.MaxHeaderBytes,
+		MaxHeaderValueCount: s.config.Server.MaxHeaderValueCount,
 	}
 }
 

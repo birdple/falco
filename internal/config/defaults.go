@@ -34,6 +34,11 @@ func (d *defaultsProvider) setServerDefaults(v *viper.Viper) {
 	v.SetDefault("server.write_timeout", "30s")
 	v.SetDefault("server.idle_timeout", "60s")
 	v.SetDefault("server.shutdown_timeout", "30s")
+	// 64 KiB de cabeceras y 100 valores alcanzan de sobra para un request real
+	// detrás de Cloudflare; los defaults de la stdlib (1 MiB y 500) son más
+	// laxos de lo que necesita un CDN de imágenes de cara pública.
+	v.SetDefault("server.max_header_bytes", 64*1024)
+	v.SetDefault("server.max_header_value_count", 100)
 }
 
 // setStorageDefaults sets storage default values.

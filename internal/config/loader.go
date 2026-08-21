@@ -100,6 +100,8 @@ func (l *loader) getEnvMappings() map[string]string {
 	return map[string]string{
 		"PORT":                   "server.port",
 		"HOST":                   "server.host",
+		"MAX_HEADER_BYTES":       "server.max_header_bytes",
+		"MAX_HEADER_VALUE_COUNT": "server.max_header_value_count",
 		"ENV":                    "development.debug",
 		"STORAGE_DEFAULT":        "storage.default",
 		"CACHE_SIZE_MB":          "cache.size_mb",
@@ -246,14 +248,14 @@ func (l *loader) discoverBucketBackupsFromEnv(v *viper.Viper, bucketName, envPre
 	}
 	sort.Ints(sorted)
 
-	var backups []map[string]interface{}
+	var backups []map[string]any
 	for _, n := range sorted {
 		target := os.Getenv(fmt.Sprintf("%s%d_TARGET", backupPrefix, n))
 		mode := os.Getenv(fmt.Sprintf("%s%d_MODE", backupPrefix, n))
 		if target == "" {
 			continue
 		}
-		backup := map[string]interface{}{
+		backup := map[string]any{
 			"target": strings.ToLower(target),
 			"mode":   strings.ToLower(mode),
 		}
@@ -291,13 +293,13 @@ func (l *loader) discoverBucketKeysFromEnv(v *viper.Viper, bucketName, envPrefix
 		return
 	}
 
-	var keys []map[string]interface{}
+	var keys []map[string]any
 	for keyName := range discovered {
 		keyVal := os.Getenv(keyPrefix + strings.ToUpper(keyName) + keySuffix)
 		if keyVal == "" {
 			continue
 		}
-		keys = append(keys, map[string]interface{}{
+		keys = append(keys, map[string]any{
 			"name": keyName,
 			"key":  keyVal,
 		})
@@ -384,14 +386,14 @@ func (l *loader) discoverGroupKeysFromEnv(v *viper.Viper, groupName, envPrefix s
 		return
 	}
 
-	var keys []map[string]interface{}
+	var keys []map[string]any
 	for keyName := range discovered {
 		keyEnvPrefix := keyPrefix + strings.ToUpper(keyName)
 		keyVal := os.Getenv(keyEnvPrefix + keySuffix)
 		if keyVal == "" {
 			continue
 		}
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"name": keyName,
 			"key":  keyVal,
 		}
@@ -469,13 +471,13 @@ func (l *loader) discoverSubgroupKeysFromEnv(v *viper.Viper, groupName, subName,
 		return
 	}
 
-	var keys []map[string]interface{}
+	var keys []map[string]any
 	for keyName := range discovered {
 		keyVal := os.Getenv(keyPrefix + strings.ToUpper(keyName) + keySuffix)
 		if keyVal == "" {
 			continue
 		}
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"name": keyName,
 			"key":  keyVal,
 		}
@@ -494,6 +496,8 @@ func (l *loader) discoverSubgroupKeysFromEnv(v *viper.Viper, groupName, subName,
 func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 	intKeys := map[string]bool{
 		"server.port":                             true,
+		"server.max_header_bytes":                 true,
+		"server.max_header_value_count":           true,
 		"cache.size_mb":                           true,
 		"cache.ttl_hours":                         true,
 		"processing.max_file_size_mb":             true,
