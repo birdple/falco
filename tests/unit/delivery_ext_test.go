@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/birdple/falco/internal/api/handlers"
-	"github.com/birdple/falco/internal/config"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 	"github.com/birdple/falco/tests/mocks"
@@ -24,10 +23,7 @@ import (
 // returns a chi router with the /images/* route registered.
 func makeDeliveryHandler(t *testing.T, mockStorage *mocks.MockStorageBackend, mockProcessor *mocks.MockImageProcessor) *chi.Mux {
 	t.Helper()
-	cfg := &config.Config{}
-	cfg.Processing.MaxDimensions.Width = 4000
-	cfg.Processing.MaxDimensions.Height = 4000
-	cfg.Processing.DefaultFormat = "webp"
+	cfg := testConfig()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, time.Now())
 
@@ -170,6 +166,89 @@ func TestHandleDelivery_NoExt(t *testing.T) {
 	rctx.URLParams.Add("*", "abc123")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	mockStorage.AssertCalled(t, "Retrieve", mock.Anything, storageKey)
+}
+
+// TestHandleDelivery_ExtWithDirectory cubre el caso en que la extensión viene
+// sobre un id que además trae directorio: /images/fotos/abc123.webp tiene que
+// resolverse contra la clave "fotos/abc123", sin la extensión.
+func TestHandleDelivery_ExtWithDirectory(t *testing.T) {
+	mockStorage := new(mocks.MockStorageBackend)
+	mockProcessor := new(mocks.MockImageProcessor)
+
+	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
+	storageKey := "fotos/abc123"
+
+	mockStorage.On("Retrieve", mock.Anything, storageKey).
+		Return(io.NopCloser(bytes.NewReader(imageData)), &storage.ImageMetadata{
+			ID:          storageKey,
+			Format:      "jpeg",
+			ContentType: "image/jpeg",
+			Size:        int64(len(imageData)),
+		}, nil)
+
+	mockProcessor.On("GenerateCacheKey", mock.Anything, mock.Anything).Return("ck-dir").Maybe()
+	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
+	mockProcessor.On("ValidateFormat", mock.Anything).Return(true).Maybe()
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&processor.ProcessedImage{
+			Data: io.NopCloser(bytes.NewReader(imageData)),
+			Metadata: &processor.ImageMetadata{
+				Format:      "webp",
+				ContentType: "image/webp",
+				Size:        int64(len(imageData)),
+			},
+		}, nil).Maybe()
+
+	router := makeDeliveryHandler(t, mockStorage, mockProcessor)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/images/fotos/abc123.webp", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	mockStorage.AssertCalled(t, "Retrieve", mock.Anything, storageKey)
+}
+
+// TestHandleDelivery_DotInDirectoryOnly cubre el punto que vive en el
+// directorio y no en el id: "v1.2/abc123" NO trae extensión, así que no se le
+// recorta nada y no se rechaza. Buscar el último punto sobre el path completo
+// en vez de sobre el último segmento rompe justo este caso.
+func TestHandleDelivery_DotInDirectoryOnly(t *testing.T) {
+	mockStorage := new(mocks.MockStorageBackend)
+	mockProcessor := new(mocks.MockImageProcessor)
+
+	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
+	storageKey := "v1.2/abc123"
+
+	mockStorage.On("Retrieve", mock.Anything, storageKey).
+		Return(io.NopCloser(bytes.NewReader(imageData)), &storage.ImageMetadata{
+			ID:          storageKey,
+			Format:      "jpeg",
+			ContentType: "image/jpeg",
+			Size:        int64(len(imageData)),
+		}, nil)
+
+	mockProcessor.On("GenerateCacheKey", mock.Anything, mock.Anything).Return("ck-dotdir").Maybe()
+	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
+	mockProcessor.On("ValidateFormat", mock.Anything).Return(true).Maybe()
+	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&processor.ProcessedImage{
+			Data: io.NopCloser(bytes.NewReader(imageData)),
+			Metadata: &processor.ImageMetadata{
+				Format:      "webp",
+				ContentType: "image/webp",
+				Size:        int64(len(imageData)),
+			},
+		}, nil).Maybe()
+
+	router := makeDeliveryHandler(t, mockStorage, mockProcessor)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/images/v1.2/abc123", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 

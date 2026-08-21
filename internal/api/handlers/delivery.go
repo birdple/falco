@@ -65,6 +65,10 @@ func hmacRequireExpiry() (bool, error) {
 
 // HandleDelivery handles image delivery requests with optional transformations
 func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
+	// Un solo parseo del query para todo el handler: r.URL.Query() reparsea
+	// RawQuery desde cero en cada llamada, y aquí abajo se consulta 16 veces.
+	query := r.URL.Query()
+
 	ctx := r.Context()
 	imageID := chi.URLParam(r, "*")
 
@@ -80,22 +84,24 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Validate the ID portion (last path segment). The chi "*" wildcard can
 	// match directory/id combinations, so we only validate the final segment
 	// and rely on ValidateDirectoryPath (below) for the directory portion.
-	finalSegment := imageID
-	if i := strings.LastIndexByte(imageID, '/'); i >= 0 {
-		finalSegment = imageID[i+1:]
+	dirPrefix, finalSegment := "", imageID
+	if before, after, ok := strings.CutLast(imageID, "/"); ok {
+		dirPrefix, finalSegment = before+"/", after
 	}
 
 	// Strip a known image extension from the path segment (e.g. /images/abc123.webp).
 	// The stripped extension acts as a format default when no ?f= query param is given.
 	// This lets Cloudflare cache the URL by file extension without any query-string tricks.
+	//
+	// El punto se busca SÓLO en el último segmento: un directorio con punto
+	// (dir.v2/abc123) no lleva extensión y no debe rechazarse. Y el imageID sin
+	// extensión se reconstruye pegando el prefijo, no restando longitudes.
 	extFormat := ""
-	if dot := strings.LastIndexByte(finalSegment, '.'); dot >= 0 {
-		possibleExt := strings.ToLower(finalSegment[dot+1:])
-		if mapped, ok := AllowedImageExtensions[possibleExt]; ok {
+	if base, possibleExt, ok := strings.CutLast(finalSegment, "."); ok {
+		if mapped, found := AllowedImageExtensions[strings.ToLower(possibleExt)]; found {
 			extFormat = mapped
-			// Remove the extension from both the local segment and the full imageID.
-			finalSegment = finalSegment[:dot]
-			imageID = imageID[:len(imageID)-len(possibleExt)-1]
+			finalSegment = base
+			imageID = dirPrefix + base
 		} else {
 			// Has a dot but not a known extension → reject to avoid ambiguity.
 			h.sendError(w, http.StatusBadRequest, "INVALID_ID", "Invalid image id")
@@ -116,7 +122,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	//   (b) HMAC_REQUIRED=false — fall back to API-key + scope enforcement
 	//       so delivery is not left wide open in dev/misconfigured setups.
 	if h.config.Security.HMACRequired {
-		sig := r.URL.Query().Get("sig")
+		sig := query.Get("sig")
 		signedPath := r.URL.Path
 		if raw := r.URL.RawQuery; raw != "" {
 			signedPath = r.URL.Path + "?" + raw
@@ -155,9 +161,9 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get storage, bucket, and directory parameters
-	storageName := r.URL.Query().Get("storage")
-	bucket := utils.GetQueryParam(r, "b", "bucket")
-	directory := utils.GetQueryParam(r, "d", "dir", "directory")
+	storageName := query.Get("storage")
+	bucket := utils.QueryParam(query, "b", "bucket")
+	directory := utils.QueryParam(query, "d", "dir", "directory")
 
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
@@ -176,7 +182,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters for transformations
 	params := &processor.ProcessingParams{}
 
-	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
+	if width := utils.QueryParam(query, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
 			if widthVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
@@ -189,7 +195,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
+	if height := utils.QueryParam(query, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
 			if heightVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
@@ -202,7 +208,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if quality := utils.GetQueryParam(r, "q", "quality"); quality != "" {
+	if quality := utils.QueryParam(query, "q", "quality"); quality != "" {
 		if q, err := strconv.Atoi(quality); err == nil && q > 0 && q <= 100 {
 			params.Quality = q
 		} else {
@@ -211,7 +217,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if format := utils.GetQueryParam(r, "f", "format"); format != "" {
+	if format := utils.QueryParam(query, "f", "format"); format != "" {
 		if h.imageProcessor.ValidateFormat(format) {
 			params.Format = format
 		} else {
@@ -223,19 +229,19 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		params.Format = extFormat
 	}
 
-	if maxAge := r.URL.Query().Get("maxage"); maxAge != "" {
+	if maxAge := query.Get("maxage"); maxAge != "" {
 		if ma, err := strconv.Atoi(maxAge); err == nil && ma >= 0 {
 			params.MaxAge = ma
 		}
 	}
 
-	if sMaxAge := r.URL.Query().Get("smaxage"); sMaxAge != "" {
+	if sMaxAge := query.Get("smaxage"); sMaxAge != "" {
 		if sma, err := strconv.Atoi(sMaxAge); err == nil && sma >= 0 {
 			params.SMaxAge = sma
 		}
 	}
 
-	if fit := r.URL.Query().Get("fit"); fit != "" {
+	if fit := query.Get("fit"); fit != "" {
 		if fit == FitCover || fit == FitContain || fit == FitFill {
 			params.Fit = fit
 		} else {
@@ -244,53 +250,53 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if gravity := r.URL.Query().Get("gravity"); gravity != "" {
+	if gravity := query.Get("gravity"); gravity != "" {
 		if validGravities[gravity] {
 			params.Gravity = gravity
 		}
 	}
 
-	if sc := r.URL.Query().Get("wm_scale"); sc != "" {
+	if sc := query.Get("wm_scale"); sc != "" {
 		if v, err := strconv.ParseFloat(sc, 64); err == nil && v > 0 && v <= 1 {
 			params.WatermarkScale = v
 		}
 	}
 
-	if r.URL.Query().Get("trim") == "1" {
+	if query.Get("trim") == "1" {
 		params.TrimEnabled = true
-		if th := r.URL.Query().Get("trim_threshold"); th != "" {
+		if th := query.Get("trim_threshold"); th != "" {
 			if v, err := strconv.ParseFloat(th, 64); err == nil && v >= 0 && v <= 255 {
 				params.TrimThreshold = v
 			}
 		}
 	}
 
-	if pt := r.URL.Query().Get("pad_top"); pt != "" {
+	if pt := query.Get("pad_top"); pt != "" {
 		if v, err := strconv.Atoi(pt); err == nil && v >= 0 {
 			params.PaddingTop = v
 		}
 	}
-	if pr := r.URL.Query().Get("pad_right"); pr != "" {
+	if pr := query.Get("pad_right"); pr != "" {
 		if v, err := strconv.Atoi(pr); err == nil && v >= 0 {
 			params.PaddingRight = v
 		}
 	}
-	if pb := r.URL.Query().Get("pad_bottom"); pb != "" {
+	if pb := query.Get("pad_bottom"); pb != "" {
 		if v, err := strconv.Atoi(pb); err == nil && v >= 0 {
 			params.PaddingBottom = v
 		}
 	}
-	if pl := r.URL.Query().Get("pad_left"); pl != "" {
+	if pl := query.Get("pad_left"); pl != "" {
 		if v, err := strconv.Atoi(pl); err == nil && v >= 0 {
 			params.PaddingLeft = v
 		}
 	}
-	if pc := r.URL.Query().Get("pad_color"); pc != "" {
+	if pc := query.Get("pad_color"); pc != "" {
 		params.PaddingColor = pc
 	}
 
-	params.AutoOrient = r.URL.Query().Get("orient") != "0"
-	params.StripMetadata = r.URL.Query().Get("meta") != "1"
+	params.AutoOrient = query.Get("orient") != "0"
+	params.StripMetadata = query.Get("meta") != "1"
 
 	m := metrics.Default()
 
@@ -434,8 +440,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		})
 
 		if sfErr != nil {
-			var fe *fetchError
-			if errors.As(sfErr, &fe) {
+			if fe, ok := errors.AsType[*fetchError](sfErr); ok {
 				h.sendError(w, fe.status, fe.code, fe.message)
 			} else {
 				logger.Error().Err(sfErr).Msg("Unexpected delivery singleflight error")
