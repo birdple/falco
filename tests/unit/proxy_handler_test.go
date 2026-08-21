@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/birdple/falco/internal/api/handlers"
-	"github.com/birdple/falco/internal/config"
 	"github.com/birdple/falco/tests/mocks"
 )
 
@@ -19,10 +18,7 @@ import (
 // the /api/v1/proxy/* route registered.
 func makeProxyRouter(t *testing.T, mockStorage *mocks.MockStorageBackend, mockProcessor *mocks.MockImageProcessor) *chi.Mux {
 	t.Helper()
-	cfg := &config.Config{}
-	cfg.Processing.MaxDimensions.Width = 4000
-	cfg.Processing.MaxDimensions.Height = 4000
-	cfg.Processing.DefaultFormat = "webp"
+	cfg := testConfig()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, time.Now())
 
@@ -130,13 +126,17 @@ func TestHandleProxy_SSRFBlocksPrivateEvenIfAllowlisted(t *testing.T) {
 	mockProcessor := new(mocks.MockImageProcessor)
 
 	// Upstream fake image server.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// NewTestServer (Go 1.27) limpia solo al terminar el test y falla el test
+	// si el handler paniquea. Se arranca con Start() para quedarse en loopback:
+	// este test necesita justamente una IP privada (127.0.0.1) para comprobar
+	// que el guard SSRF dispara, y la red in-memory no daría una.
+	upstream := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/webp")
 		w.WriteHeader(http.StatusOK)
 		// Minimal webp-like body (just needs to look like bytes to LimitReader).
 		w.Write([]byte("RIFF\x00\x00\x00\x00WEBPVP8 "))
 	}))
-	defer upstream.Close()
+	upstream.Start()
 
 	// Override the allowlist to permit the loopback address used by httptest.
 	// Note: httptest.Server binds to 127.0.0.1; we whitelist "127.0.0.1" AND
