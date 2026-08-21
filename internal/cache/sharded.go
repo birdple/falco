@@ -1,7 +1,7 @@
 package cache
 
 import (
-	"hash/fnv"
+	"hash/maphash"
 	"time"
 )
 
@@ -12,19 +12,21 @@ const defaultShardCount = 16
 // mutex, so concurrent Get/Set calls on different keys rarely contend.
 type ShardedCache struct {
 	shards []*LRUCache
-	count  uint32
+	count  uint64
+	// seed se crea una sola vez: maphash.String hashea el string sin copiarlo
+	// a []byte y sin instanciar un hasher por llamada, que es lo que hacía la
+	// versión con fnv en CADA Get/Set/Delete/Contains.
+	seed maphash.Seed
 }
 
 // NewShardedCache creates a sharded cache. maxSize is the total max
 // size in bytes (divided equally among shards).
 func NewShardedCache(maxSize int64, cleanupInterval time.Duration) *ShardedCache {
-	shardSize := maxSize / int64(defaultShardCount)
-	if shardSize < 1 {
-		shardSize = 1
-	}
+	shardSize := max(maxSize/int64(defaultShardCount), 1)
 	sc := &ShardedCache{
 		shards: make([]*LRUCache, defaultShardCount),
 		count:  defaultShardCount,
+		seed:   maphash.MakeSeed(),
 	}
 	for i := range sc.shards {
 		sc.shards[i] = NewLRUCache(shardSize, cleanupInterval)
@@ -33,9 +35,26 @@ func NewShardedCache(maxSize int64, cleanupInterval time.Duration) *ShardedCache
 }
 
 func (sc *ShardedCache) shard(key string) *LRUCache {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return sc.shards[h.Sum32()%sc.count]
+	return sc.shards[maphash.String(sc.seed, key)%sc.count]
+}
+
+// forEach corre f sobre cada shard.
+func (sc *ShardedCache) forEach(f func(*LRUCache)) {
+	for _, s := range sc.shards {
+		f(s)
+	}
+}
+
+// sum acumula sobre todas las shards el valor que devuelve pick.
+//
+// Es un método con su propio type param (Go 1.27): así Size, MaxSize y Len
+// quedan en una línea cada uno en vez de repetir tres veces el mismo bucle.
+func (sc *ShardedCache) sum[T ~int | ~int64](pick func(*LRUCache) T) T {
+	var total T
+	for _, s := range sc.shards {
+		total += pick(s)
+	}
+	return total
 }
 
 // Get retrieves a value from the cache.
@@ -59,77 +78,50 @@ func (sc *ShardedCache) Contains(key string) bool {
 }
 
 // Clear removes all items from every shard.
-func (sc *ShardedCache) Clear() {
-	for _, s := range sc.shards {
-		s.Clear()
-	}
-}
+func (sc *ShardedCache) Clear() { sc.forEach((*LRUCache).Clear) }
 
 // Stop gracefully stops cleanup goroutines on all shards.
-func (sc *ShardedCache) Stop() {
-	for _, s := range sc.shards {
-		s.Stop()
-	}
-}
+func (sc *ShardedCache) Stop() { sc.forEach((*LRUCache).Stop) }
 
 // Size returns the total current size in bytes across all shards.
-func (sc *ShardedCache) Size() int64 {
-	var total int64
-	for _, s := range sc.shards {
-		total += s.Size()
-	}
-	return total
-}
+func (sc *ShardedCache) Size() int64 { return sc.sum((*LRUCache).Size) }
 
 // MaxSize returns the total maximum size in bytes across all shards.
-func (sc *ShardedCache) MaxSize() int64 {
-	var total int64
-	for _, s := range sc.shards {
-		total += s.MaxSize()
-	}
-	return total
-}
+func (sc *ShardedCache) MaxSize() int64 { return sc.sum((*LRUCache).MaxSize) }
 
 // Len returns the total number of items across all shards.
-func (sc *ShardedCache) Len() int {
-	var total int
-	for _, s := range sc.shards {
-		total += s.Len()
-	}
-	return total
-}
+func (sc *ShardedCache) Len() int { return sc.sum((*LRUCache).Len) }
 
 // Keys returns all keys from every shard.
 func (sc *ShardedCache) Keys() []string {
-	var all []string
-	for _, s := range sc.shards {
-		all = append(all, s.Keys()...)
-	}
+	all := make([]string, 0, sc.Len())
+	sc.forEach(func(s *LRUCache) { all = append(all, s.Keys()...) })
 	return all
 }
 
 // Stats returns aggregated CacheStats across all shards.
-func (sc *ShardedCache) Stats() interface{} {
-	var totalHits, totalMisses int64
-	var totalSize int64
+func (sc *ShardedCache) Stats() CacheStats {
+	var totalHits, totalMisses, totalSize, totalMaxSize int64
 	var totalItems int
-	for _, s := range sc.shards {
-		stats := s.Stats().(CacheStats)
+	sc.forEach(func(s *LRUCache) {
+		stats := s.Stats()
 		totalHits += stats.Hits
 		totalMisses += stats.Misses
 		totalSize += stats.Size
+		totalMaxSize += stats.MaxSize
 		totalItems += stats.ItemCount
-	}
+	})
 	totalReqs := totalHits + totalMisses
 	hitRatio := 0.0
 	if totalReqs > 0 {
 		hitRatio = float64(totalHits) / float64(totalReqs)
 	}
 	return CacheStats{
+		Backend:   "sharded-lru",
 		Hits:      totalHits,
 		Misses:    totalMisses,
 		Size:      totalSize,
-		MaxSize:   sc.MaxSize(),
+		MaxSize:   totalMaxSize,
 		ItemCount: totalItems,
 		HitRatio:  hitRatio,
 	}

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,6 +16,11 @@ const keyPrefix = "falco:"
 type RedisCache struct {
 	client *redis.Client
 	ttl    time.Duration
+	// Contadores propios de este proceso. Redis no puede decirnos cuántos
+	// aciertos tuvo ESTA cache (su INFO agrega a todos los clientes del
+	// servidor), pero nosotros sí sabemos cómo respondió cada Get.
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 // NewRedisCache creates a new Redis cache
@@ -50,8 +56,10 @@ func (r *RedisCache) Get(key string) ([]byte, bool) {
 	defer cancel()
 	val, err := r.client.Get(ctx, prefixedKey(key)).Bytes()
 	if err != nil {
+		r.misses.Add(1)
 		return nil, false
 	}
+	r.hits.Add(1)
 	return val, true
 }
 
@@ -94,19 +102,36 @@ func (r *RedisCache) Clear() {
 	}
 }
 
-// Stats returns Redis statistics
-func (r *RedisCache) Stats() interface{} {
-	stats := r.client.PoolStats()
-	return map[string]interface{}{
-		"hits":          "N/A (Redis internally handles it)",
-		"misses":        "N/A",
-		"pool_hits":     stats.Hits,
-		"pool_misses":   stats.Misses,
-		"pool_timeouts": stats.Timeouts,
-		"total_conns":   stats.TotalConns,
-		"idle_conns":    stats.IdleConns,
-		"stale_conns":   stats.StaleConns,
+// Stats returns Redis cache statistics.
+//
+// Hits y Misses son reales: los cuenta este proceso en cada Get. Size, MaxSize
+// e ItemCount van en statUnmeasured porque conocerlos exigiría un DBSIZE o un
+// SCAN completo en cada llamada, y devolver 0 sería indistinguible de una cache
+// vacía. Para el detalle del pool de conexiones está PoolStats.
+func (r *RedisCache) Stats() CacheStats {
+	hits := r.hits.Load()
+	misses := r.misses.Load()
+	total := hits + misses
+	hitRatio := 0.0
+	if total > 0 {
+		hitRatio = float64(hits) / float64(total)
 	}
+	return CacheStats{
+		Backend:   "redis",
+		Hits:      hits,
+		Misses:    misses,
+		Size:      statUnmeasured,
+		MaxSize:   statUnmeasured,
+		ItemCount: statUnmeasured,
+		HitRatio:  hitRatio,
+	}
+}
+
+// PoolStats expone las métricas del pool de conexiones de go-redis. Antes
+// venían mezcladas dentro del map que devolvía Stats; ahora que Stats tiene un
+// tipo uniforme para los tres backends, viven aquí.
+func (r *RedisCache) PoolStats() *redis.PoolStats {
+	return r.client.PoolStats()
 }
 
 // Contains checks if a key exists in Redis

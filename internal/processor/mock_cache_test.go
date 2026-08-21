@@ -7,6 +7,7 @@ package processor
 import (
 	"time"
 
+	cache "github.com/birdple/falco/internal/cache"
 	mock "github.com/stretchr/testify/mock"
 )
 
@@ -465,20 +466,18 @@ func (_c *MockCache_Size_Call) RunAndReturn(run func() int64) *MockCache_Size_Ca
 }
 
 // Stats provides a mock function for the type MockCache
-func (_mock *MockCache) Stats() interface{} {
+func (_mock *MockCache) Stats() cache.CacheStats {
 	ret := _mock.Called()
 
 	if len(ret) == 0 {
 		panic("no return value specified for Stats")
 	}
 
-	var r0 interface{}
-	if returnFunc, ok := ret.Get(0).(func() interface{}); ok {
+	var r0 cache.CacheStats
+	if returnFunc, ok := ret.Get(0).(func() cache.CacheStats); ok {
 		r0 = returnFunc()
 	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(interface{})
-		}
+		r0 = ret.Get(0).(cache.CacheStats)
 	}
 	return r0
 }
@@ -500,12 +499,12 @@ func (_c *MockCache_Stats_Call) Run(run func()) *MockCache_Stats_Call {
 	return _c
 }
 
-func (_c *MockCache_Stats_Call) Return(ifaceVal interface{}) *MockCache_Stats_Call {
-	_c.Call.Return(ifaceVal)
+func (_c *MockCache_Stats_Call) Return(cacheStats cache.CacheStats) *MockCache_Stats_Call {
+	_c.Call.Return(cacheStats)
 	return _c
 }
 
-func (_c *MockCache_Stats_Call) RunAndReturn(run func() interface{}) *MockCache_Stats_Call {
+func (_c *MockCache_Stats_Call) RunAndReturn(run func() cache.CacheStats) *MockCache_Stats_Call {
 	_c.Call.Return(run)
 	return _c
 }

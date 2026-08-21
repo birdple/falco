@@ -4,41 +4,43 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/birdple/falco/internal/cache"
 )
 
 // ProcessingParams holds parameters for image processing
 type ProcessingParams struct {
-	Width   int    `json:"width,omitempty"`
-	Height  int    `json:"height,omitempty"`
-	Quality int    `json:"quality,omitempty"`
+	Width   int    `json:"width,omitzero"`
+	Height  int    `json:"height,omitzero"`
+	Quality int    `json:"quality,omitzero"`
 	Format  string `json:"format,omitempty"`
 	Fit     string `json:"fit,omitempty"` // "cover", "contain", "fill"
-	MaxAge  int    `json:"maxage,omitempty"`
-	SMaxAge int    `json:"smaxage,omitempty"`
+	MaxAge  int    `json:"maxage,omitzero"`
+	SMaxAge int    `json:"smaxage,omitzero"`
 
 	// Advanced transformations
-	CropX  int     `json:"crop_x,omitempty"` // Crop start X position
-	CropY  int     `json:"crop_y,omitempty"` // Crop start Y position
-	CropW  int     `json:"crop_w,omitempty"` // Crop width
-	CropH  int     `json:"crop_h,omitempty"` // Crop height
-	Rotate float64 `json:"rotate,omitempty"` // Rotation angle in degrees
-	Flip   string  `json:"flip,omitempty"`   // "horizontal", "vertical"
-	Flop   bool    `json:"flop,omitempty"`   // Mirror horizontally
+	CropX  int     `json:"crop_x,omitzero"` // Crop start X position
+	CropY  int     `json:"crop_y,omitzero"` // Crop start Y position
+	CropW  int     `json:"crop_w,omitzero"` // Crop width
+	CropH  int     `json:"crop_h,omitzero"` // Crop height
+	Rotate float64 `json:"rotate,omitzero"` // Rotation angle in degrees
+	Flip   string  `json:"flip,omitempty"`  // "horizontal", "vertical"
+	Flop   bool    `json:"flop,omitzero"`   // Mirror horizontally
 
 	// Filters and effects
-	Brightness float64 `json:"brightness,omitempty"` // -100 to 100
-	Contrast   float64 `json:"contrast,omitempty"`   // -100 to 100
-	Gamma      float64 `json:"gamma,omitempty"`      // 0.0 to 3.0
-	Saturation float64 `json:"saturation,omitempty"` // -100 to 500
-	Hue        int     `json:"hue,omitempty"`        // -180 to 180
-	Blur       float64 `json:"blur,omitempty"`       // 0.0 to 100.0
-	Sharpen    float64 `json:"sharpen,omitempty"`    // 0.0 to 100.0
+	Brightness float64 `json:"brightness,omitzero"` // -100 to 100
+	Contrast   float64 `json:"contrast,omitzero"`   // -100 to 100
+	Gamma      float64 `json:"gamma,omitzero"`      // 0.0 to 3.0
+	Saturation float64 `json:"saturation,omitzero"` // -100 to 500
+	Hue        int     `json:"hue,omitzero"`        // -180 to 180
+	Blur       float64 `json:"blur,omitzero"`       // 0.0 to 100.0
+	Sharpen    float64 `json:"sharpen,omitzero"`    // 0.0 to 100.0
 
 	// Watermark
 	WatermarkURL      string  `json:"watermark_url,omitempty"`
-	WatermarkOpacity  float64 `json:"watermark_opacity,omitempty"`  // 0.0 to 1.0
+	WatermarkOpacity  float64 `json:"watermark_opacity,omitzero"`   // 0.0 to 1.0
 	WatermarkPosition string  `json:"watermark_position,omitempty"` // "top-left", "top-right", "bottom-left", "bottom-right", "center"
-	WatermarkScale    float64 `json:"watermark_scale,omitempty"`    // 0.0 to 1.0, scale relative to image width
+	WatermarkScale    float64 `json:"watermark_scale,omitzero"`     // 0.0 to 1.0, scale relative to image width
 
 	// Gravity for resize/crop (smart cropping)
 	// Values: "center", "north", "south", "east", "west",
@@ -46,21 +48,21 @@ type ProcessingParams struct {
 	Gravity string `json:"gravity,omitempty"`
 
 	// Trim (remove uniform color borders)
-	TrimEnabled   bool    `json:"trim_enabled,omitempty"`
-	TrimThreshold float64 `json:"trim_threshold,omitempty"` // 0-255, default 10
+	TrimEnabled   bool    `json:"trim_enabled,omitzero"`
+	TrimThreshold float64 `json:"trim_threshold,omitzero"` // 0-255, default 10
 
 	// Padding (add borders)
-	PaddingTop    int    `json:"padding_top,omitempty"`
-	PaddingRight  int    `json:"padding_right,omitempty"`
-	PaddingBottom int    `json:"padding_bottom,omitempty"`
-	PaddingLeft   int    `json:"padding_left,omitempty"`
+	PaddingTop    int    `json:"padding_top,omitzero"`
+	PaddingRight  int    `json:"padding_right,omitzero"`
+	PaddingBottom int    `json:"padding_bottom,omitzero"`
+	PaddingLeft   int    `json:"padding_left,omitzero"`
 	PaddingColor  string `json:"padding_color,omitempty"` // hex color, default "FFFFFF"
 
 	// Auto-orient from EXIF (default true)
-	AutoOrient bool `json:"auto_orient,omitempty"`
+	AutoOrient bool `json:"auto_orient,omitzero"`
 
 	// Strip metadata (default true)
-	StripMetadata bool `json:"strip_metadata,omitempty"`
+	StripMetadata bool `json:"strip_metadata,omitzero"`
 }
 
 // ProcessedImage holds the result of image processing
@@ -89,7 +91,7 @@ type Cache interface {
 	Set(key string, value []byte, ttl time.Duration) error
 	Delete(key string)
 	Clear()
-	Stats() interface{}
+	Stats() cache.CacheStats
 	Contains(key string) bool
 	Keys() []string
 	Size() int64
@@ -143,7 +145,7 @@ type ImageProcessor interface {
 	SetCache(cache Cache)
 
 	// GetCacheStats returns cache statistics
-	GetCacheStats() interface{}
+	GetCacheStats() cache.CacheStats
 }
 
 // ResizeMode represents different image resizing modes

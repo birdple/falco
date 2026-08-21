@@ -20,14 +20,35 @@ type CacheItem struct {
 	ttl       time.Duration
 }
 
-// CacheStats holds cache statistics
+// CacheStats holds cache statistics.
+//
+// Las tres implementaciones de Cache devuelven este mismo tipo. No todas
+// pueden medir todos los campos: los que un backend no sabe responder sin una
+// llamada de red van en statUnmeasured (-1), que NO es lo mismo que 0. Backend
+// dice cuál de ellas produjo las cifras.
 type CacheStats struct {
+	Backend   string  `json:"backend"`
 	Hits      int64   `json:"hits"`
 	Misses    int64   `json:"misses"`
 	Size      int64   `json:"size"`
 	MaxSize   int64   `json:"max_size"`
 	ItemCount int     `json:"item_count"`
 	HitRatio  float64 `json:"hit_ratio"`
+}
+
+// statUnmeasured marca un campo de CacheStats que el backend no puede medir.
+const statUnmeasured = -1
+
+// NoCacheStats describe la ausencia de cache. Se distingue de una cache vacía:
+// los campos que sólo tendrían sentido con una cache detrás van marcados como
+// no medidos en vez de en cero.
+func NoCacheStats() CacheStats {
+	return CacheStats{
+		Backend:   "none",
+		Size:      statUnmeasured,
+		MaxSize:   statUnmeasured,
+		ItemCount: statUnmeasured,
+	}
 }
 
 // LRUCache implements an in-memory LRU cache with size limits and TTL
@@ -39,6 +60,7 @@ type LRUCache struct {
 	mutex           sync.RWMutex
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
+	stopOnce        sync.Once
 	// Statistics (atomic, accessed without mutex)
 	hits   atomic.Int64
 	misses atomic.Int64
@@ -144,18 +166,19 @@ func (c *LRUCache) Clear() {
 	c.currentSize = 0
 }
 
-// Stop gracefully stops the cache cleanup goroutine
+// Stop gracefully stops the cache cleanup goroutine.
+//
+// Cierra el canal en vez de mandarle un valor: el envío no bloqueante que
+// había antes caía en el `default` cuando la goroutine estaba dentro de
+// cleanupExpired en ese instante, y entonces Stop no detenía nada y la
+// goroutine quedaba viva para siempre. Cerrar despierta al receptor esté donde
+// esté, y el sync.Once hace que llamar a Stop dos veces sea inofensivo.
 func (c *LRUCache) Stop() {
-	select {
-	case c.stopCleanup <- struct{}{}:
-		// Successfully sent stop signal
-	default:
-		// Channel already closed or stop signal already sent
-	}
+	c.stopOnce.Do(func() { close(c.stopCleanup) })
 }
 
 // Stats returns cache statistics
-func (c *LRUCache) Stats() interface{} {
+func (c *LRUCache) Stats() CacheStats {
 	hits := c.hits.Load()
 	misses := c.misses.Load()
 	totalRequests := hits + misses
@@ -170,6 +193,7 @@ func (c *LRUCache) Stats() interface{} {
 	c.mutex.RUnlock()
 
 	return CacheStats{
+		Backend:   "lru",
 		Hits:      hits,
 		Misses:    misses,
 		Size:      size,

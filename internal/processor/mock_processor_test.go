@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 
+	cache "github.com/birdple/falco/internal/cache"
 	mock "github.com/stretchr/testify/mock"
 )
 
@@ -39,20 +40,18 @@ func (_m *MockImageProcessor) EXPECT() *MockImageProcessor_Expecter {
 }
 
 // GetCacheStats provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) GetCacheStats() interface{} {
+func (_mock *MockImageProcessor) GetCacheStats() cache.CacheStats {
 	ret := _mock.Called()
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetCacheStats")
 	}
 
-	var r0 interface{}
-	if returnFunc, ok := ret.Get(0).(func() interface{}); ok {
+	var r0 cache.CacheStats
+	if returnFunc, ok := ret.Get(0).(func() cache.CacheStats); ok {
 		r0 = returnFunc()
 	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(interface{})
-		}
+		r0 = ret.Get(0).(cache.CacheStats)
 	}
 	return r0
 }
@@ -74,12 +73,12 @@ func (_c *MockImageProcessor_GetCacheStats_Call) Run(run func()) *MockImageProce
 	return _c
 }
 
-func (_c *MockImageProcessor_GetCacheStats_Call) Return(ifaceVal interface{}) *MockImageProcessor_GetCacheStats_Call {
-	_c.Call.Return(ifaceVal)
+func (_c *MockImageProcessor_GetCacheStats_Call) Return(cacheStats cache.CacheStats) *MockImageProcessor_GetCacheStats_Call {
+	_c.Call.Return(cacheStats)
 	return _c
 }
 
-func (_c *MockImageProcessor_GetCacheStats_Call) RunAndReturn(run func() interface{}) *MockImageProcessor_GetCacheStats_Call {
+func (_c *MockImageProcessor_GetCacheStats_Call) RunAndReturn(run func() cache.CacheStats) *MockImageProcessor_GetCacheStats_Call {
 	_c.Call.Return(run)
 	return _c
 }

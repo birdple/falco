@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/cshum/vipsgen/vips"
@@ -18,7 +19,7 @@ import (
 // bufferPool is a pool of byte buffers to reduce allocations during image encoding.
 // Pre-allocated at 2MB to accommodate typical processed image sizes (up to 10MB max input).
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// Pre-allocate 2MB buffer - a good balance for images up to 10MB
 		// Smaller than max to avoid over-allocation, larger than typical output
 		return bytes.NewBuffer(make([]byte, 0, 2*1024*1024))
@@ -533,13 +534,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		// Map quality (0-100) to compression effort (9=best compression, 0=fastest)
 		compression := 6 // Default balanced
 		if quality < 100 {
-			compression = 9 - (quality * 9 / 100)
-			if compression < 0 {
-				compression = 0
-			}
-			if compression > 9 {
-				compression = 9
-			}
+			compression = min(max(9-(quality*9/100), 0), 9)
 		}
 		err = img.PngsaveTarget(target, &vips.PngsaveTargetOptions{
 			Compression: compression,
@@ -650,12 +645,16 @@ func (p *VipsProcessor) SetCache(cache Cache) {
 	p.cache = cache
 }
 
-// GetCacheStats returns cache statistics
-func (p *VipsProcessor) GetCacheStats() interface{} {
+// GetCacheStats returns cache statistics.
+//
+// Sin cache configurada devuelve Backend "none" con los campos medibles en
+// statUnmeasured: un CacheStats en cero se leería como "una cache vacía", que
+// no es lo mismo que "no hay cache".
+func (p *VipsProcessor) GetCacheStats() cache.CacheStats {
 	if p.cache != nil {
 		return p.cache.Stats()
 	}
-	return nil
+	return cache.NoCacheStats()
 }
 
 // detectFormat detects the image format from data

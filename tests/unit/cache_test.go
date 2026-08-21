@@ -2,6 +2,7 @@ package unit
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -33,25 +34,30 @@ func TestLRUCache_GetNonExistent(t *testing.T) {
 }
 
 func TestLRUCache_TTLExpiration(t *testing.T) {
-	c := cache.NewLRUCache(1024*1024, 100*time.Millisecond)
-	defer c.Clear()
+	// Bubble de synctest: el reloj es falso, así que la expiración ocurre al
+	// instante. Ojo con el Stop: el bubble no termina hasta que salgan todas
+	// sus goroutines, y la de limpieza es una de ellas — el `Clear` que había
+	// antes la dejaba viva.
+	synctest.Test(t, func(t *testing.T) {
+		c := cache.NewLRUCache(1024*1024, 100*time.Millisecond)
+		defer c.Stop()
 
-	data := []byte("test data")
-	err := c.Set("key1", data, 100*time.Millisecond)
-	assert.NoError(t, err)
+		data := []byte("test data")
+		err := c.Set("key1", data, 100*time.Millisecond)
+		assert.NoError(t, err)
 
-	// Should be retrievable immediately
-	retrieved, found := c.Get("key1")
-	assert.True(t, found)
-	assert.Equal(t, data, retrieved)
+		// Should be retrievable immediately
+		retrieved, found := c.Get("key1")
+		assert.True(t, found)
+		assert.Equal(t, data, retrieved)
 
-	// Wait for expiration
-	time.Sleep(150 * time.Millisecond)
+		synctest.Sleep(150 * time.Millisecond)
 
-	// Should be expired now
-	retrieved, found = c.Get("key1")
-	assert.False(t, found)
-	assert.Nil(t, retrieved)
+		// Should be expired now
+		retrieved, found = c.Get("key1")
+		assert.False(t, found)
+		assert.Nil(t, retrieved)
+	})
 }
 
 func TestLRUCache_Delete(t *testing.T) {
@@ -196,10 +202,8 @@ func TestLRUCache_LRUEviction(t *testing.T) {
 	// Add a 4th item, which should evict the LRU (key2, since we just accessed key1)
 	c.Set("key4", data, 10*time.Second)
 
-	// Wait a bit for eviction
-	time.Sleep(10 * time.Millisecond)
-
-	// key2 might have been evicted, but let's check the cache is working
+	// Sin sleep: el desalojo ocurre dentro de Set, no en la goroutine de
+	// limpieza. Los 10 ms que había aquí no esperaban nada.
 	assert.True(t, c.Len() <= 4)
 }
 
@@ -215,13 +219,15 @@ func TestLRUCache_Stats(t *testing.T) {
 	// Miss
 	c.Get("nonexistent")
 
+	// Stats devuelve un CacheStats concreto, así que se afirman los números,
+	// no la mera existencia de la estructura.
 	stats := c.Stats()
-	assert.NotNil(t, stats)
-
-	// We can't assert exact values because Stats() might track differently
-	// but we can assert the structure exists
-	_, ok := stats.(interface{})
-	assert.True(t, ok)
+	assert.Equal(t, "lru", stats.Backend)
+	assert.Equal(t, int64(1), stats.Hits)
+	assert.Equal(t, int64(1), stats.Misses)
+	assert.Equal(t, 1, stats.ItemCount)
+	assert.Equal(t, int64(1024*1024), stats.MaxSize)
+	assert.InDelta(t, 0.5, stats.HitRatio, 0.01)
 }
 
 func TestLRUCache_Concurrent(t *testing.T) {
@@ -233,7 +239,7 @@ func TestLRUCache_Concurrent(t *testing.T) {
 
 	// Writer goroutine
 	go func() {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			c.Set("key", []byte("data"), 10*time.Second)
 		}
 		done <- true
@@ -241,7 +247,7 @@ func TestLRUCache_Concurrent(t *testing.T) {
 
 	// Reader goroutine
 	go func() {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			c.Get("key")
 		}
 		done <- true
