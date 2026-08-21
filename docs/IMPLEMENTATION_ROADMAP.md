@@ -369,7 +369,7 @@ type cacheItem struct {
 **Multi-stage Dockerfile**:
 ```dockerfile
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.27-alpine3.24 AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

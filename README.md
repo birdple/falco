@@ -57,7 +57,7 @@ A blazing-fast, self-hosted image processing service built in Go. Store, transfo
 ## Quick Start
 
 ### Prerequisites
-- Go 1.23+
+- Go 1.27+
 - [libvips](https://www.libvips.org/install.html) (`brew install vips` on macOS)
 - Docker & Docker Compose (optional)
 
@@ -226,7 +226,13 @@ HMAC_REQUIRED=false
 LOG_LEVEL=info
 LOG_FORMAT=json
 ENABLE_METRICS=true
+# Monta /debug/pprof/* (heap, goroutine, goroutineleak, profile, trace) detrás
+# de la misma API key que /metrics.
 ENABLE_PPROF=false
+
+# Header limits per request (tighter than the stdlib's 1 MiB / 500 values).
+MAX_HEADER_BYTES=65536
+MAX_HEADER_VALUE_COUNT=100
 ```
 
 ---

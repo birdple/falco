@@ -3,7 +3,7 @@
 ## Quick Start
 
 ### Prerequisites
-- Go 1.21+ installed
+- Go 1.27+ installed
 - Docker and Docker Compose
 - AWS CLI configured (for S3 storage)
 - MinIO server (optional, for MinIO storage)
