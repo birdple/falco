@@ -46,14 +46,12 @@ func NewR2Storage(cfg *R2Config) (*R2Storage, error) {
 		o.UsePathStyle = true
 	})
 
-	s3s := &S3Storage{
+	return &R2Storage{S3Storage: &S3Storage{
 		client:          client,
 		bucket:          cfg.Bucket,
 		defaultBucket:   cfg.Bucket,
 		metadataEncoder: NewMetadataEncoder(),
-	}
-
-	return &R2Storage{S3Storage: s3s}, nil
+	}}, nil
 }
 
 // WithBucket returns a new R2Storage instance with a different bucket
