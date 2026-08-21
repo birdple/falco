@@ -224,11 +224,7 @@ func main() {
 
 	// Phase 2: Clean up resources
 	logger.Info().Msg("Phase 2: Cleaning up resources")
-	cleanupResources(ctx, storageReg.Default(), appCache)
-
-	// Phase 3: Final cleanup
-	logger.Info().Msg("Phase 3: Final cleanup")
-	time.Sleep(100 * time.Millisecond)
+	cleanupResources(shutdownCtx, storageReg, appCache)
 
 	logger.Info().Msg("Server shutdown complete")
 }
@@ -261,8 +257,12 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 	return shutdown
 }
 
-// cleanupResources performs cleanup of application resources
-func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, appCache processor.Cache) {
+// cleanupResources performs cleanup of application resources.
+//
+// Espera de verdad a las réplicas asíncronas en vuelo (Registry.CloseAll) en
+// lugar del `time.Sleep(100ms)` que había antes: un sleep fijo no sabe si el
+// trabajo terminó, sólo disimula que sí.
+func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCache processor.Cache) {
 	if appCache != nil {
 		logger.Info().Msg("Stopping cache...")
 		if sharded, ok := appCache.(*cache.ShardedCache); ok {
@@ -277,8 +277,16 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 		logger.Info().Msg("Cache cleanup completed")
 	}
 
-	if storageBackend != nil {
-		logger.Info().Msg("Storage connections released")
+	if storageReg != nil {
+		logger.Info().Msg("Waiting for in-flight storage replication...")
+		if failures := storageReg.CloseAll(ctx); len(failures) > 0 {
+			for name, err := range failures {
+				logger.Error().Err(err).Str("bucket", name).
+					Msg("Storage backend did not finish cleanly — replicas may be stale")
+			}
+		} else {
+			logger.Info().Msg("Storage connections released")
+		}
 	}
 }
 
