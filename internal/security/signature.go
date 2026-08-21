@@ -47,9 +47,9 @@ const ExpiryQueryParam = "exp"
 func Canonicalize(rawPath string) string {
 	path := rawPath
 	query := ""
-	if i := strings.IndexByte(rawPath, '?'); i >= 0 {
-		path = rawPath[:i]
-		query = rawPath[i+1:]
+	if before, after, ok := strings.Cut(rawPath, "?"); ok {
+		path = before
+		query = after
 	}
 	if query == "" {
 		return path
@@ -72,17 +72,14 @@ func Canonicalize(rawPath string) string {
 // the canonical string from a path and a parsed url.Values (typically the
 // request's already-parsed query).
 func CanonicalizeRequest(path string, values url.Values) string {
-	if values == nil || len(values) == 0 {
+	if len(values) == 0 {
 		return path
 	}
-	// Work on a copy so callers can still read "sig" from their original.
-	clone := make(url.Values, len(values))
-	for k, v := range values {
-		if k == "sig" {
-			continue
-		}
-		clone[k] = v
-	}
+	// Copia propia para que el llamador pueda seguir leyendo "sig" del suyo.
+	// Clone es copia profunda: la manual de antes compartía los slices de
+	// valores con el mapa original.
+	clone := values.Clone()
+	clone.Del("sig")
 	if len(clone) == 0 {
 		return path
 	}
@@ -130,9 +127,9 @@ func SignURLWithExpiry(path string, expUnix int64, keyHex, saltHex string, signa
 func appendExpiry(path string, expUnix int64) string {
 	base := path
 	query := ""
-	if i := strings.IndexByte(path, '?'); i >= 0 {
-		base = path[:i]
-		query = path[i+1:]
+	if before, after, ok := strings.Cut(path, "?"); ok {
+		base = before
+		query = after
 	}
 	values, err := url.ParseQuery(query)
 	if err != nil {
@@ -221,11 +218,11 @@ func VerifyURLWithPolicy(signature, path string, keyHex, saltHex string, signatu
 // extractExpiry returns the raw "exp" value from the path's query string and
 // whether it was present. It does NOT validate the value — only surfaces it.
 func extractExpiry(path string) (string, bool) {
-	i := strings.IndexByte(path, '?')
-	if i < 0 {
+	_, after, ok0 := strings.Cut(path, "?")
+	if !ok0 {
 		return "", false
 	}
-	values, err := url.ParseQuery(path[i+1:])
+	values, err := url.ParseQuery(after)
 	if err != nil {
 		return "", false
 	}
