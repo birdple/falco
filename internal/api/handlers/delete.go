@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"sync"
 
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -25,7 +26,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req types.DeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
 		return
 	}
@@ -81,10 +82,8 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 
-		for i := 0; i < deleteWorkers; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range deleteWorkers {
+			wg.Go(func() {
 				for key := range keys {
 					if ownErr := h.checkOwnership(r, storageBackend, key); ownErr != nil {
 						if storage.IsNotFound(ownErr) {
@@ -110,7 +109,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 					deletedKeys = append(deletedKeys, key)
 					mu.Unlock()
 				}
-			}()
+			})
 		}
 		wg.Wait()
 	}
@@ -159,9 +158,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusMultiStatus
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, status, response)
 }
 
 // invalidateCache drops every cached variant of a key that no longer exists (or

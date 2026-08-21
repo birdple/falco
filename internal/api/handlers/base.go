@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +15,7 @@ import (
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
@@ -105,9 +106,30 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 		Str("error_message", message).
 		Msg("API error response")
 
+	writeJSON(w, statusCode, response)
+}
+
+// writeJSON serializa v y lo manda con el status pedido.
+//
+// Serializa ANTES de tocar el ResponseWriter a propósito: si el marshal falla
+// todavía se puede responder un 500 honesto, mientras que un encoder en
+// streaming ya habría mandado un 200 con el body cortado a la mitad.
+//
+// Usa los defaults de encoding/json/v2 (sin escapar &, < ni >). Es un cambio de
+// bytes respecto de v1, pero no de semántica: todo consumidor pasa por un
+// parser de JSON y ninguno de ellos mete la respuesta cruda en HTML.
+func writeJSON(w http.ResponseWriter, statusCode int, v any) {
+	data, err := jsonv2.Marshal(v)
+	if err != nil {
+		logger.Error().Err(err).Int("status_code", statusCode).Msg("Failed to marshal JSON response")
+		http.Error(w, `{"success":false,"error":{"code":"ENCODING_ERROR","message":"Failed to encode response"}}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
+	if _, err := w.Write(data); err != nil {
+		logger.Error().Err(err).Msg("Failed to write JSON response body")
+	}
 }
 
 // fetchError carries enough context to reproduce the right HTTP response
@@ -135,7 +157,7 @@ type negativeCacheEntry struct {
 // Marshal failure is intentionally swallowed — negative caching is a
 // best-effort optimization, never a correctness requirement.
 func (h *Handler) rememberFailure(key string, fe *fetchError) {
-	data, err := json.Marshal(negativeCacheEntry{Status: fe.status, Code: fe.code, Message: fe.message})
+	data, err := jsonv2.Marshal(negativeCacheEntry{Status: fe.status, Code: fe.code, Message: fe.message}, jsonx.Wire)
 	if err != nil {
 		return
 	}
@@ -150,7 +172,7 @@ func (h *Handler) recallFailure(key string) (*fetchError, bool) {
 		return nil, false
 	}
 	var entry negativeCacheEntry
-	if err := json.Unmarshal(data, &entry); err != nil {
+	if err := jsonv2.Unmarshal(data, &entry, jsonx.Wire); err != nil {
 		return nil, false
 	}
 	return &fetchError{status: entry.Status, code: entry.Code, message: entry.Message}, true
@@ -176,7 +198,7 @@ func dropOriginVary(w http.ResponseWriter) {
 
 	kept := make([]string, 0, len(values))
 	for _, value := range values {
-		for _, token := range strings.Split(value, ",") {
+		for token := range strings.SplitSeq(value, ",") {
 			token = strings.TrimSpace(token)
 			if token == "" || strings.EqualFold(token, "Origin") {
 				continue

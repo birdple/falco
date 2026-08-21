@@ -50,7 +50,7 @@ func TestWriteSuccess(t *testing.T) {
 }
 
 func BenchmarkWriteJSON(b *testing.B) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"id":     "abc123",
 		"format": "webp",
 		"width":  1920,

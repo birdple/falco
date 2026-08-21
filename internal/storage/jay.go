@@ -2,7 +2,7 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -90,8 +90,7 @@ func isBucketAlreadyExists(err error) bool {
 	if err == nil {
 		return false
 	}
-	var je *jayclient.Error
-	if errors.As(err, &je) {
+	if je, ok := errors.AsType[*jayclient.Error](err); ok {
 		return je.Code == "BucketAlreadyExists" || je.Code == "BucketAlreadyOwnedByYou"
 	}
 	return false
@@ -101,8 +100,7 @@ func isNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	var je *jayclient.Error
-	if errors.As(err, &je) {
+	if je, ok := errors.AsType[*jayclient.Error](err); ok {
 		return je.Code == "NoSuchKey" || je.Code == "NoSuchBucket" || je.Code == "NotFound"
 	}
 	return false
@@ -220,7 +218,10 @@ func (s *JayStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 		ObjectCount    int64  `json:"object_count"`
 		TotalSizeBytes int64  `json:"total_size_bytes"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	// Defaults de v2 a propósito, NO jsonx.Strict: jay se versiona aparte de
+	// falco y un campo nuevo en su respuesta de stats es un cambio aditivo. Con
+	// RejectUnknownMembers ese cambio tumbaría GetStats y con él el /health.
+	if err := jsonv2.UnmarshalRead(resp.Body, &body); err != nil {
 		return nil, fmt.Errorf("jay: stats decode: %w", err)
 	}
 	return &StorageStats{TotalImages: body.ObjectCount, TotalSize: body.TotalSizeBytes}, nil

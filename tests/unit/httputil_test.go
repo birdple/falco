@@ -26,7 +26,7 @@ func TestWriteJSON(t *testing.T) {
 
 func TestWriteSuccess(t *testing.T) {
 	w := httptest.NewRecorder()
-	data := map[string]interface{}{"count": 10}
+	data := map[string]any{"count": 10}
 
 	err := httputil.WriteSuccess(w, 200, data)
 	assert.NoError(t, err)
