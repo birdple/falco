@@ -19,6 +19,7 @@ import (
 	"github.com/birdple/falco/internal/api/handlers"
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/pkg/hashutil"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 	"github.com/birdple/falco/tests/mocks"
@@ -90,7 +91,7 @@ func TestHandleUpload_JSONWithURL(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	uploadReq := map[string]interface{}{
+	uploadReq := map[string]any{
 		"url": "https://example.com/image.jpg",
 	}
 	reqBody, _ := json.Marshal(uploadReq)
@@ -137,9 +138,7 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
 	mockProcessor := new(mocks.MockImageProcessor)
 
-	cfg := &config.Config{}
-	cfg.Processing.MaxDimensions.Width = 4000
-	cfg.Processing.MaxDimensions.Height = 4000
+	cfg := testConfig()
 
 	startTime := time.Now()
 
@@ -192,9 +191,7 @@ func TestHandleDelivery_InvalidWidth(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
 	mockProcessor := new(mocks.MockImageProcessor)
 
-	cfg := &config.Config{}
-	cfg.Processing.MaxDimensions.Width = 4000
-	cfg.Processing.MaxDimensions.Height = 4000
+	cfg := testConfig()
 
 	startTime := time.Now()
 
@@ -216,9 +213,7 @@ func TestHandleDelivery_InvalidFormat(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
 	mockProcessor := new(mocks.MockImageProcessor)
 
-	cfg := &config.Config{}
-	cfg.Processing.MaxDimensions.Width = 4000
-	cfg.Processing.MaxDimensions.Height = 4000
+	cfg := testConfig()
 
 	startTime := time.Now()
 
@@ -601,4 +596,109 @@ func TestHandleDocs(t *testing.T) {
 	assert.Equal(t, "text/html; charset=utf-8", w.Header().Get("Content-Type"))
 	assert.Contains(t, w.Body.String(), "<!DOCTYPE html>")
 	assert.Contains(t, w.Body.String(), "redoc")
+}
+
+// TestHandleUpload_CustomID cubre las tres procedencias del id de una imagen:
+// el ?id= de la URL, el campo "id" de un multipart y el "id" de un body JSON.
+//
+// Existe porque la implementación reescribía r.URL.RawQuery a mitad del
+// handler para que las tres desembocaran en una única lectura del query. Al
+// quitar ese truco (y hoistear r.URL.Query()) hacía falta algo que afirmara
+// que las tres siguen llegando a la clave de storage correcta.
+func TestHandleUpload_CustomID(t *testing.T) {
+	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0} // JPEG header
+
+	newMultipartReq := func(t *testing.T, target, formID string) *http.Request {
+		t.Helper()
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		part, err := writer.CreateFormFile("file", "test.jpg")
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		if _, err := part.Write(imageData); err != nil {
+			t.Fatalf("write part: %v", err)
+		}
+		if formID != "" {
+			if err := writer.WriteField("id", formID); err != nil {
+				t.Fatalf("WriteField: %v", err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close writer: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, target, body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req
+	}
+
+	tests := []struct {
+		name    string
+		request func(t *testing.T) *http.Request
+		wantKey string
+	}{
+		{
+			name:    "id del query",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload?id=desde-query", "") },
+			wantKey: "desde-query",
+		},
+		{
+			name:    "id del multipart",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "desde-form") },
+			wantKey: "desde-form",
+		},
+		{
+			// Con los dos presentes gana el del query, y no es una decisión de
+			// falco: r.FormValue lee de r.Form, que net/http arma poniendo
+			// primero los valores del query y anexando después los del
+			// multipart — o sea que devuelve el del query. Es la precedencia
+			// que ya había antes del refactor y el test la deja escrita.
+			name: "con ambos presentes gana el del query",
+			request: func(t *testing.T) *http.Request {
+				return newMultipartReq(t, "/upload?id=desde-query", "desde-form")
+			},
+			wantKey: "desde-query",
+		},
+		{
+			// Un id de form inválido no es un 400: se ignora y el id sale del
+			// hash del contenido, igual que si no se hubiera mandado.
+			name:    "id de multipart inválido cae al hash del contenido",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "no vale/esto") },
+			wantKey: hashutil.GenerateImageIDFromData(imageData),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockStorage := new(mocks.MockStorageBackend)
+			mockProcessor := new(mocks.MockImageProcessor)
+
+			cfg := &config.Config{
+				Processing: config.ProcessingConfig{
+					MaxFileSizeMB:  10,
+					DefaultQuality: 85,
+					DefaultFormat:  "webp",
+				},
+			}
+			h := handlers.NewHandler(cfg, mockStorage, mockProcessor, time.Now())
+
+			mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Return(&processor.ProcessedImage{
+					Data: io.NopCloser(bytes.NewReader(imageData)),
+					Metadata: &processor.ImageMetadata{
+						Format:      "jpeg",
+						ContentType: "image/jpeg",
+						Size:        int64(len(imageData)),
+					},
+				}, nil)
+			mockStorage.On("Store", mock.Anything, tt.wantKey, mock.Anything, mock.Anything).Return(nil)
+
+			w := httptest.NewRecorder()
+			h.HandleUpload(w, tt.request(t))
+
+			assert.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+			mockStorage.AssertCalled(t, "Store", mock.Anything, tt.wantKey, mock.Anything, mock.Anything)
+		})
+	}
 }

@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/hashutil"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/processor"
@@ -24,9 +25,17 @@ import (
 func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	storageName := r.URL.Query().Get("storage")
-	bucket := utils.GetQueryParam(r, "b", "bucket")
-	directory := utils.GetQueryParam(r, "d", "dir", "directory")
+	// Un solo parseo del query para todo el handler (ver HandleDelivery).
+	query := r.URL.Query()
+
+	storageName := query.Get("storage")
+	// customID arranca con el ?id= de la URL y lo pisan el campo del form o el
+	// del JSON cuando vienen y son válidos. Antes esto se hacía reescribiendo
+	// r.URL.RawQuery a mitad del handler para que la lectura de más abajo lo
+	// viera — y la rama JSON además borraba el resto del query al hacerlo.
+	customID := query.Get("id")
+	bucket := utils.QueryParam(query, "b", "bucket")
+	directory := utils.QueryParam(query, "d", "dir", "directory")
 
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
@@ -58,14 +67,14 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		filename = "image" + utils.GetExtensionFromContentType(contentType)
 
-		if q := r.URL.Query().Get("quality"); q != "" {
+		if q := query.Get("quality"); q != "" {
 			if quality, err = strconv.Atoi(q); err != nil {
 				h.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter")
 				return
 			}
 		}
 
-		if f := r.URL.Query().Get("format"); f != "" {
+		if f := query.Get("format"); f != "" {
 			format = f
 		}
 
@@ -105,21 +114,19 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 			format = f
 		}
 
-		if id := r.FormValue("id"); id != "" {
-			if utils.IsValidImageID(id) {
-				r.URL.RawQuery = fmt.Sprintf("id=%s&%s", id, r.URL.RawQuery)
-			}
+		if id := r.FormValue("id"); id != "" && utils.IsValidImageID(id) {
+			customID = id
 		}
 
 	} else if contentType == "application/json" {
 		var uploadReq struct {
 			URL     string `json:"url"`
-			Quality int    `json:"quality,omitempty"`
+			Quality int    `json:"quality,omitzero"`
 			Format  string `json:"format,omitempty"`
 			ID      string `json:"id,omitempty"`
 		}
 
-		if err := json.NewDecoder(r.Body).Decode(&uploadReq); err != nil {
+		if err := jsonv2.UnmarshalRead(r.Body, &uploadReq, jsonx.Strict); err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
 			return
 		}
@@ -156,10 +163,8 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		quality = uploadReq.Quality
 		format = uploadReq.Format
 
-		if uploadReq.ID != "" {
-			if utils.IsValidImageID(uploadReq.ID) {
-				r.URL.RawQuery = fmt.Sprintf("id=%s", uploadReq.ID)
-			}
+		if uploadReq.ID != "" && utils.IsValidImageID(uploadReq.ID) {
+			customID = uploadReq.ID
 		}
 
 	} else {
@@ -169,7 +174,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	var imageID string
 
-	if customID := r.URL.Query().Get("id"); customID != "" {
+	if customID != "" {
 		if utils.IsValidImageID(customID) {
 			imageID = customID
 		} else {
@@ -282,7 +287,5 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusCreated, response)
 }
