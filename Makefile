@@ -1,10 +1,9 @@
-# Makefile for Imagine Image Processing Service
+# Makefile de falco — servicio de procesamiento de imágenes
 
 # Variables
 BINARY_NAME=falco-server
 DOCKER_IMAGE=falco-service
 VERSION?=latest
-GO_VERSION=1.21
 
 # Build commands
 .PHONY: build
@@ -19,9 +18,10 @@ build-local:
 run:
 	go run cmd/server/main.go
 
+# air lee .air.toml de la raíz si existe; sin -c no falla cuando no está.
 .PHONY: dev
 dev:
-	air -c .air.toml
+	air
 
 # Testing commands
 .PHONY: test
@@ -141,9 +141,9 @@ docker-logs:
 .PHONY: setup
 setup:
 	go mod download
-	go install github.com/cosmtrek/air@latest
+	go install github.com/air-verse/air@latest
 	go install golang.org/x/tools/cmd/goimports@latest
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
 .PHONY: dev-setup
 dev-setup: setup
