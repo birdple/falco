@@ -58,7 +58,7 @@ func proxyAllowedHosts() map[string]struct{} {
 		raw = defaultProxyAllowedHosts
 	}
 	m := make(map[string]struct{})
-	for _, h := range strings.Split(raw, ",") {
+	for h := range strings.SplitSeq(raw, ",") {
 		if t := strings.TrimSpace(h); t != "" {
 			m[strings.ToLower(t)] = struct{}{}
 		}
@@ -112,17 +112,16 @@ func isPrivateHost(hostname string) bool {
 // If the segment has no dot, returns (segment, defaultFormat).
 // If the segment has an unknown extension, returns ("", "").
 func proxyExtFromSegment(segment, defaultFormat string) (id, format string) {
-	dot := strings.LastIndexByte(segment, '.')
-	if dot < 0 {
+	base, possibleExt, found := strings.CutLast(segment, ".")
+	if !found {
 		// No extension — use the default format.
 		return segment, defaultFormat
 	}
-	possibleExt := strings.ToLower(segment[dot+1:])
-	mapped, ok := AllowedImageExtensions[possibleExt]
+	mapped, ok := AllowedImageExtensions[strings.ToLower(possibleExt)]
 	if !ok {
 		return "", ""
 	}
-	return segment[:dot], mapped
+	return base, mapped
 }
 
 // proxyCacheKey generates a deterministic cache key for a proxy request.
@@ -138,6 +137,8 @@ func proxyCacheKey(rawURL, ext, w, h, q, fit string) string {
 // Route: GET /api/v1/proxy/*
 // The wildcard captures "{hash}.{ext}" (e.g. "a1b2c3d4e5f6.webp").
 func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
+	// Un solo parseo del query para todo el handler (ver HandleDelivery).
+	query := r.URL.Query()
 
 	// ── 1. Extract and validate the path segment ──────────────────────
 	segment := chi.URLParam(r, "*")
@@ -158,7 +159,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── 2. Obtain and validate the target URL ─────────────────────────
-	rawURL := r.URL.Query().Get("url")
+	rawURL := query.Get("url")
 	if rawURL == "" {
 		h.sendError(w, http.StatusBadRequest, "MISSING_URL", "url query parameter is required")
 		return
@@ -197,7 +198,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// ── 5. Parse processing params from query string ──────────────────
 	params := &processor.ProcessingParams{}
 
-	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
+	if width := utils.QueryParam(query, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
 			if widthVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
@@ -210,7 +211,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
+	if height := utils.QueryParam(query, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
 			if heightVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
@@ -223,7 +224,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if quality := utils.GetQueryParam(r, "q", "quality"); quality != "" {
+	if quality := utils.QueryParam(query, "q", "quality"); quality != "" {
 		if q, err := strconv.Atoi(quality); err == nil && q > 0 && q <= 100 {
 			params.Quality = q
 		} else {
@@ -232,7 +233,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if fit := r.URL.Query().Get("fit"); fit != "" {
+	if fit := query.Get("fit"); fit != "" {
 		if fit == FitCover || fit == FitContain || fit == FitFill {
 			params.Fit = fit
 		} else {
@@ -242,7 +243,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Explicit ?f= overrides the path extension; extension is the default.
-	if format := utils.GetQueryParam(r, "f", "format"); format != "" {
+	if format := utils.QueryParam(query, "f", "format"); format != "" {
 		if h.imageProcessor.ValidateFormat(format) {
 			params.Format = format
 		} else {
@@ -253,8 +254,8 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		params.Format = extFormat
 	}
 
-	params.AutoOrient = r.URL.Query().Get("orient") != "0"
-	params.StripMetadata = r.URL.Query().Get("meta") != "1"
+	params.AutoOrient = query.Get("orient") != "0"
+	params.StripMetadata = query.Get("meta") != "1"
 
 	// ── 5b. Safety-net max width ──────────────────────────────────────
 	// When neither w nor h was supplied, cap width at PROXY_MAX_WIDTH so
@@ -452,8 +453,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		var fe *fetchError
-		if errors.As(err, &fe) {
+		if fe, ok := errors.AsType[*fetchError](err); ok {
 			h.sendError(w, fe.status, fe.code, fe.message)
 		} else {
 			logger.Error().Err(err).Str("url", rawURL).Msg("Unexpected proxy singleflight error")

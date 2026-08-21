@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -16,9 +15,12 @@ import (
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	storageName := r.URL.Query().Get("storage")
-	bucket := utils.GetQueryParam(r, "b", "bucket")
-	prefix := utils.GetQueryParam(r, "p", "prefix", "d", "dir", "directory")
+	// Un solo parseo del query para todo el handler (ver HandleDelivery).
+	query := r.URL.Query()
+
+	storageName := query.Get("storage")
+	bucket := utils.QueryParam(query, "b", "bucket")
+	prefix := utils.QueryParam(query, "p", "prefix", "d", "dir", "directory")
 
 	prefix = utils.NormalizeDirectoryPath(prefix)
 	if err := utils.ValidateDirectoryPath(prefix); err != nil {
@@ -99,7 +101,5 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		Directories: directories,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }
