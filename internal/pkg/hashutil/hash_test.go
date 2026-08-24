@@ -113,3 +113,26 @@ func BenchmarkGenerateImageIDFromData(b *testing.B) {
 		GenerateImageIDFromData(smallData)
 	}
 }
+
+// TestGenerateImageID_ShortHash: la función está exportada y antes hacía
+// `hash[:16]` sin guarda, así que cualquier cadena corta la hacía paniquear.
+func TestGenerateImageID_ShortHash(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"vacío", "", ""},
+		{"más corto que 16", "abc", "abc"},
+		{"exactamente 16", "0123456789abcdef", "0123456789abcdef"},
+		{"más largo que 16", "0123456789abcdefGHIJ", "0123456789abcdef"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				assert.Equal(t, tt.want, GenerateImageID(tt.in))
+			})
+		})
+	}
+}

@@ -120,7 +120,7 @@ func TestImageMetadata_MarshalJSON(t *testing.T) {
 	data, err := json.Marshal(metadata)
 	require.NoError(t, err)
 
-	var result map[string]interface{}
+	var result map[string]any
 	err = json.Unmarshal(data, &result)
 	require.NoError(t, err)
 
@@ -244,4 +244,66 @@ func TestImageMetadata_JSON_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.Width, decoded.Width)
 	assert.Equal(t, original.Height, decoded.Height)
 	assert.Equal(t, original.CreatedAt, decoded.CreatedAt)
+}
+
+// TestImageMetadata_MarshalJSON_Golden congela los bytes exactos que produce
+// MarshalJSON. Son el formato del metadata guardado en Jay y en disco: si esta
+// cadena cambia, cambió el formato de datos, no el estilo del código. Se
+// escribió al migrar a encoding/json/v2 comparando contra la salida de v1.
+func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
+	stamp := time.Date(2026, 8, 21, 15, 4, 5, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		in   *ImageMetadata
+		want string
+	}{
+		{
+			name: "cero",
+			in:   &ImageMetadata{},
+			want: `{"id":"","original_name":"","format":"","size":0,"width":0,` +
+				`"height":0,"content_type":"","created_at":"0001-01-01T00:00:00Z"}`,
+		},
+		{
+			name: "campos opcionales omitidos",
+			in: &ImageMetadata{
+				ID: "i", OriginalName: `a&b <x> "q" ñ 🐦`, Format: "webp",
+				Size: 1, Width: 2, Height: 3, ContentType: "image/webp",
+				CreatedAt: stamp,
+			},
+			// v1 escapaba &, < y > como \u00XX; Wire lo sigue haciendo.
+			want: `{"id":"i","original_name":"a\u0026b \u003cx\u003e \"q\" ñ 🐦",` +
+				`"format":"webp","size":1,"width":2,"height":3,` +
+				`"content_type":"image/webp","created_at":"2026-08-21T15:04:05Z"}`,
+		},
+		{
+			name: "todos los campos",
+			in: &ImageMetadata{
+				ID: "i", StorageKey: "k/<a>&b", OriginalName: `a&b <x> "q" ñ 🐦`,
+				Format: "webp", Size: 1024, Width: 800, Height: 600,
+				ContentType: "image/webp", MaxAge: 31536000, SMaxAge: 7200,
+				CreatedAt: stamp, ETag: `"abc"`, OwnerID: "o",
+			},
+			// created_at va al final: el campo del struct externo tiene
+			// precedencia sobre el del *Alias embebido y se emite después.
+			want: `{"id":"i","storage_key":"k/\u003ca\u003e\u0026b",` +
+				`"original_name":"a\u0026b \u003cx\u003e \"q\" ñ 🐦","format":"webp",` +
+				`"size":1024,"width":800,"height":600,"content_type":"image/webp",` +
+				`"maxage":31536000,"smaxage":7200,"etag":"\"abc\"","owner_id":"o",` +
+				`"created_at":"2026-08-21T15:04:05Z"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.in.MarshalJSON()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(got))
+
+			// Y el round-trip tiene que devolver el mismo valor.
+			var back ImageMetadata
+			require.NoError(t, back.UnmarshalJSON(got))
+			assert.Equal(t, *tt.in, back)
+		})
+	}
 }

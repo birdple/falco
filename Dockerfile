@@ -3,7 +3,7 @@
 # ----------------------------------------
 # Pin explícito a Alpine 3.24 (no el "alpine" flotante de la imagen de Go) para
 # que el builder y el runtime queden siempre en la misma versión de Alpine.
-FROM golang:1.26-alpine3.24 AS builder
+FROM golang:1.27-alpine3.24 AS builder
 
 # Instala las dependencias necesarias para compilar con vips
 # - gcc, g++, musl-dev: Compilador C/C++ para CGO
@@ -87,8 +87,10 @@ RUN chown -R appuser:appgroup /app
 # Cambia al usuario sin privilegios
 USER appuser
 
-# Expone el puerto
-EXPOSE 8080
+# Expone el puerto con el que se despliega en birdple-v2 (el compose de la raíz
+# inyecta PORT=4009). Ojo: el default interno del binario sigue siendo 8080, por
+# eso el healthcheck de abajo cae a 8080 cuando PORT no viene seteado.
+EXPOSE 4009
 
 # Healthcheck — usa $PORT para respetar el puerto real del deploy (PaaS suelen inyectar PORT=3000)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

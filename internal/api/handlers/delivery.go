@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -62,6 +65,10 @@ func hmacRequireExpiry() (bool, error) {
 
 // HandleDelivery handles image delivery requests with optional transformations
 func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
+	// Un solo parseo del query para todo el handler: r.URL.Query() reparsea
+	// RawQuery desde cero en cada llamada, y aquí abajo se consulta 16 veces.
+	query := r.URL.Query()
+
 	ctx := r.Context()
 	imageID := chi.URLParam(r, "*")
 
@@ -77,22 +84,24 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Validate the ID portion (last path segment). The chi "*" wildcard can
 	// match directory/id combinations, so we only validate the final segment
 	// and rely on ValidateDirectoryPath (below) for the directory portion.
-	finalSegment := imageID
-	if i := strings.LastIndexByte(imageID, '/'); i >= 0 {
-		finalSegment = imageID[i+1:]
+	dirPrefix, finalSegment := "", imageID
+	if before, after, ok := strings.CutLast(imageID, "/"); ok {
+		dirPrefix, finalSegment = before+"/", after
 	}
 
 	// Strip a known image extension from the path segment (e.g. /images/abc123.webp).
 	// The stripped extension acts as a format default when no ?f= query param is given.
 	// This lets Cloudflare cache the URL by file extension without any query-string tricks.
+	//
+	// El punto se busca SÓLO en el último segmento: un directorio con punto
+	// (dir.v2/abc123) no lleva extensión y no debe rechazarse. Y el imageID sin
+	// extensión se reconstruye pegando el prefijo, no restando longitudes.
 	extFormat := ""
-	if dot := strings.LastIndexByte(finalSegment, '.'); dot >= 0 {
-		possibleExt := strings.ToLower(finalSegment[dot+1:])
-		if mapped, ok := AllowedImageExtensions[possibleExt]; ok {
+	if base, possibleExt, ok := strings.CutLast(finalSegment, "."); ok {
+		if mapped, found := AllowedImageExtensions[strings.ToLower(possibleExt)]; found {
 			extFormat = mapped
-			// Remove the extension from both the local segment and the full imageID.
-			finalSegment = finalSegment[:dot]
-			imageID = imageID[:len(imageID)-len(possibleExt)-1]
+			finalSegment = base
+			imageID = dirPrefix + base
 		} else {
 			// Has a dot but not a known extension → reject to avoid ambiguity.
 			h.sendError(w, http.StatusBadRequest, "INVALID_ID", "Invalid image id")
@@ -113,7 +122,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	//   (b) HMAC_REQUIRED=false — fall back to API-key + scope enforcement
 	//       so delivery is not left wide open in dev/misconfigured setups.
 	if h.config.Security.HMACRequired {
-		sig := r.URL.Query().Get("sig")
+		sig := query.Get("sig")
 		signedPath := r.URL.Path
 		if raw := r.URL.RawQuery; raw != "" {
 			signedPath = r.URL.Path + "?" + raw
@@ -152,9 +161,9 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get storage, bucket, and directory parameters
-	storageName := r.URL.Query().Get("storage")
-	bucket := utils.GetQueryParam(r, "b", "bucket")
-	directory := utils.GetQueryParam(r, "d", "dir", "directory")
+	storageName := query.Get("storage")
+	bucket := utils.QueryParam(query, "b", "bucket")
+	directory := utils.QueryParam(query, "d", "dir", "directory")
 
 	directory = utils.NormalizeDirectoryPath(directory)
 	if err := utils.ValidateDirectoryPath(directory); err != nil {
@@ -173,7 +182,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters for transformations
 	params := &processor.ProcessingParams{}
 
-	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
+	if width := utils.QueryParam(query, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
 			if widthVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
@@ -186,7 +195,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
+	if height := utils.QueryParam(query, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
 			if heightVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
@@ -199,7 +208,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if quality := utils.GetQueryParam(r, "q", "quality"); quality != "" {
+	if quality := utils.QueryParam(query, "q", "quality"); quality != "" {
 		if q, err := strconv.Atoi(quality); err == nil && q > 0 && q <= 100 {
 			params.Quality = q
 		} else {
@@ -208,7 +217,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if format := utils.GetQueryParam(r, "f", "format"); format != "" {
+	if format := utils.QueryParam(query, "f", "format"); format != "" {
 		if h.imageProcessor.ValidateFormat(format) {
 			params.Format = format
 		} else {
@@ -220,19 +229,19 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		params.Format = extFormat
 	}
 
-	if maxAge := r.URL.Query().Get("maxage"); maxAge != "" {
+	if maxAge := query.Get("maxage"); maxAge != "" {
 		if ma, err := strconv.Atoi(maxAge); err == nil && ma >= 0 {
 			params.MaxAge = ma
 		}
 	}
 
-	if sMaxAge := r.URL.Query().Get("smaxage"); sMaxAge != "" {
+	if sMaxAge := query.Get("smaxage"); sMaxAge != "" {
 		if sma, err := strconv.Atoi(sMaxAge); err == nil && sma >= 0 {
 			params.SMaxAge = sma
 		}
 	}
 
-	if fit := r.URL.Query().Get("fit"); fit != "" {
+	if fit := query.Get("fit"); fit != "" {
 		if fit == FitCover || fit == FitContain || fit == FitFill {
 			params.Fit = fit
 		} else {
@@ -241,53 +250,53 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if gravity := r.URL.Query().Get("gravity"); gravity != "" {
+	if gravity := query.Get("gravity"); gravity != "" {
 		if validGravities[gravity] {
 			params.Gravity = gravity
 		}
 	}
 
-	if sc := r.URL.Query().Get("wm_scale"); sc != "" {
+	if sc := query.Get("wm_scale"); sc != "" {
 		if v, err := strconv.ParseFloat(sc, 64); err == nil && v > 0 && v <= 1 {
 			params.WatermarkScale = v
 		}
 	}
 
-	if r.URL.Query().Get("trim") == "1" {
+	if query.Get("trim") == "1" {
 		params.TrimEnabled = true
-		if th := r.URL.Query().Get("trim_threshold"); th != "" {
+		if th := query.Get("trim_threshold"); th != "" {
 			if v, err := strconv.ParseFloat(th, 64); err == nil && v >= 0 && v <= 255 {
 				params.TrimThreshold = v
 			}
 		}
 	}
 
-	if pt := r.URL.Query().Get("pad_top"); pt != "" {
+	if pt := query.Get("pad_top"); pt != "" {
 		if v, err := strconv.Atoi(pt); err == nil && v >= 0 {
 			params.PaddingTop = v
 		}
 	}
-	if pr := r.URL.Query().Get("pad_right"); pr != "" {
+	if pr := query.Get("pad_right"); pr != "" {
 		if v, err := strconv.Atoi(pr); err == nil && v >= 0 {
 			params.PaddingRight = v
 		}
 	}
-	if pb := r.URL.Query().Get("pad_bottom"); pb != "" {
+	if pb := query.Get("pad_bottom"); pb != "" {
 		if v, err := strconv.Atoi(pb); err == nil && v >= 0 {
 			params.PaddingBottom = v
 		}
 	}
-	if pl := r.URL.Query().Get("pad_left"); pl != "" {
+	if pl := query.Get("pad_left"); pl != "" {
 		if v, err := strconv.Atoi(pl); err == nil && v >= 0 {
 			params.PaddingLeft = v
 		}
 	}
-	if pc := r.URL.Query().Get("pad_color"); pc != "" {
+	if pc := query.Get("pad_color"); pc != "" {
 		params.PaddingColor = pc
 	}
 
-	params.AutoOrient = r.URL.Query().Get("orient") != "0"
-	params.StripMetadata = r.URL.Query().Get("meta") != "1"
+	params.AutoOrient = query.Get("orient") != "0"
+	params.StripMetadata = query.Get("meta") != "1"
 
 	m := metrics.Default()
 
@@ -336,9 +345,119 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 			h.serveImage(w, r, bytes.NewReader(cachedData), cachedMeta)
 			return
 		}
+
+		// Cache miss with an explicit transform: cacheKey is already known,
+		// so dedup the retrieve+process work across concurrent requests for
+		// the same (storageKey, params) — same fix as HandleProxy's
+		// singleflight, and the same shape of bug (N concurrent requests for
+		// the same resize each paying their own Jay round-trip + decode +
+		// encode). Deliberately built on context.Background(), not
+		// r.Context(): this work is shared, so one client disconnecting must
+		// not cancel it for siblings still waiting on it.
+		v, sfErr, _ := h.sf.Do(cacheKey, func() (any, error) {
+			if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
+				return &deliveryResult{
+					data: cachedData,
+					meta: &storage.ImageMetadata{
+						ID: imageID, ContentType: h.imageProcessor.GetContentType(params.Format),
+						Format: params.Format, Size: int64(len(cachedData)),
+						MaxAge: params.MaxAge, SMaxAge: params.SMaxAge, CreatedAt: time.Unix(0, 0),
+					},
+				}, nil
+			}
+
+			retrieveCtx, retrieveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer retrieveCancel()
+			storageStart := time.Now()
+			reader, metadata, err := storageBackend.Retrieve(retrieveCtx, storageKey)
+			storageDuration := time.Since(storageStart).Seconds()
+			if err != nil {
+				m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "error").Inc()
+				if storage.IsNotFound(err) {
+					return nil, &fetchError{http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found"}
+				}
+				logger.Error().Err(err).Msg("Failed to retrieve image")
+				return nil, &fetchError{http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image"}
+			}
+			m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "success").Inc()
+			m.StorageOperationDuration.WithLabelValues("retrieve", h.defaultStorageType()).Observe(storageDuration)
+			defer reader.Close()
+
+			// Non-image, or metadata reveals no processing is actually
+			// needed (mirrors the top-level needsProcessing re-check):
+			// buffer and serve as-is. Buffering (unlike the raw-delivery
+			// path below) is required here because this result may be
+			// shared with sibling callers waiting on sf.Do.
+			isImage := utils.IsImageContentType(metadata.ContentType)
+			needsProcessing := hasTransformations ||
+				(params.Format != "" && params.Format != metadata.Format) ||
+				(metadata.Format == "" || metadata.ContentType == "" || metadata.ContentType == "application/octet-stream")
+			if !isImage || !needsProcessing {
+				data, err := io.ReadAll(reader)
+				if err != nil {
+					logger.Error().Err(err).Msg("Failed to read raw image body")
+					return nil, &fetchError{http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to read image"}
+				}
+				return &deliveryResult{data: data, meta: metadata}, nil
+			}
+
+			processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer processCancel()
+			// Duration (split into semaphore_wait + transform) is recorded
+			// inside Process() itself now — see vips_processor.go — so only
+			// the pass/fail counter, which needs the format labels, stays here.
+			processedImage, err := h.imageProcessor.Process(processCtx, reader, params, cacheKey)
+			if err != nil {
+				m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
+				logger.Error().Err(err).Msg("Failed to process image")
+				return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+			}
+			m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
+			defer processedImage.Data.Close()
+
+			data, err := io.ReadAll(processedImage.Data)
+			if err != nil {
+				logger.Error().Err(err).Msg("Failed to read processed image")
+				return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
+			}
+
+			storageMetadata := &storage.ImageMetadata{
+				ID:           processedImage.Metadata.ID,
+				OriginalName: processedImage.Metadata.OriginalName,
+				Format:       processedImage.Metadata.Format,
+				Size:         processedImage.Metadata.Size,
+				Width:        processedImage.Metadata.Width,
+				Height:       processedImage.Metadata.Height,
+				ContentType:  processedImage.Metadata.ContentType,
+				CreatedAt:    processedImage.Metadata.CreatedAt,
+				MaxAge:       params.MaxAge,
+				SMaxAge:      params.SMaxAge,
+			}
+			if storageMetadata.ContentType == "" {
+				storageMetadata.ContentType = h.imageProcessor.GetContentType(storageMetadata.Format)
+			}
+			return &deliveryResult{data: data, meta: storageMetadata}, nil
+		})
+
+		if sfErr != nil {
+			if fe, ok := errors.AsType[*fetchError](sfErr); ok {
+				h.sendError(w, fe.status, fe.code, fe.message)
+			} else {
+				logger.Error().Err(sfErr).Msg("Unexpected delivery singleflight error")
+				h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to deliver image")
+			}
+			return
+		}
+		result := v.(*deliveryResult)
+		h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
+		return
 	}
 
-	// ── Cache miss (or raw delivery) — fetch from storage ─────────────
+	// ── Raw delivery (no explicit transform requested) — fetch from
+	// storage and stream directly. No dedup here: there's no CPU-heavy
+	// work to share, and streaming (vs. the buffered path above) keeps
+	// memory flat regardless of file size — worth preserving for the
+	// common case of downloading a large original as-is.
 	storageStart := time.Now()
 	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 	storageDuration := time.Since(storageStart).Seconds()
@@ -377,6 +496,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure format + cacheKey are set (handles the metadata-only edge
 	// case where wantsProcessing was false but needsProcessing is true).
+	// Not deduplicated: cacheKey couldn't be known before this retrieve, so
+	// there's no key to dedup on ahead of time. Rare in practice — the
+	// common "unknown storage format" case is handled by upload-time
+	// metadata, not discovered here.
 	if params.Format == "" {
 		params.Format = h.config.Processing.DefaultFormat
 		if params.Format == "" {
@@ -387,9 +510,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		cacheKey = h.imageProcessor.GenerateCacheKey(storageKey, params)
 	}
 
-	processStart := time.Now()
+	// Duration (split into semaphore_wait + transform) is recorded inside
+	// Process() itself now — see vips_processor.go — so only the pass/fail
+	// counter, which needs the format labels, stays here.
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params, cacheKey)
-	processDuration := time.Since(processStart).Seconds()
 
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
@@ -398,7 +522,6 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
-	m.ImageProcessingDuration.WithLabelValues("transform").Observe(processDuration)
 
 	defer processedImage.Data.Close()
 
@@ -420,4 +543,12 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.serveImage(w, r, processedImage.Data, storageMetadata)
+}
+
+// deliveryResult is the singleflight.Do payload shared across every request
+// waiting on the same cacheKey — must be safe to read concurrently, hence
+// plain bytes rather than a one-shot io.ReadCloser.
+type deliveryResult struct {
+	data []byte
+	meta *storage.ImageMetadata
 }

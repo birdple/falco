@@ -5,7 +5,7 @@ import "time"
 // UploadResponse represents the response for successful uploads
 type UploadResponse struct {
 	Success bool       `json:"success"`
-	Data    UploadData `json:"data,omitempty"`
+	Data    UploadData `json:"data"`
 	Error   *APIError  `json:"error,omitempty"`
 }
 
@@ -77,6 +77,6 @@ type DeleteResponse struct {
 	// already gone is NOT a failure — the caller got what it asked for.
 	Failed    []string  `json:"failed,omitempty"`
 	Count     int       `json:"count"`
-	Truncated bool      `json:"truncated,omitempty"` // True when more items remain under the prefix (caller should repeat)
+	Truncated bool      `json:"truncated,omitzero"` // True when more items remain under the prefix (caller should repeat)
 	Error     *APIError `json:"error,omitempty"`
 }

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -21,14 +20,12 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusServiceUnavailable
 	}
 
-	health := map[string]interface{}{
+	health := map[string]any{
 		"status":  overallStatus,
 		"version": version.Version,
 		"uptime":  time.Since(h.startTime).String(),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(health)
+	writeJSON(w, statusCode, health)
 }

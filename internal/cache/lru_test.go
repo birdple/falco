@@ -2,6 +2,7 @@ package cache
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -151,33 +152,40 @@ func TestLRUCache_LRU_Order(t *testing.T) {
 }
 
 func TestLRUCache_TTL_Expiration(t *testing.T) {
-	cache := NewLRUCache(1024*1024, time.Hour)
-	defer cache.Stop()
+	synctest.Test(t, func(t *testing.T) {
+		cache := NewLRUCache(1024*1024, time.Hour)
+		defer cache.Stop()
 
-	cache.Set("key1", []byte("value1"), 50*time.Millisecond)
+		cache.Set("key1", []byte("value1"), 50*time.Millisecond)
 
-	// Should exist initially
-	val, ok := cache.Get("key1")
-	assert.True(t, ok)
-	assert.Equal(t, []byte("value1"), val)
+		// Should exist initially
+		val, ok := cache.Get("key1")
+		assert.True(t, ok)
+		assert.Equal(t, []byte("value1"), val)
 
-	// Wait for TTL to expire
-	time.Sleep(60 * time.Millisecond)
+		// Reloj falso: synctest.Sleep adelanta el tiempo del bubble al
+		// instante, así que el TTL vence sin que el test espere de verdad ni
+		// dependa de un margen de 10 ms que en una máquina cargada se queda
+		// corto.
+		synctest.Sleep(60 * time.Millisecond)
 
-	val, ok = cache.Get("key1")
-	assert.False(t, ok)
-	assert.Nil(t, val)
+		val, ok = cache.Get("key1")
+		assert.False(t, ok)
+		assert.Nil(t, val)
+	})
 }
 
 func TestLRUCache_Contains_TTL_Expired(t *testing.T) {
-	cache := NewLRUCache(1024*1024, time.Hour)
-	defer cache.Stop()
+	synctest.Test(t, func(t *testing.T) {
+		cache := NewLRUCache(1024*1024, time.Hour)
+		defer cache.Stop()
 
-	cache.Set("key1", []byte("value1"), 50*time.Millisecond)
-	assert.True(t, cache.Contains("key1"))
+		cache.Set("key1", []byte("value1"), 50*time.Millisecond)
+		assert.True(t, cache.Contains("key1"))
 
-	time.Sleep(60 * time.Millisecond)
-	assert.False(t, cache.Contains("key1"))
+		synctest.Sleep(60 * time.Millisecond)
+		assert.False(t, cache.Contains("key1"))
+	})
 }
 
 func TestLRUCache_Stats(t *testing.T) {
@@ -188,7 +196,8 @@ func TestLRUCache_Stats(t *testing.T) {
 	cache.Get("key1")        // hit
 	cache.Get("nonexistent") // miss
 
-	stats := cache.Stats().(CacheStats)
+	stats := cache.Stats()
+	assert.Equal(t, "lru", stats.Backend)
 	assert.Equal(t, int64(1), stats.Hits)
 	assert.Equal(t, int64(1), stats.Misses)
 	assert.Equal(t, int64(6), stats.Size)
@@ -201,7 +210,7 @@ func TestLRUCache_Stats_NoRequests(t *testing.T) {
 	cache := NewLRUCache(1024, time.Hour)
 	defer cache.Stop()
 
-	stats := cache.Stats().(CacheStats)
+	stats := cache.Stats()
 	assert.Equal(t, int64(0), stats.Hits)
 	assert.Equal(t, int64(0), stats.Misses)
 	assert.InDelta(t, 0.0, stats.HitRatio, 0.01)

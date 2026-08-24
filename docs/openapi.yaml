@@ -796,7 +796,7 @@ paths:
                       status: "healthy"
                       supported_formats: ["webp", "jpeg", "png", "avif"]
                   system:
-                    go_version: "1.21+"
+                    go_version: "1.27+"
                     max_file_size_mb: 10.0
                     max_dimensions:
                       width: 4096

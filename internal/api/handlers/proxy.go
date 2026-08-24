@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -28,6 +30,14 @@ const defaultProxyAllowedHosts = "lh3.googleusercontent.com,lh4.googleuserconten
 
 // proxyMaxBodyBytes caps the external image body to 10 MB.
 const proxyMaxBodyBytes = 10 * 1024 * 1024
+
+// proxyMaxAge / proxySMaxAge are the CDN TTLs applied to proxy responses.
+// Used on both the cache-hit and cache-miss paths below so the same
+// resource never emits a different Cache-Control depending on LRU state.
+const (
+	proxyMaxAge  = 86400
+	proxySMaxAge = 2592000
+)
 
 // defaultProxyMaxWidth is the fallback max width applied when no w/h params
 // are provided. Override with PROXY_MAX_WIDTH env var. Sized to trigger a
@@ -48,7 +58,7 @@ func proxyAllowedHosts() map[string]struct{} {
 		raw = defaultProxyAllowedHosts
 	}
 	m := make(map[string]struct{})
-	for _, h := range strings.Split(raw, ",") {
+	for h := range strings.SplitSeq(raw, ",") {
 		if t := strings.TrimSpace(h); t != "" {
 			m[strings.ToLower(t)] = struct{}{}
 		}
@@ -102,17 +112,16 @@ func isPrivateHost(hostname string) bool {
 // If the segment has no dot, returns (segment, defaultFormat).
 // If the segment has an unknown extension, returns ("", "").
 func proxyExtFromSegment(segment, defaultFormat string) (id, format string) {
-	dot := strings.LastIndexByte(segment, '.')
-	if dot < 0 {
+	base, possibleExt, found := strings.CutLast(segment, ".")
+	if !found {
 		// No extension — use the default format.
 		return segment, defaultFormat
 	}
-	possibleExt := strings.ToLower(segment[dot+1:])
-	mapped, ok := AllowedImageExtensions[possibleExt]
+	mapped, ok := AllowedImageExtensions[strings.ToLower(possibleExt)]
 	if !ok {
 		return "", ""
 	}
-	return segment[:dot], mapped
+	return base, mapped
 }
 
 // proxyCacheKey generates a deterministic cache key for a proxy request.
@@ -128,7 +137,8 @@ func proxyCacheKey(rawURL, ext, w, h, q, fit string) string {
 // Route: GET /api/v1/proxy/*
 // The wildcard captures "{hash}.{ext}" (e.g. "a1b2c3d4e5f6.webp").
 func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// Un solo parseo del query para todo el handler (ver HandleDelivery).
+	query := r.URL.Query()
 
 	// ── 1. Extract and validate the path segment ──────────────────────
 	segment := chi.URLParam(r, "*")
@@ -149,7 +159,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── 2. Obtain and validate the target URL ─────────────────────────
-	rawURL := r.URL.Query().Get("url")
+	rawURL := query.Get("url")
 	if rawURL == "" {
 		h.sendError(w, http.StatusBadRequest, "MISSING_URL", "url query parameter is required")
 		return
@@ -188,7 +198,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// ── 5. Parse processing params from query string ──────────────────
 	params := &processor.ProcessingParams{}
 
-	if width := utils.GetQueryParam(r, "w", "width"); width != "" {
+	if width := utils.QueryParam(query, "w", "width"); width != "" {
 		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
 			if widthVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
@@ -201,7 +211,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if height := utils.GetQueryParam(r, "h", "height"); height != "" {
+	if height := utils.QueryParam(query, "h", "height"); height != "" {
 		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
 			if heightVal < MinDimensionPixels {
 				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
@@ -214,7 +224,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if quality := utils.GetQueryParam(r, "q", "quality"); quality != "" {
+	if quality := utils.QueryParam(query, "q", "quality"); quality != "" {
 		if q, err := strconv.Atoi(quality); err == nil && q > 0 && q <= 100 {
 			params.Quality = q
 		} else {
@@ -223,7 +233,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if fit := r.URL.Query().Get("fit"); fit != "" {
+	if fit := query.Get("fit"); fit != "" {
 		if fit == FitCover || fit == FitContain || fit == FitFill {
 			params.Fit = fit
 		} else {
@@ -233,7 +243,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Explicit ?f= overrides the path extension; extension is the default.
-	if format := utils.GetQueryParam(r, "f", "format"); format != "" {
+	if format := utils.QueryParam(query, "f", "format"); format != "" {
 		if h.imageProcessor.ValidateFormat(format) {
 			params.Format = format
 		} else {
@@ -244,8 +254,8 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		params.Format = extFormat
 	}
 
-	params.AutoOrient = r.URL.Query().Get("orient") != "0"
-	params.StripMetadata = r.URL.Query().Get("meta") != "1"
+	params.AutoOrient = query.Get("orient") != "0"
+	params.StripMetadata = query.Get("meta") != "1"
 
 	// ── 5b. Safety-net max width ──────────────────────────────────────
 	// When neither w nor h was supplied, cap width at PROXY_MAX_WIDTH so
@@ -292,89 +302,175 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 			ContentType: contentType,
 			Format:      params.Format,
 			Size:        int64(len(cachedData)),
-			CreatedAt:   time.Now(),
+			// Stable epoch, not time.Now(): cacheKey is already a content
+			// hash of (url, format, w, h, q, fit), so any timestamp here
+			// is arbitrary. A moving CreatedAt changes the ETag on every
+			// single response (base.go's etag includes CreatedAt.Unix())
+			// and defeats conditional GETs at the CDN edge. Mirrors the
+			// same fix already in HandleDelivery's cache-hit path.
+			CreatedAt: time.Unix(0, 0),
+			MaxAge:    proxyMaxAge,
+			SMaxAge:   proxySMaxAge,
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		h.serveImage(w, r, bytes.NewReader(cachedData), meta)
 		return
 	}
 
-	// ── 7. Fetch external image ───────────────────────────────────────
-	fetchCtx, fetchCancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer fetchCancel()
-	fetchReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to build proxy fetch request")
-		h.sendError(w, http.StatusBadRequest, "INVALID_URL", "Could not build request for url")
-		return
-	}
-	fetchReq.Header.Set("User-Agent", "falco-proxy/1.0")
-
-	resp, err := h.httpClient.Do(fetchReq)
-	if err != nil {
-		logger.Warn().Err(err).Str("url", rawURL).Msg("Proxy fetch failed")
-		h.sendError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image")
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		logger.Warn().Int("status", resp.StatusCode).Str("url", rawURL).Msg("Proxy upstream non-2xx")
-		h.sendError(w, http.StatusBadGateway, "UPSTREAM_ERROR", "Upstream returned a non-2xx status")
+	if fe, found := h.recallFailure(cacheKey); found {
+		h.sendError(w, fe.status, fe.code, fe.message)
 		return
 	}
 
-	// Validate Content-Type is image/*
-	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(strings.ToLower(ct), "image/") {
-		logger.Warn().Str("content_type", ct).Str("url", rawURL).Msg("Proxy upstream returned non-image content type")
-		h.sendError(w, http.StatusUnsupportedMediaType, "NOT_AN_IMAGE", "Upstream did not return an image")
-		return
-	}
-
-	limitedBody := io.LimitReader(resp.Body, proxyMaxBodyBytes+1)
-	bodyBytes, err := io.ReadAll(limitedBody)
-	if err != nil {
-		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read proxy response body")
-		h.sendError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to read external image")
-		return
-	}
-	if int64(len(bodyBytes)) > proxyMaxBodyBytes {
-		h.sendError(w, http.StatusRequestEntityTooLarge, "IMAGE_TOO_LARGE", "External image exceeds maximum allowed size")
-		return
-	}
-
-	// ── 8. Process image ──────────────────────────────────────────────
 	// Resolve format default now that we know params (same logic as delivery).
 	if params.Format == "" {
 		params.Format = defaultFormat
 	}
 
-	processedImage, err := h.imageProcessor.Process(ctx, bytes.NewReader(bodyBytes), params, cacheKey)
+	// ── 7-8. Fetch + process, deduplicated by cacheKey ─────────────────
+	// sf.Do collapses N concurrent requests for the same (url, format, w,
+	// h, q, fit) into a single fetch+decode+encode — measured as the
+	// dominant cost when a crawler requests the same cold image several
+	// times within milliseconds. Deliberately built on context.Background()
+	// rather than r.Context(): this work is shared across every caller
+	// waiting on this key, so one client disconnecting must not cancel the
+	// fetch/process that other, still-connected clients are waiting on.
+	v, err, _ := h.sf.Do(cacheKey, func() (any, error) {
+		// Re-check both caches: a sibling request may have just populated
+		// them while this goroutine was queued behind sf.Do's internal lock.
+		if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
+			return &proxyResult{
+				data: cachedData,
+				meta: &storage.ImageMetadata{
+					ID: cacheKey, ContentType: h.imageProcessor.GetContentType(params.Format),
+					Format: params.Format, Size: int64(len(cachedData)),
+					CreatedAt: time.Unix(0, 0), MaxAge: proxyMaxAge, SMaxAge: proxySMaxAge,
+				},
+			}, nil
+		}
+		if fe, found := h.recallFailure(cacheKey); found {
+			return nil, fe
+		}
+
+		m := metrics.Default()
+
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer fetchCancel()
+		fetchReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to build proxy fetch request")
+			return nil, &fetchError{http.StatusBadRequest, "INVALID_URL", "Could not build request for url"}
+		}
+		fetchReq.Header.Set("User-Agent", "falco-proxy/1.0")
+
+		// "fetch" is observed once, below, only on a successful read of the
+		// full body — mixing in fast failures (bad host, connection refused)
+		// would skew the histogram toward looking artificially fast and
+		// defeat its purpose: telling "the CDN is slow" apart from "there's
+		// a queue" (see the semaphore_wait metric in vips_processor.go).
+		fetchStart := time.Now()
+		resp, err := h.httpClient.Do(fetchReq)
+		if err != nil {
+			logger.Warn().Err(err).Str("url", rawURL).Msg("Proxy fetch failed")
+			fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image"}
+			h.rememberFailure(cacheKey, fe)
+			return nil, fe
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			logger.Warn().Int("status", resp.StatusCode).Str("url", rawURL).Msg("Proxy upstream non-2xx")
+			fe := &fetchError{http.StatusBadGateway, "UPSTREAM_ERROR", "Upstream returned a non-2xx status"}
+			h.rememberFailure(cacheKey, fe)
+			return nil, fe
+		}
+
+		// Validate Content-Type is image/*
+		ct := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(strings.ToLower(ct), "image/") {
+			logger.Warn().Str("content_type", ct).Str("url", rawURL).Msg("Proxy upstream returned non-image content type")
+			fe := &fetchError{http.StatusUnsupportedMediaType, "NOT_AN_IMAGE", "Upstream did not return an image"}
+			h.rememberFailure(cacheKey, fe)
+			return nil, fe
+		}
+
+		limitedBody := io.LimitReader(resp.Body, proxyMaxBodyBytes+1)
+		bodyBytes, err := io.ReadAll(limitedBody)
+		if err != nil {
+			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read proxy response body")
+			fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to read external image"}
+			h.rememberFailure(cacheKey, fe)
+			return nil, fe
+		}
+		m.ImageProcessingDuration.WithLabelValues("fetch").Observe(time.Since(fetchStart).Seconds())
+		if int64(len(bodyBytes)) > proxyMaxBodyBytes {
+			fe := &fetchError{http.StatusRequestEntityTooLarge, "IMAGE_TOO_LARGE", "External image exceeds maximum allowed size"}
+			h.rememberFailure(cacheKey, fe)
+			return nil, fe
+		}
+
+		// Processing failures are not negative-cached: unlike a dead link or
+		// a non-image response, they're not a stable property of the URL
+		// (could be a transient libvips/memory hiccup), so retrying on the
+		// next request is the right default. Duration (semaphore_wait +
+		// transform) is recorded inside Process() itself — vips_processor.go.
+		processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer processCancel()
+		processedImage, err := h.imageProcessor.Process(processCtx, bytes.NewReader(bodyBytes), params, cacheKey)
+		if err != nil {
+			m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "error").Inc()
+			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
+			return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+		}
+		m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "success").Inc()
+		defer processedImage.Data.Close()
+		data, err := io.ReadAll(processedImage.Data)
+		if err != nil {
+			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read processed proxy image")
+			return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
+		}
+
+		meta := &storage.ImageMetadata{
+			ID:          cacheKey,
+			Format:      processedImage.Metadata.Format,
+			Size:        processedImage.Metadata.Size,
+			Width:       processedImage.Metadata.Width,
+			Height:      processedImage.Metadata.Height,
+			ContentType: processedImage.Metadata.ContentType,
+			// Stable epoch, not processedImage.Metadata.CreatedAt (time.Now()):
+			// see the cache-hit branch above — the same cacheKey must always
+			// produce the same ETag, whether served from cold processing or a
+			// warm LRU hit.
+			CreatedAt: time.Unix(0, 0),
+			// Proxy responses get long CDN TTLs; no per-request override.
+			MaxAge:  proxyMaxAge,
+			SMaxAge: proxySMaxAge,
+		}
+		if meta.ContentType == "" {
+			meta.ContentType = h.imageProcessor.GetContentType(meta.Format)
+		}
+		return &proxyResult{data: data, meta: meta}, nil
+	})
+
 	if err != nil {
-		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
-		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
+		if fe, ok := errors.AsType[*fetchError](err); ok {
+			h.sendError(w, fe.status, fe.code, fe.message)
+		} else {
+			logger.Error().Err(err).Str("url", rawURL).Msg("Unexpected proxy singleflight error")
+			h.sendError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image")
+		}
 		return
 	}
-	defer processedImage.Data.Close()
 
-	storageMeta := &storage.ImageMetadata{
-		ID:          cacheKey,
-		Format:      processedImage.Metadata.Format,
-		Size:        processedImage.Metadata.Size,
-		Width:       processedImage.Metadata.Width,
-		Height:      processedImage.Metadata.Height,
-		ContentType: processedImage.Metadata.ContentType,
-		CreatedAt:   processedImage.Metadata.CreatedAt,
-		// Proxy responses get long CDN TTLs; no per-request override.
-		MaxAge:  86400,
-		SMaxAge: 2592000,
-	}
-	if storageMeta.ContentType == "" {
-		storageMeta.ContentType = h.imageProcessor.GetContentType(storageMeta.Format)
-	}
-
-	// ── 9. Set proxy-specific headers and serve ───────────────────────
+	result := v.(*proxyResult)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	h.serveImage(w, r, processedImage.Data, storageMeta)
+	h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
+}
+
+// proxyResult is the singleflight.Do payload shared across every request
+// waiting on the same cacheKey — must be safe to read concurrently, hence
+// plain bytes rather than the one-shot io.ReadCloser Process() returns.
+type proxyResult struct {
+	data []byte
+	meta *storage.ImageMetadata
 }

@@ -218,7 +218,7 @@ func TestRateLimiter_BlocksExcessiveRequests(t *testing.T) {
 	}))
 
 	// Make 2 allowed requests
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.RemoteAddr = "1.2.3.4:1234"
 		w := httptest.NewRecorder()

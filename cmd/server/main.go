@@ -59,8 +59,19 @@ func main() {
 		logger.Info().Msg("No TRUSTED_PROXIES set; only loopback is trusted to forward client IPs")
 	}
 
-	// Initialize VIPS
-	vips.Startup(nil)
+	// Initialize VIPS. vips.Startup(nil) looks harmless but isn't: vipsgen
+	// treats a nil config as "vector (SIMD) disabled" (vips_vector_set_enabled(0)),
+	// which measurably slows every encode. Pass an explicit Config instead —
+	// the zero values below match nil's other defaults (operation cache off,
+	// which is correct here since every proxied image is distinct), and
+	// VectorEnabled is the one field we deliberately flip on.
+	vips.Startup(&vips.Config{
+		ConcurrencyLevel: 1,    // 1 thread per pipeline; CONCURRENT_WORKERS governs real parallelism
+		MaxCacheFiles:    0,    // operation cache off (unchanged from nil default)
+		MaxCacheMem:      0,    // unchanged from nil default
+		MaxCacheSize:     0,    // unchanged from nil default
+		VectorEnabled:    true, // enable libvips' SIMD paths — was silently off under Startup(nil)
+	})
 	defer vips.Shutdown()
 
 	// Log sanitized configuration (no secrets)
@@ -86,6 +97,7 @@ func main() {
 		Int("default_quality", cfg.Processing.DefaultQuality).
 		Str("default_format", cfg.Processing.DefaultFormat).
 		Int("concurrent_workers", cfg.Processing.ConcurrentWorkers).
+		Int("webp_effort", cfg.Processing.WebPEffort).
 		Bool("api_key_required", cfg.Security.APIKeyRequired).
 		Strs("cors_origins", cfg.Security.CORS.Origins).
 		Int("rate_limit_rpm", cfg.Security.RateLimit.RequestsPerMinute).
@@ -112,12 +124,18 @@ func main() {
 		cfg.Processing.MaxDimensions.Height,
 	)
 
-	// Limit concurrent image processing to avoid CPU/memory exhaustion
-	if cfg.Processing.ConcurrentWorkers > 0 {
-		if vp, ok := imageProcessor.(*processor.VipsProcessor); ok {
+	// Limit concurrent image processing to avoid CPU/memory exhaustion,
+	// configure the WebP encoder's effort/speed tradeoff, and set the real
+	// per-entry cache TTL (see SetCacheTTL for why this used to be a no-op).
+	if vp, ok := imageProcessor.(*processor.VipsProcessor); ok {
+		if cfg.Processing.ConcurrentWorkers > 0 {
 			vp.SetMaxConcurrency(cfg.Processing.ConcurrentWorkers)
 			logger.Info().Int("max_concurrent", cfg.Processing.ConcurrentWorkers).Msg("Processing concurrency limit set")
 		}
+		vp.SetWebPEffort(cfg.Processing.WebPEffort)
+		logger.Info().Int("webp_effort", cfg.Processing.WebPEffort).Msg("WebP encode effort set")
+		vp.SetCacheTTL(cfg.GetCacheTTL())
+		logger.Info().Dur("cache_ttl", cfg.GetCacheTTL()).Msg("Cache entry TTL set")
 	}
 
 	// Initialize cache
@@ -135,9 +153,16 @@ func main() {
 	if appCache == nil {
 		cacheSize := cfg.GetCacheSizeBytes()
 		if cacheSize > 0 {
-			shardedCache := cache.NewShardedCache(cacheSize, cfg.GetCacheTTL())
+			// cfg.Cache.CleanupInterval (default 10m), NOT cfg.GetCacheTTL():
+			// this second argument is NewShardedCache's background sweep
+			// frequency, an entirely different knob from the per-entry TTL
+			// (which VipsProcessor.SetCacheTTL now sets, above). The two
+			// were previously conflated here — raising CACHE_TTL_HOURS did
+			// nothing because it only ever reached this cleanup-interval
+			// parameter, never the actual expiry used when writing an entry.
+			shardedCache := cache.NewShardedCache(cacheSize, cfg.Cache.CleanupInterval)
 			appCache = shardedCache
-			logger.Info().Int("cache_size_mb", cfg.Cache.SizeMB).Msg("Sharded LRU cache initialized")
+			logger.Info().Int("cache_size_mb", cfg.Cache.SizeMB).Dur("cleanup_interval", cfg.Cache.CleanupInterval).Msg("Sharded LRU cache initialized")
 		}
 	}
 
@@ -199,11 +224,7 @@ func main() {
 
 	// Phase 2: Clean up resources
 	logger.Info().Msg("Phase 2: Cleaning up resources")
-	cleanupResources(ctx, storageReg.Default(), appCache)
-
-	// Phase 3: Final cleanup
-	logger.Info().Msg("Phase 3: Final cleanup")
-	time.Sleep(100 * time.Millisecond)
+	cleanupResources(shutdownCtx, storageReg, appCache)
 
 	logger.Info().Msg("Server shutdown complete")
 }
@@ -236,8 +257,12 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 	return shutdown
 }
 
-// cleanupResources performs cleanup of application resources
-func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend, appCache processor.Cache) {
+// cleanupResources performs cleanup of application resources.
+//
+// Espera de verdad a las réplicas asíncronas en vuelo (Registry.CloseAll) en
+// lugar del `time.Sleep(100ms)` que había antes: un sleep fijo no sabe si el
+// trabajo terminó, sólo disimula que sí.
+func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCache processor.Cache) {
 	if appCache != nil {
 		logger.Info().Msg("Stopping cache...")
 		if sharded, ok := appCache.(*cache.ShardedCache); ok {
@@ -252,8 +277,16 @@ func cleanupResources(ctx context.Context, storageBackend storage.StorageBackend
 		logger.Info().Msg("Cache cleanup completed")
 	}
 
-	if storageBackend != nil {
-		logger.Info().Msg("Storage connections released")
+	if storageReg != nil {
+		logger.Info().Msg("Waiting for in-flight storage replication...")
+		if failures := storageReg.CloseAll(ctx); len(failures) > 0 {
+			for name, err := range failures {
+				logger.Error().Err(err).Str("bucket", name).
+					Msg("Storage backend did not finish cleanly — replicas may be stale")
+			}
+		} else {
+			logger.Info().Msg("Storage connections released")
+		}
 	}
 }
 

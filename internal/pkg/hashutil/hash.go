@@ -22,10 +22,21 @@ func GenerateSHA256FromReader(reader io.Reader) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// GenerateImageID generates a unique image ID from hash
+// imageIDLength es cuántos caracteres del hash forman el ID de una imagen.
+const imageIDLength = 16
+
+// GenerateImageID generates a unique image ID from hash.
 // Format: <first16chars_of_hash>
+//
+// Un hash más corto que imageIDLength se devuelve entero en lugar de paniquear.
+// Hoy el único llamador es GenerateSHA256 (64 caracteres siempre), pero la
+// función está exportada y `hash[:16]` a secas paniquea con cualquier cadena
+// corta que le pase alguien de afuera.
 func GenerateImageID(hash string) string {
-	return hash[:16]
+	if len(hash) < imageIDLength {
+		return hash
+	}
+	return hash[:imageIDLength]
 }
 
 // GenerateImageIDFromData generates an image ID from data

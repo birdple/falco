@@ -6,7 +6,7 @@ Servicio Go de procesamiento de imágenes sobre **libvips**: resize, crop, water
 
 ## Stack
 
-- Go 1.26+, Chi router, govips (libvips ≥ 8.x)
+- Go 1.27+, Chi router, govips (libvips ≥ 8.x)
 - zerolog (JSON estructurado)
 - Storage backend: `github.com/ivangsm/jay/proto/client` (protocolo TCP nativo)
 - Cache: LRU in-memory (no Redis por default)
@@ -49,6 +49,9 @@ Todas las variables marcadas **obligatorias** deben estar en `.env` — sin defa
 | `TRUSTED_PROXIES` | no (default vacío → solo loopback `127.0.0.0/8`, `::1/128`) | Lista separada por comas de CIDRs/IPs de proxies confiables. Solo desde estas direcciones se respetan `X-Forwarded-For` / `X-Real-IP`; fail-closed si no se configura. Detrás de Nginx/Traefik/ELB hay que listar la subred del proxy o el rate-limit per-IP no cuenta al cliente real. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no (default vacío → OTel apagado) | Endpoint OTLP gRPC del collector (ej. `otel-collector:4317`). Si está vacío, telemetry queda apagado en silencio — útil para dev local sin collector. Si está seteado, se exportan traces y metrics. |
 | `OTEL_DEPLOYMENT_ENV` | no (default `development`) | Valor del recurso `deployment.environment` en spans/metrics (`development` / `staging` / `production`). |
+| `ENABLE_PPROF` | no (default `false`) | Monta `/debug/pprof/*` (índice, heap, goroutine, `goroutineleak`, profile, trace). Va detrás de la misma API key que `/metrics` cuando `API_KEY_REQUIRED=true`. Hasta la migración a Go 1.27 este flag existía pero **nadie lo leía**. |
+| `MAX_HEADER_BYTES` | no (default 65536) | Tope de bytes de cabecera por request. Más ajustado que el 1 MiB de la stdlib. |
+| `MAX_HEADER_VALUE_COUNT` | no (default 100) | Tope de cantidad de valores de cabecera (`http.Server.MaxHeaderValueCount`, Go 1.27). Miles de cabeceras diminutas pesan poco en bytes pero caras en parseo. |
 
 ## Estructura (lo no obvio)
 
@@ -87,6 +90,33 @@ cliente → GET /api/v1/images/{id}?w=400 → LRU cache?
 | DELETE | `/api/v1/images/{id}` | Borrar imagen |
 | GET | `/health` | Health check |
 | GET | `/metrics` | Prometheus |
+
+## JSON: `encoding/json/v2`
+
+Todo el código de producción usa `encoding/json/v2` (Go 1.27); `encoding/json`
+v1 sólo sobrevive en tests. Las opciones viven en
+[`internal/jsonx`](./internal/jsonx/jsonx.go) y hay tres:
+
+| Perfil | Dónde | Por qué |
+|---|---|---|
+| `jsonx.Wire` | Metadata que se persiste (`storage/metadata.go`, `storage/filesystem.go`) y la cache negativa | Emite **exactamente** los mismos bytes que emitía v1. Cambiarlos es un cambio de formato de datos, no de estilo. |
+| `jsonx.Lenient` | Lectura de metadata vieja | Acepta UTF-8 roto y llaves duplicadas para no volver ilegible un archivo escrito por una versión anterior. |
+| `jsonx.Strict` | Bodies de **nuestra** API (`/upload`, `/update`, `/delete`, `/sign`, login del panel) | Rechaza campos desconocidos: un `{"qualty": 90}` mal escrito devuelve 400 en vez de ignorarse en silencio. |
+
+Dos reglas que se rompen fácil:
+
+- **`omitempty` en números y bools no significa lo mismo en v2.** v1 omitía el
+  cero; v2 sólo omite lo que serializa a `null`, `""`, `{}` o `[]`. Por eso los
+  campos numéricos y booleanos llevan **`omitzero`**. Los slices y mapas se
+  quedan en `omitempty`, que ahí sí coincide.
+- **El test diferencial de `internal/jsonx` es el que custodia esto.** Compara
+  v1 contra v2+`Wire` byte por byte sobre todos los tipos del servicio. Si
+  falla, se ajusta el tag, no el test. `ImageMetadata` además tiene un golden
+  de bytes literales en `internal/storage/metadata_test.go`.
+
+La respuesta HTTP usa los **defaults de v2**, que no escapan `&`, `<` ni `>`.
+Es un cambio de bytes respecto de v1 sin cambio de semántica: todos los
+consumidores pasan por un parser de JSON.
 
 ## Gotchas
 

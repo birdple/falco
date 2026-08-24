@@ -6,7 +6,7 @@ type UpdateRequest struct {
 	Bucket  string `json:"bucket,omitempty"`  // Bucket where to store/replace the image
 	Storage string `json:"storage,omitempty"` // Named storage backend (multi mode)
 	Key     string `json:"key,omitempty"`     // Storage key for the image
-	Quality int    `json:"quality,omitempty"` // Processing quality (1-100)
+	Quality int    `json:"quality,omitzero"`  // Processing quality (1-100)
 	Format  string `json:"format,omitempty"`  // Output format
 }
 

@@ -4,7 +4,8 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/birdple/falco/internal/jsonx"
 )
 
 const numStripes = 256
@@ -316,7 +319,9 @@ func (fs *FilesystemStorage) writeMetadata(path string, metadata *ImageMetadata)
 		return fmt.Errorf("failed to create metadata directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(metadata, "", "  ")
+	// Wire: el .meta.json en disco es formato de datos persistido, tiene que
+	// seguir saliendo byte por byte como lo escribía encoding/json v1.
+	data, err := jsonv2.Marshal(metadata, jsonx.Wire, jsontext.WithIndent("  "))
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
@@ -338,8 +343,10 @@ func (fs *FilesystemStorage) readMetadata(path string) (*ImageMetadata, error) {
 		return nil, fmt.Errorf("failed to read metadata file: %w", err)
 	}
 
+	// Lenient al leer: un .meta.json escrito por una versión vieja puede traer
+	// UTF-8 roto en el nombre original y no queremos volverlo ilegible.
 	var metadata ImageMetadata
-	if err := json.Unmarshal(data, &metadata); err != nil {
+	if err := jsonv2.Unmarshal(data, &metadata, jsonx.Lenient); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 

@@ -1,6 +1,6 @@
 module github.com/birdple/falco
 
-go 1.26.1
+go 1.27.0
 
 require (
 	github.com/a-h/templ v0.3.1020
@@ -26,6 +26,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
+	golang.org/x/sync v0.22.0
 )
 
 require (

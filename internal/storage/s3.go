@@ -49,17 +49,18 @@ func NewS3Storage(cfg *S3Config) (*S3Storage, error) {
 		)
 	}
 
-	// Override endpoint if provided (for MinIO, LocalStack, etc.)
-	if cfg.Endpoint != "" {
-		awsCfg.EndpointResolverWithOptions = aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			return aws.Endpoint{
-				URL:           cfg.Endpoint,
-				SigningRegion: region,
-			}, nil
-		})
-	}
-
-	client := s3.NewFromConfig(awsCfg)
+	// Override endpoint if provided (for MinIO, LocalStack, etc.).
+	//
+	// Vía BaseEndpoint y no EndpointResolverWithOptions: ese resolver está
+	// deprecado en aws-sdk-go-v2. r2.go ya usaba la forma nueva.
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
+			// Los endpoints tipo MinIO/LocalStack no resuelven buckets como
+			// subdominio, así que hay que hablarles en path-style.
+			o.UsePathStyle = true
+		}
+	})
 
 	return &S3Storage{
 		client:          client,

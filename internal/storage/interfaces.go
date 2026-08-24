@@ -16,8 +16,8 @@ type ImageMetadata struct {
 	Width        int       `json:"width"`
 	Height       int       `json:"height"`
 	ContentType  string    `json:"content_type"`
-	MaxAge       int       `json:"maxage,omitempty"`
-	SMaxAge      int       `json:"smaxage,omitempty"`
+	MaxAge       int       `json:"maxage,omitzero"`
+	SMaxAge      int       `json:"smaxage,omitzero"`
 	CreatedAt    time.Time `json:"created_at"`
 	ETag         string    `json:"etag,omitempty"`
 	// OwnerID is the opaque identifier (supplied by the caller via X-Owner-Id
@@ -87,7 +87,7 @@ type StorageBackend interface {
 type StorageStats struct {
 	TotalImages int64 `json:"total_images"`
 	TotalSize   int64 `json:"total_size_bytes"`
-	FreeSpace   int64 `json:"free_space_bytes,omitempty"`
+	FreeSpace   int64 `json:"free_space_bytes,omitzero"`
 }
 
 // StorageType represents the type of storage backend

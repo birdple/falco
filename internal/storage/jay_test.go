@@ -145,13 +145,11 @@ func TestJayStorage_Retrieve_Success(t *testing.T) {
 	fc := &fakeJayClient{
 		getFn: func(bucket, key string) (*jayclient.GetResult, error) {
 			return &jayclient.GetResult{
-				ObjectInfo: jayclient.ObjectInfo{
-					ContentType: "image/png", Size: 123, ETag: "etag-r",
-					Metadata: metaToMap(&ImageMetadata{
-						ID: "r-1", Format: "png", Width: 10, Height: 20,
-						ContentType: "image/png", CreatedAt: time.Now().UTC(),
-					}),
-				},
+				ContentType: "image/png", Size: 123, ETag: "etag-r",
+				Metadata: metaToMap(&ImageMetadata{
+					ID: "r-1", Format: "png", Width: 10, Height: 20,
+					ContentType: "image/png", CreatedAt: time.Now().UTC(),
+				}),
 				Body: io.NopCloser(bytes.NewReader([]byte("data"))),
 			}, nil
 		},
@@ -262,7 +260,11 @@ func TestJayStorage_Health(t *testing.T) {
 }
 
 func TestJayStorage_GetStats_HTTP(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// NewTestServer (Go 1.27): limpieza automática y el test falla si el
+	// handler paniquea. Start() lo deja en loopback porque GetStats arma su
+	// propio http.Client contra adminAddr y no podría hablar con la red
+	// in-memory.
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/_stats/falco-images" {
 			http.Error(w, "wrong path: "+r.URL.Path, 404)
 			return
@@ -276,7 +278,7 @@ func TestJayStorage_GetStats_HTTP(t *testing.T) {
 			"bucket": "falco-images", "object_count": 7, "total_size_bytes": 1024,
 		})
 	}))
-	defer srv.Close()
+	srv.Start()
 
 	js := &JayStorage{
 		bucket:    "falco-images",

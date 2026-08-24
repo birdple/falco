@@ -1,20 +1,35 @@
 package handlers
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/types"
+	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+)
+
+// negativeCacheSize / negativeCacheCleanup size the small side-cache used to
+// remember recent upstream fetch failures (see rememberProxyFailure). Entries
+// are a few dozen bytes each, so this cap is generous headroom, not a real
+// memory concern.
+const (
+	negativeCacheSize     = 2 * 1024 * 1024
+	negativeCacheCleanup  = 5 * time.Minute
+	proxyNegativeCacheTTL = 3 * time.Minute
 )
 
 // Handler contains dependencies for all API handlers
@@ -25,6 +40,19 @@ type Handler struct {
 	imageProcessor  processor.ImageProcessor
 	startTime       time.Time
 	httpClient      *http.Client
+
+	// sf deduplicates concurrent fetch-and-process work that shares the same
+	// cache key (proxy external-CDN fetches and delivery storage retrievals).
+	// Without this, N concurrent requests for the same cold image each pay
+	// their own network fetch, decode, and encode — measured as the
+	// dominant cost of a crawler burst hitting an uncached image.
+	sf singleflight.Group
+
+	// negativeCache remembers recent upstream fetch failures (dead links,
+	// non-2xx, non-image content-type) so a broken URL isn't re-fetched on
+	// every single request. Separate from imageProcessor's image cache:
+	// different eviction/size semantics, and entries here are tiny.
+	negativeCache *cache.LRUCache
 }
 
 // NewHandler creates a new handler instance
@@ -40,6 +68,7 @@ func NewHandler(
 		imageProcessor: imageProc,
 		startTime:      startTime,
 		httpClient:     httputil.NewSafeHTTPClient(30 * time.Second),
+		negativeCache:  cache.NewLRUCache(negativeCacheSize, negativeCacheCleanup),
 	}
 }
 
@@ -77,9 +106,111 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 		Str("error_message", message).
 		Msg("API error response")
 
+	writeJSON(w, statusCode, response)
+}
+
+// writeJSON serializa v y lo manda con el status pedido.
+//
+// Serializa ANTES de tocar el ResponseWriter a propósito: si el marshal falla
+// todavía se puede responder un 500 honesto, mientras que un encoder en
+// streaming ya habría mandado un 200 con el body cortado a la mitad.
+//
+// Usa los defaults de encoding/json/v2 (sin escapar &, < ni >). Es un cambio de
+// bytes respecto de v1, pero no de semántica: todo consumidor pasa por un
+// parser de JSON y ninguno de ellos mete la respuesta cruda en HTML.
+func writeJSON(w http.ResponseWriter, statusCode int, v any) {
+	data, err := jsonv2.Marshal(v)
+	if err != nil {
+		logger.Error().Err(err).Int("status_code", statusCode).Msg("Failed to marshal JSON response")
+		http.Error(w, `{"success":false,"error":{"code":"ENCODING_ERROR","message":"Failed to encode response"}}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
+	if _, err := w.Write(data); err != nil {
+		logger.Error().Err(err).Msg("Failed to write JSON response body")
+	}
+}
+
+// fetchError carries enough context to reproduce the right HTTP response
+// after a singleflight.Do call returns. When several requests block on the
+// same in-flight key, only one goroutine actually runs the closure and logs
+// the failure; every other caller gets this error back and must still send
+// its own response to its own ResponseWriter — sendError is deliberately
+// NOT called from inside the closure.
+type fetchError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *fetchError) Error() string { return e.message }
+
+// negativeCacheEntry is the JSON payload stored in Handler.negativeCache.
+type negativeCacheEntry struct {
+	Status  int    `json:"status"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// rememberFailure records a fetchError under key for proxyNegativeCacheTTL.
+// Marshal failure is intentionally swallowed — negative caching is a
+// best-effort optimization, never a correctness requirement.
+func (h *Handler) rememberFailure(key string, fe *fetchError) {
+	data, err := jsonv2.Marshal(negativeCacheEntry{Status: fe.status, Code: fe.code, Message: fe.message}, jsonx.Wire)
+	if err != nil {
+		return
+	}
+	h.negativeCache.Set("neg:"+key, data, proxyNegativeCacheTTL)
+}
+
+// recallFailure returns a previously remembered fetchError for key, if any
+// entry is still within its TTL.
+func (h *Handler) recallFailure(key string) (*fetchError, bool) {
+	data, found := h.negativeCache.Get("neg:" + key)
+	if !found {
+		return nil, false
+	}
+	var entry negativeCacheEntry
+	if err := jsonv2.Unmarshal(data, &entry, jsonx.Wire); err != nil {
+		return nil, false
+	}
+	return &fetchError{status: entry.Status, code: entry.Code, message: entry.Message}, true
+}
+
+// dropOriginVary removes the Origin token from the Vary response header,
+// leaving every other token untouched.
+//
+// The CORS middleware adds `Vary: Origin` to every response it handles, but
+// the delivery and proxy paths overwrite Access-Control-Allow-Origin with a
+// literal `*` regardless of who asked (see serveImage). The bytes and the
+// headers are therefore identical for every Origin, so advertising the
+// variance only shards downstream caches over a variant that never differs.
+//
+// Only tokens already present when the handler runs are rewritten. The
+// compression middleware appends `Vary: Accept-Encoding` later, from
+// WriteHeader, so its token is added after this runs and survives.
+func dropOriginVary(w http.ResponseWriter) {
+	values := w.Header().Values("Vary")
+	if len(values) == 0 {
+		return
+	}
+
+	kept := make([]string, 0, len(values))
+	for _, value := range values {
+		for token := range strings.SplitSeq(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" || strings.EqualFold(token, "Origin") {
+				continue
+			}
+			kept = append(kept, token)
+		}
+	}
+
+	w.Header().Del("Vary")
+	for _, token := range kept {
+		w.Header().Add("Vary", token)
+	}
 }
 
 // serveImage serves an image with proper headers.
@@ -92,6 +223,9 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	// sharing). Emitting a wildcard ACAO lets cross-origin canvas/snapdom reads
 	// work without per-origin CORS allowlisting, matching the proxy path.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// ...which makes the CORS middleware's `Vary: Origin` a lie: this
+	// response is byte-identical for every Origin.
+	dropOriginVary(w)
 
 	// Smart cache control based on metadata if available, otherwise defaults from config
 	maxAge := h.config.Cache.DefaultMaxAge

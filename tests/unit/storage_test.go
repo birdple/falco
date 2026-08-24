@@ -143,7 +143,7 @@ func TestImageMetadata_MarshalJSON(t *testing.T) {
 	assert.NotNil(t, data)
 
 	// Verify JSON structure
-	var result map[string]interface{}
+	var result map[string]any
 	err = json.Unmarshal(data, &result)
 	assert.NoError(t, err)
 

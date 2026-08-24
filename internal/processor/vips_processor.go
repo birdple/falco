@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/cshum/vipsgen/vips"
@@ -18,12 +19,22 @@ import (
 // bufferPool is a pool of byte buffers to reduce allocations during image encoding.
 // Pre-allocated at 2MB to accommodate typical processed image sizes (up to 10MB max input).
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// Pre-allocate 2MB buffer - a good balance for images up to 10MB
 		// Smaller than max to avoid over-allocation, larger than typical output
 		return bytes.NewBuffer(make([]byte, 0, 2*1024*1024))
 	},
 }
+
+// defaultWebPEffort is libwebp's encode effort (0-6, higher = slower/smaller)
+// used when SetWebPEffort is never called. 4 trades ~5% larger output for a
+// >2x faster encode versus libwebp's own max (6) — see SetWebPEffort.
+const defaultWebPEffort = 4
+
+// defaultCacheTTL is used when SetCacheTTL is never called or is called with
+// a non-positive value. See SetCacheTTL for why this exists as a real,
+// config-driven setting instead of the hardcoded 24h it replaced.
+const defaultCacheTTL = 24 * time.Hour
 
 // VipsProcessor implements ImageProcessor using libvips
 type VipsProcessor struct {
@@ -34,6 +45,8 @@ type VipsProcessor struct {
 	maxDimensions    struct{ width, height int }
 	cache            Cache
 	sem              chan struct{} // semaphore limiting concurrent processing
+	webpEffort       int           // libwebp encode effort (0-6); see SetWebPEffort
+	cacheTTL         time.Duration // per-entry LRU TTL; see SetCacheTTL
 }
 
 // NewVipsProcessor creates a new vips-based image processor
@@ -44,6 +57,8 @@ func NewVipsProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageForm
 		defaultFormat:    defaultFormat,
 		supportedFormats: []ImageFormat{FormatJPEG, FormatPNG, FormatWebP, FormatHEIC, FormatAVIF},
 		maxDimensions:    struct{ width, height int }{width: maxWidth, height: maxHeight},
+		webpEffort:       defaultWebPEffort,
+		cacheTTL:         defaultCacheTTL,
 	}
 }
 
@@ -52,6 +67,30 @@ func NewVipsProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageForm
 func (p *VipsProcessor) SetMaxConcurrency(n int) {
 	if n > 0 {
 		p.sem = make(chan struct{}, n)
+	}
+}
+
+// SetWebPEffort sets libwebp's encode effort (0-6, higher = slower/smaller
+// output). Measured locally on real BGG box art with libvips 8.18.5: effort
+// 6 (libvips' own default) takes ~2.3x longer than effort 4 for a ~5% size
+// gain. A value <0 is ignored (keeps defaultWebPEffort); 0 leaves the field
+// unset only if explicitly passed as such by a future caller — in practice
+// config always supplies a positive value.
+func (p *VipsProcessor) SetWebPEffort(effort int) {
+	if effort >= 0 {
+		p.webpEffort = effort
+	}
+}
+
+// SetCacheTTL sets how long a processed entry stays in the LRU cache before
+// expiring, read from CACHE_TTL_HOURS. Previously this value was loaded from
+// config but only ever fed to NewShardedCache's cleanupInterval parameter —
+// the goroutine sweep frequency, not a per-entry expiry — while the actual
+// TTL used in Process() was hardcoded at 24h regardless of config. So raising
+// CACHE_TTL_HOURS did nothing; this setter is what makes it real.
+func (p *VipsProcessor) SetCacheTTL(ttl time.Duration) {
+	if ttl > 0 {
+		p.cacheTTL = ttl
 	}
 }
 
@@ -69,15 +108,25 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	// Capture input size for metrics before any potential release
 	inputSize := len(inputData)
 
-	// Acquire processing slot (limits concurrent CPU-intensive operations)
+	m := metrics.Default()
+
+	// Acquire processing slot (limits concurrent CPU-intensive operations).
+	// Measured on its own label ("semaphore_wait") separately from the work
+	// itself below ("transform"): under a burst of cold images, most of the
+	// latency a client observes is queueing here, not libvips work — and
+	// without this split the two are indistinguishable from the outside.
 	if p.sem != nil {
+		waitStart := time.Now()
 		select {
 		case p.sem <- struct{}{}:
+			m.ImageProcessingDuration.WithLabelValues("semaphore_wait").Observe(time.Since(waitStart).Seconds())
 			defer func() { <-p.sem }()
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
+
+	processStart := time.Now()
 
 	// Load image from buffer
 	source := vips.NewSource(io.NopCloser(bytes.NewReader(inputData)))
@@ -110,14 +159,17 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	}
 	outputFormat = actualFormat
 
+	// "transform" spans decode + apply-transformations + encode only — the
+	// semaphore wait above is excluded and recorded separately.
+	m.ImageProcessingDuration.WithLabelValues("transform").Observe(time.Since(processStart).Seconds())
+
 	// Track processing size metrics
-	m := metrics.Default()
 	m.ImageProcessingSize.WithLabelValues("input").Observe(float64(inputSize))
 	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(len(processedData)))
 
 	// Cache result under the caller-provided key (skip if empty)
 	if p.cache != nil && cacheKey != "" {
-		p.cache.Set(cacheKey, processedData, 24*time.Hour)
+		p.cache.Set(cacheKey, processedData, p.cacheTTL)
 		m.CacheSize.Set(float64(p.cache.Size()))
 		m.CacheItemCount.Set(float64(p.cache.Len()))
 	}
@@ -218,6 +270,15 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		requestedWidth := params.Width
 		requestedHeight := params.Height
 
+		// explicitBox is true only when the caller gave both dimensions —
+		// a genuine "crop to this exact box" request (e.g. a 128x128
+		// avatar slot), where upscaling a smaller source to fill the box
+		// is the point. When only one dimension is given, the other is
+		// derived below to preserve aspect ratio — that's a resize CAP,
+		// not a box, and must never upscale past the source's native
+		// resolution just because it fits under maxDimensions.
+		explicitBox := requestedWidth > 0 && requestedHeight > 0
+
 		// Calculate missing dimension maintaining aspect ratio
 		if requestedWidth == 0 && requestedHeight > 0 {
 			requestedWidth = (originalWidth * requestedHeight) / originalHeight
@@ -230,12 +291,19 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		maxAllowedWidth := originalWidth
 		maxAllowedHeight := originalHeight
 
-		// Allow upscaling only up to maxDimensions if specified
-		if p.maxDimensions.width > 0 && p.maxDimensions.width > originalWidth {
-			maxAllowedWidth = p.maxDimensions.width
-		}
-		if p.maxDimensions.height > 0 && p.maxDimensions.height > originalHeight {
-			maxAllowedHeight = p.maxDimensions.height
+		// Allow upscaling up to maxDimensions ONLY for an explicit exact-box
+		// request. A width-only (or height-only) cap must never exceed the
+		// source's native resolution: there's no box to fill, so scaling up
+		// just produces a bigger, blurrier file for no visual gain (measured:
+		// a 150x150 source capped at w=600 with no explicit height came back
+		// 600x600 and 48% heavier before this fix).
+		if explicitBox {
+			if p.maxDimensions.width > 0 && p.maxDimensions.width > originalWidth {
+				maxAllowedWidth = p.maxDimensions.width
+			}
+			if p.maxDimensions.height > 0 && p.maxDimensions.height > originalHeight {
+				maxAllowedHeight = p.maxDimensions.height
+			}
 		}
 
 		// Clamp requested dimensions to allowed maximum
@@ -373,6 +441,14 @@ func (p *VipsProcessor) resizeImage(img *vips.Image, params *ProcessingParams) e
 	w := params.Width
 	h := params.Height
 
+	// explicitBox is true only when the caller gave both dimensions — a
+	// genuine "crop to this exact box" request (e.g. a 128x128 avatar slot),
+	// where filling the box (and upscaling a smaller source if needed) is
+	// the point. When only one dimension is given, the other is derived
+	// below to preserve aspect ratio — that's a resize CAP, not a box, and
+	// must never upscale. See coverSize.
+	explicitBox := w > 0 && h > 0
+
 	// Calculate missing dimension
 	if w == 0 && h > 0 {
 		w = (img.Width() * h) / img.Height()
@@ -385,7 +461,7 @@ func (p *VipsProcessor) resizeImage(img *vips.Image, params *ProcessingParams) e
 		return img.ThumbnailImage(w, &vips.ThumbnailImageOptions{
 			Height: h,
 			Crop:   vips.InterestingCentre,
-			Size:   vips.SizeBoth,
+			Size:   coverSize(explicitBox),
 		})
 	case "contain":
 		return img.ThumbnailImage(w, &vips.ThumbnailImageOptions{
@@ -400,9 +476,22 @@ func (p *VipsProcessor) resizeImage(img *vips.Image, params *ProcessingParams) e
 		return img.ThumbnailImage(w, &vips.ThumbnailImageOptions{
 			Height: h,
 			Crop:   vips.InterestingCentre,
-			Size:   vips.SizeBoth,
+			Size:   coverSize(explicitBox),
 		})
 	}
+}
+
+// coverSize picks SizeBoth for an explicit w+h box (upscaling a smaller
+// source to fill it is the caller's intent) and SizeDown otherwise — when
+// only one dimension was requested and the other derived proportionally,
+// there is no box to fill, only a cap, so upscaling would just waste CPU
+// and bytes for no visual gain (measured: a 150x150 source requested at
+// w=600 with no explicit height came back 600x600 and 48% heavier).
+func coverSize(explicitBox bool) vips.Size {
+	if explicitBox {
+		return vips.SizeBoth
+	}
+	return vips.SizeDown
 }
 
 // encodeImage encodes the image to the specified format.
@@ -445,13 +534,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		// Map quality (0-100) to compression effort (9=best compression, 0=fastest)
 		compression := 6 // Default balanced
 		if quality < 100 {
-			compression = 9 - (quality * 9 / 100)
-			if compression < 0 {
-				compression = 0
-			}
-			if compression > 9 {
-				compression = 9
-			}
+			compression = min(max(9-(quality*9/100), 0), 9)
 		}
 		err = img.PngsaveTarget(target, &vips.PngsaveTargetOptions{
 			Compression: compression,
@@ -460,15 +543,18 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			// Note: Using default filter (adaptive) which works well for most cases
 		})
 	case FormatWebP:
-		// WebP with advanced compression options
+		// WebP with advanced compression options.
+		// Effort is configurable (see SetWebPEffort) instead of hardcoded at
+		// libwebp's max — measured ~2.3x slower than effort 4 for ~5% smaller
+		// output. MinSize is intentionally omitted: measured zero byte
+		// savings on real BGG box art, just extra CPU.
 		err = img.WebpsaveTarget(target, &vips.WebpsaveTargetOptions{
 			Q:              quality,
 			Lossless:       quality == 100,                 // Lossless if quality is 100
 			NearLossless:   quality >= 95 && quality < 100, // Near-lossless for very high quality
-			Effort:         6,                              // Compression effort (0-6, higher=better compression)
-			SmartSubsample: quality >= 80,                  // Better chroma subsampling for high quality
-			MinSize:        true,                           // Enable extra optimizations for smaller file size
-			Mixed:          quality >= 80,                  // Allow mixed lossy/lossless encoding
+			Effort:         p.webpEffort,
+			SmartSubsample: quality >= 80, // Better chroma subsampling for high quality
+			Mixed:          quality >= 80, // Allow mixed lossy/lossless encoding
 		})
 	case FormatHEIC:
 		// HEIC with optimization
@@ -559,12 +645,16 @@ func (p *VipsProcessor) SetCache(cache Cache) {
 	p.cache = cache
 }
 
-// GetCacheStats returns cache statistics
-func (p *VipsProcessor) GetCacheStats() interface{} {
+// GetCacheStats returns cache statistics.
+//
+// Sin cache configurada devuelve Backend "none" con los campos medibles en
+// statUnmeasured: un CacheStats en cero se leería como "una cache vacía", que
+// no es lo mismo que "no hay cache".
+func (p *VipsProcessor) GetCacheStats() cache.CacheStats {
 	if p.cache != nil {
 		return p.cache.Stats()
 	}
-	return nil
+	return cache.NoCacheStats()
 }
 
 // detectFormat detects the image format from data

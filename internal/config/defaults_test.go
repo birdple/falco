@@ -15,6 +15,8 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	// Server defaults
 	assert.Equal(t, 8080, v.GetInt("server.port"))
 	assert.Equal(t, "0.0.0.0", v.GetString("server.host"))
+	assert.Equal(t, 64*1024, v.GetInt("server.max_header_bytes"))
+	assert.Equal(t, 100, v.GetInt("server.max_header_value_count"))
 
 	// Storage defaults — intentionally empty; buckets must be configured explicitly
 	assert.Equal(t, "", v.GetString("storage.default"))
@@ -25,7 +27,9 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	assert.Equal(t, 24, v.GetInt("cache.ttl_hours"))
 
 	// Processing defaults
-	assert.Equal(t, 5, v.GetInt("processing.max_file_size_mb"))
+	// 10, no 5: el default compilado tiene que coincidir con lo que fijan
+	// `config.yaml`, los compose y los límites de birdple-api y la app.
+	assert.Equal(t, 10, v.GetInt("processing.max_file_size_mb"))
 	assert.Equal(t, 85, v.GetInt("processing.default_quality"))
 	assert.Equal(t, "webp", v.GetString("processing.default_format"))
 	assert.Equal(t, 4, v.GetInt("processing.concurrent_workers"))

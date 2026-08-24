@@ -3,7 +3,7 @@ package ui
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"sort"
@@ -11,6 +11,7 @@ import (
 
 	views "github.com/birdple/falco/internal/api/views/templ"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -162,14 +163,14 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Key string `json:"key"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid request"})
+	if err := jsonv2.UnmarshalRead(r.Body, &body, jsonx.Strict); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Invalid request"})
 		return
 	}
 
 	scope := h.resolveKey(body.Key)
 	if scope == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"ok": false, "error": "Invalid API key"})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid API key"})
 		return
 	}
 
@@ -184,7 +185,7 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   86400 * 7, // 7 days
 	})
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"name":  scope.KeyName,
 		"admin": scope.IsAdmin,
@@ -203,11 +204,13 @@ func (h *Handler) LogoutPost(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // Dashboard renders the main dashboard page.
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
 	key := getKeyFromRequest(r)
 	scope := h.resolveKey(key)
 
@@ -227,7 +230,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	bucketItems := h.buildBucketItems(ctx, bucketNames)
 
 	// Determine current bucket
-	currentBucket := r.URL.Query().Get("bucket")
+	currentBucket := query.Get("bucket")
 	if currentBucket == "" {
 		currentBucket = h.cfg.GetDefaultBucketName()
 	}
@@ -238,7 +241,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	currentPrefix := r.URL.Query().Get("prefix")
+	currentPrefix := query.Get("prefix")
 
 	data := h.buildDashboardData(ctx, scope, bucketItems, currentBucket, currentPrefix)
 
@@ -248,6 +251,8 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 // Content returns the main content area as an HTMX partial.
 func (h *Handler) Content(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
 	key := getKeyFromRequest(r)
 	scope := h.resolveKey(key)
 
@@ -263,11 +268,11 @@ func (h *Handler) Content(w http.ResponseWriter, r *http.Request) {
 	bucketNames := h.accessibleBuckets(scope)
 	bucketItems := h.buildBucketItems(ctx, bucketNames)
 
-	currentBucket := r.URL.Query().Get("bucket")
+	currentBucket := query.Get("bucket")
 	if currentBucket == "" {
 		currentBucket = h.cfg.GetDefaultBucketName()
 	}
-	currentPrefix := r.URL.Query().Get("prefix")
+	currentPrefix := query.Get("prefix")
 
 	data := h.buildDashboardData(ctx, scope, bucketItems, currentBucket, currentPrefix)
 
@@ -393,10 +398,19 @@ func (h *Handler) buildDashboardData(ctx context.Context, scope *uiScope, bucket
 }
 
 // writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+//
+// Serializa antes de tocar el ResponseWriter: si el marshal falla todavía se
+// puede responder un 500, en vez de un 200 con el body cortado.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	data, err := jsonv2.Marshal(v)
+	if err != nil {
+		logger.Error().Err(err).Int("status_code", status).Msg("Failed to marshal JSON response")
+		http.Error(w, `{"ok":false,"error":"Failed to encode response"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if _, err := w.Write(data); err != nil {
 		logger.Error().Err(err).Msg("Failed to write JSON response")
 	}
 }

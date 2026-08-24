@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"net/http"
 	"strings"
 	"time"
 
 	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/security"
 )
@@ -19,15 +20,15 @@ import (
 // only accepted at delivery time when HMAC_REQUIRE_EXPIRY=false.
 type SignURLRequest struct {
 	Path      string `json:"path"`
-	ExpiresIn int64  `json:"expires_in,omitempty"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	ExpiresIn int64  `json:"expires_in,omitzero"`
+	ExpiresAt int64  `json:"expires_at,omitzero"`
 }
 
 // SignURLResponse represents a signed URL response
 type SignURLResponse struct {
 	SignedURL string `json:"signed_url"`
 	Signature string `json:"signature"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitzero"`
 }
 
 // HandleSignURL generates a signed URL for the given path.
@@ -43,7 +44,15 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SignURLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
+	// El error de decode va aparte de la validación: colapsarlos hacía que un
+	// campo desconocido o una mayúscula que no coincide con el tag salieran
+	// reportados como "path is required" aunque el caller sí hubiera mandado
+	// path. json/v2 es case-sensitive, así que ese caso ahora se alcanza.
+	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
+		h.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
+		return
+	}
+	if req.Path == "" {
 		h.sendError(w, http.StatusBadRequest, "INVALID_REQUEST", "path is required")
 		return
 	}
@@ -130,7 +139,6 @@ func writeSignedResponse(w http.ResponseWriter, path, sig string, expUnix int64)
 	}
 	fullURL := path + sep + "sig=" + sig
 
-	w.Header().Set("Content-Type", "application/json")
 	resp := SignURLResponse{
 		SignedURL: fullURL,
 		Signature: sig,
@@ -138,5 +146,5 @@ func writeSignedResponse(w http.ResponseWriter, path, sig string, expUnix int64)
 	if expUnix > 0 {
 		resp.ExpiresAt = expUnix
 	}
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }

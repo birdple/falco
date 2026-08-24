@@ -2,13 +2,14 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/url"
 
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/hashutil"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
@@ -21,7 +22,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req types.UpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
 		return
 	}
@@ -166,7 +167,5 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }

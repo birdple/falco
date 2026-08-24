@@ -3,6 +3,7 @@ package integration
 import (
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -28,7 +29,9 @@ func TestLRUCache_BasicOperations(t *testing.T) {
 
 	// Test cache stats
 	stats := cache.Stats()
-	assert.NotNil(t, stats)
+	assert.Equal(t, "lru", stats.Backend)
+	assert.Equal(t, int64(1), stats.Hits)
+	assert.Equal(t, 1, stats.ItemCount)
 
 	// Test cache size
 	assert.True(t, cache.Len() > 0)
@@ -44,26 +47,28 @@ func TestLRUCache_CacheMiss(t *testing.T) {
 }
 
 func TestLRUCache_TTL(t *testing.T) {
-	cache := cache.NewLRUCache(1024*1024, 10*time.Minute)
-	defer cache.Stop()
+	synctest.Test(t, func(t *testing.T) {
+		cache := cache.NewLRUCache(1024*1024, 10*time.Minute)
+		defer cache.Stop()
 
-	key := "ttl_test"
-	value := []byte("ttl_value")
+		key := "ttl_test"
+		value := []byte("ttl_value")
 
-	// Set with short TTL
-	err := cache.Set(key, value, 100*time.Millisecond)
-	assert.NoError(t, err)
+		// Set with short TTL
+		err := cache.Set(key, value, 100*time.Millisecond)
+		assert.NoError(t, err)
 
-	// Should be available immediately
-	_, found := cache.Get(key)
-	assert.True(t, found)
+		// Should be available immediately
+		_, found := cache.Get(key)
+		assert.True(t, found)
 
-	// Wait for TTL to expire
-	time.Sleep(200 * time.Millisecond)
+		// Reloj falso: la expiración ocurre al instante.
+		synctest.Sleep(200 * time.Millisecond)
 
-	// Should be expired
-	_, found = cache.Get(key)
-	assert.False(t, found)
+		// Should be expired
+		_, found = cache.Get(key)
+		assert.False(t, found)
+	})
 }
 
 func TestLRUCache_SizeLimit(t *testing.T) {
@@ -73,7 +78,7 @@ func TestLRUCache_SizeLimit(t *testing.T) {
 
 	// Add items that exceed cache size
 	largeValue := make([]byte, 80) // 80 bytes
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := fmt.Sprintf("key_%d", i)
 		err := cache.Set(key, largeValue, time.Hour)
 		assert.NoError(t, err)

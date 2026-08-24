@@ -9,10 +9,20 @@ import (
 	"strings"
 )
 
-// GetQueryParam returns the first non-empty value from multiple parameter names
+// GetQueryParam returns the first non-empty value from multiple parameter names.
+//
+// Parsea el query UNA vez: la versión anterior llamaba a r.URL.Query() dentro
+// del bucle, así que GetQueryParam(r, "p", "prefix", "d", "dir", "directory")
+// reparseaba RawQuery hasta cinco veces por llamada.
 func GetQueryParam(r *http.Request, names ...string) string {
+	return QueryParam(r.URL.Query(), names...)
+}
+
+// QueryParam es GetQueryParam sobre un url.Values ya parseado, para los
+// handlers que hoistearon r.URL.Query() a una variable local.
+func QueryParam(query url.Values, names ...string) string {
 	for _, name := range names {
-		if value := r.URL.Query().Get(name); value != "" {
+		if value := query.Get(name); value != "" {
 			return value
 		}
 	}

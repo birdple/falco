@@ -70,9 +70,7 @@ func TestHandleDelivery_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
 	mockProcessor := new(mocks.MockImageProcessor)
 
-	cfg := &config.Config{}
-	cfg.Processing.MaxDimensions.Width = 4000
-	cfg.Processing.MaxDimensions.Height = 4000
+	cfg := testConfig()
 	startTime := time.Now()
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)

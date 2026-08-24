@@ -1,9 +1,11 @@
 package storage
 
 import (
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"time"
+
+	"github.com/birdple/falco/internal/jsonx"
 )
 
 // MetadataEncoder handles metadata encoding/decoding
@@ -66,16 +68,21 @@ func (e *defaultMetadataEncoder) Decode(data map[string]string) (*ImageMetadata,
 	return metadata, nil
 }
 
-// MarshalJSON implements json.Marshaler for ImageMetadata
+// MarshalJSON implements json.Marshaler for ImageMetadata.
+//
+// Se marshalea con jsonx.Wire y NO con los defaults de encoding/json/v2: estos
+// bytes son el formato del metadata que queda guardado en Jay y en disco, así
+// que tienen que seguir saliendo idénticos a los que emitía v1. El test
+// diferencial de internal/jsonx es el que lo custodia.
 func (m *ImageMetadata) MarshalJSON() ([]byte, error) {
 	type Alias ImageMetadata
-	return json.Marshal(&struct {
+	return jsonv2.Marshal(&struct {
 		*Alias
 		CreatedAt string `json:"created_at"`
 	}{
 		Alias:     (*Alias)(m),
 		CreatedAt: m.CreatedAt.Format(time.RFC3339),
-	})
+	}, jsonx.Wire)
 }
 
 // UnmarshalJSON implements json.Unmarshaler for ImageMetadata
@@ -88,7 +95,10 @@ func (m *ImageMetadata) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(m),
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	// Lenient al leer: hay metadata escrita por versiones viejas de falco que
+	// puede traer llaves duplicadas o UTF-8 roto en el nombre original, y no
+	// queremos que un archivo así se vuelva ilegible.
+	if err := jsonv2.Unmarshal(data, &aux, jsonx.Lenient); err != nil {
 		return err
 	}
 

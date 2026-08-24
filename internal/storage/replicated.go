@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"io"
+	"sync"
 
 	"github.com/birdple/falco/internal/pkg/logger"
 )
@@ -18,6 +19,10 @@ type BackupTarget struct {
 type ReplicatedStorage struct {
 	primary StorageBackend
 	backups []BackupTarget
+	// async cuenta las réplicas en vuelo. Sin él, apagar el proceso mientras
+	// una réplica async está a medio camino la pierde en silencio y el backup
+	// queda desincronizado sin que nada lo diga. Close lo espera.
+	async sync.WaitGroup
 }
 
 // NewReplicatedStorage creates a new replicated storage wrapper.
@@ -25,6 +30,28 @@ func NewReplicatedStorage(primary StorageBackend, backups []BackupTarget) *Repli
 	return &ReplicatedStorage{
 		primary: primary,
 		backups: backups,
+	}
+}
+
+// Close espera a que terminen las réplicas asíncronas en vuelo.
+//
+// Devuelve el error del contexto si se agota antes de que terminen: las que
+// queden se perdieron, y quien apaga el proceso tiene que poder enterarse en
+// vez de suponer que salió bien.
+func (rs *ReplicatedStorage) Close(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		rs.async.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		logger.Error().Err(ctx.Err()).
+			Msg("Shutdown timed out with async replications still in flight — backups may be stale")
+		return ctx.Err()
 	}
 }
 
@@ -52,14 +79,15 @@ func (rs *ReplicatedStorage) Store(ctx context.Context, key string, data io.Read
 				return err
 			}
 		case ReplicationAsync:
-			go func(t BackupTarget, idx int) {
+			t, idx := target, i
+			rs.async.Go(func() {
 				if err := t.Backend.Store(context.Background(), key, newBytesReader(buf), metadata); err != nil {
 					logger.Error().Err(err).
 						Str("key", key).
 						Int("backup_index", idx).
 						Msg("Failed to replicate to backup (async)")
 				}
-			}(target, i)
+			})
 		case ReplicationReadFallback:
 			// In read-fallback mode, we only write to the primary
 		}
@@ -108,19 +136,27 @@ func (rs *ReplicatedStorage) Delete(ctx context.Context, key string) error {
 				return err
 			}
 		case ReplicationAsync:
-			go func(t BackupTarget, idx int) {
+			t, idx := target, i
+			rs.async.Go(func() {
 				if err := t.Backend.Delete(context.Background(), key); err != nil && !IsNotFound(err) {
 					logger.Error().Err(err).
 						Str("key", key).
 						Int("backup_index", idx).
 						Msg("Failed to delete from backup (async)")
 				}
-			}(target, i)
+			})
 		case ReplicationReadFallback:
-			// Best-effort delete
-			go func(t BackupTarget) {
-				_ = t.Backend.Delete(context.Background(), key)
-			}(target)
+			// Best-effort delete: el error se registra, no se propaga — el
+			// backup de read-fallback no es fuente de verdad para el borrado.
+			t, idx := target, i
+			rs.async.Go(func() {
+				if err := t.Backend.Delete(context.Background(), key); err != nil && !IsNotFound(err) {
+					logger.Warn().Err(err).
+						Str("key", key).
+						Int("backup_index", idx).
+						Msg("Failed to delete from read-fallback backup (best-effort)")
+				}
+			})
 		}
 	}
 

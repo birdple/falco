@@ -3,6 +3,7 @@ package circuitbreaker
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -29,6 +30,29 @@ type CircuitBreakerSettings struct {
 	ReadyToTrip func(counts gobreaker.Counts) bool
 	// OnStateChange is called whenever the state of the circuit breaker changes
 	OnStateChange func(name string, from gobreaker.State, to gobreaker.State)
+	// IsSuccessful decides whether an error counts against the breaker.
+	// If nil, IsBackendFailure is used.
+	IsSuccessful func(err error) bool
+}
+
+// IsBackendFailure reports whether err should count against the circuit breaker.
+//
+// A missing object is NOT a backend failure: the backend answered, correctly,
+// that the key does not exist. Counting it as one is how a screen listing a few
+// images whose rows outlived their bytes trips the breaker — and an open
+// breaker rejects every other operation on the bucket, uploads included.
+//
+// That is not hypothetical. With the default of 5 consecutive failures, a
+// client rendering a handful of dangling image URLs opened the breaker and the
+// next upload died with "circuit breaker is open" for the whole 30 s timeout —
+// a read problem taking writes down with it, and a self-sustaining one: failed
+// uploads leave more dangling URLs, which trip the breaker again.
+//
+// The breaker exists for a backend that is down or unreachable. `ErrImageNotFound`
+// is a normal answer and is reported to the caller either way; it just does not
+// count here.
+func IsBackendFailure(err error) bool {
+	return err != nil && !storage.IsNotFound(err)
 }
 
 // DefaultSettings returns default circuit breaker settings
@@ -42,6 +66,7 @@ func DefaultSettings(name string) CircuitBreakerSettings {
 			// Trip after 5 consecutive failures
 			return counts.ConsecutiveFailures >= 5
 		},
+		IsSuccessful: func(err error) bool { return !IsBackendFailure(err) },
 	}
 }
 
@@ -53,6 +78,15 @@ type StorageBackend struct {
 
 // NewStorageBackend creates a new circuit breaker wrapped storage backend
 func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSettings) *StorageBackend {
+	// El default vive acá y no sólo en `DefaultSettings` porque un llamador
+	// puede construir `CircuitBreakerSettings{}` a mano: con `IsSuccessful` en
+	// nil, gobreaker cuenta como fallo **todo** error no nulo, y volvería el
+	// "no existe" a tumbar el bucket entero.
+	isSuccessful := settings.IsSuccessful
+	if isSuccessful == nil {
+		isSuccessful = func(err error) bool { return !IsBackendFailure(err) }
+	}
+
 	cbSettings := gobreaker.Settings{
 		Name:          settings.Name,
 		MaxRequests:   settings.MaxRequests,
@@ -60,6 +94,7 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 		Timeout:       settings.Timeout,
 		ReadyToTrip:   settings.ReadyToTrip,
 		OnStateChange: settings.OnStateChange,
+		IsSuccessful:  isSuccessful,
 	}
 
 	return &StorageBackend{
@@ -68,17 +103,50 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 	}
 }
 
-// Store stores an image with circuit breaker protection
-func (s *StorageBackend) Store(ctx context.Context, key string, data io.Reader, metadata *storage.ImageMetadata) error {
-	_, err := s.cb.Execute(func() (interface{}, error) {
-		return nil, s.backend.Store(ctx, key, data, metadata)
+// execute corre fn detrás del circuit breaker y devuelve su resultado ya
+// tipado.
+//
+// Es un método con su propio type param (Go 1.27). gobreaker.Execute trabaja
+// con `any`, así que sin esto cada wrapper repetía la misma aserción de tipo
+// sin comprobar — siete oportunidades de paniquear si alguna devolvía otra
+// cosa. Aquí la aserción es una sola y sí se comprueba.
+func (s *StorageBackend) execute[T any](fn func() (T, error)) (T, error) {
+	var zero T
+	res, err := s.cb.Execute(func() (any, error) {
+		v, err := fn()
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	})
+	if err != nil {
+		return zero, err
+	}
+	v, ok := res.(T)
+	if !ok {
+		return zero, fmt.Errorf("circuitbreaker: expected %T from breaker, got %T", zero, res)
+	}
+	return v, nil
+}
+
+// executeVoid corre una operación sin valor de retorno detrás del breaker.
+func (s *StorageBackend) executeVoid(fn func() error) error {
+	_, err := s.cb.Execute(func() (any, error) {
+		return nil, fn()
 	})
 	return err
 }
 
+// Store stores an image with circuit breaker protection
+func (s *StorageBackend) Store(ctx context.Context, key string, data io.Reader, metadata *storage.ImageMetadata) error {
+	return s.executeVoid(func() error {
+		return s.backend.Store(ctx, key, data, metadata)
+	})
+}
+
 // Retrieve retrieves an image with circuit breaker protection
 func (s *StorageBackend) Retrieve(ctx context.Context, key string) (io.ReadCloser, *storage.ImageMetadata, error) {
-	result, err := s.cb.Execute(func() (interface{}, error) {
+	r, err := s.execute(func() (*retrieveResult, error) {
 		reader, metadata, err := s.backend.Retrieve(ctx, key)
 		if err != nil {
 			return nil, err
@@ -88,7 +156,6 @@ func (s *StorageBackend) Retrieve(ctx context.Context, key string) (io.ReadClose
 	if err != nil {
 		return nil, nil, err
 	}
-	r := result.(*retrieveResult)
 	return r.reader, r.metadata, nil
 }
 
@@ -99,52 +166,27 @@ type retrieveResult struct {
 
 // Delete deletes an image with circuit breaker protection
 func (s *StorageBackend) Delete(ctx context.Context, key string) error {
-	_, err := s.cb.Execute(func() (interface{}, error) {
-		return nil, s.backend.Delete(ctx, key)
-	})
-	return err
+	return s.executeVoid(func() error { return s.backend.Delete(ctx, key) })
 }
 
 // Exists checks if an image exists with circuit breaker protection
 func (s *StorageBackend) Exists(ctx context.Context, key string) (bool, error) {
-	result, err := s.cb.Execute(func() (interface{}, error) {
-		exists, err := s.backend.Exists(ctx, key)
-		return exists, err
-	})
-	if err != nil {
-		return false, err
-	}
-	return result.(bool), nil
+	return s.execute(func() (bool, error) { return s.backend.Exists(ctx, key) })
 }
 
 // Health checks the health of the storage with circuit breaker protection
 func (s *StorageBackend) Health(ctx context.Context) error {
-	_, err := s.cb.Execute(func() (interface{}, error) {
-		return nil, s.backend.Health(ctx)
-	})
-	return err
+	return s.executeVoid(func() error { return s.backend.Health(ctx) })
 }
 
 // GetStats returns storage statistics with circuit breaker protection
 func (s *StorageBackend) GetStats(ctx context.Context) (*storage.StorageStats, error) {
-	result, err := s.cb.Execute(func() (interface{}, error) {
-		return s.backend.GetStats(ctx)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result.(*storage.StorageStats), nil
+	return s.execute(func() (*storage.StorageStats, error) { return s.backend.GetStats(ctx) })
 }
 
 // List lists objects with circuit breaker protection
 func (s *StorageBackend) List(ctx context.Context, prefix string) ([]storage.ListResult, error) {
-	result, err := s.cb.Execute(func() (interface{}, error) {
-		return s.backend.List(ctx, prefix)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result.([]storage.ListResult), nil
+	return s.execute(func() ([]storage.ListResult, error) { return s.backend.List(ctx, prefix) })
 }
 
 // WithBucket returns a new storage backend with a different bucket
