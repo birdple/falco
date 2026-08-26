@@ -91,3 +91,6 @@ images/
 data/
 
 /server
+
+# Serena (indexado LSP del agente)
+.serena/
