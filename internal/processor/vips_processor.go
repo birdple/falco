@@ -141,9 +141,6 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	// Detect format before releasing input buffer
 	format := p.detectFormat(inputData)
 
-	// Release input buffer to reduce memory pressure during processing
-	inputData = nil
-
 	// Apply transformations
 	if err := p.applyTransformations(img, params); err != nil {
 		return nil, fmt.Errorf("failed to apply transformations: %w", err)
@@ -169,7 +166,7 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 
 	// Cache result under the caller-provided key (skip if empty)
 	if p.cache != nil && cacheKey != "" {
-		p.cache.Set(cacheKey, processedData, p.cacheTTL)
+		_ = p.cache.Set(cacheKey, processedData, p.cacheTTL)
 		m.CacheSize.Set(float64(p.cache.Size()))
 		m.CacheItemCount.Set(float64(p.cache.Len()))
 	}
@@ -190,18 +187,49 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 }
 
 // applyTransformations applies all transformations to the image
+// applyTransformations runs the transformation pipeline over an image.
+//
+// The order is load-bearing, not incidental:
+//
+//  1. orientation and geometry (auto-orient, trim, crop, flip, rotate) come
+//     first, so everything after works on the image as the viewer will see it;
+//  2. resizing comes next, so the expensive colour work runs on the smallest
+//     pixel count;
+//  3. colour adjustments;
+//  4. padding last, so the padding is not itself scaled or colour-shifted.
 func (p *VipsProcessor) applyTransformations(img *vips.Image, params *ProcessingParams) error {
-	// Auto-orient from EXIF (should happen early, before resize)
+	if err := applyGeometry(img, params); err != nil {
+		return err
+	}
+	if err := p.applyResize(img, params); err != nil {
+		return err
+	}
+	if err := applyColorAdjustments(img, params); err != nil {
+		return err
+	}
+	return applyPadding(img, params)
+}
+
+// defaultTrimThreshold is the channel distance used when trimming is requested
+// without one. Low enough to catch JPEG-noisy white borders, tight enough not
+// to eat into a light-coloured subject.
+const defaultTrimThreshold = 10
+
+// applyGeometry runs the operations that change what part of the image is kept
+// and which way up it is.
+func applyGeometry(img *vips.Image, params *ProcessingParams) error {
 	if params.AutoOrient {
-		_ = img.Autorot(nil) // Non-fatal: some formats don't have EXIF orientation
+		// Non-fatal: plenty of formats carry no EXIF orientation at all.
+		_ = img.Autorot(nil)
 	}
 
-	// Trim (remove uniform color borders, before resize)
 	if params.TrimEnabled {
 		threshold := params.TrimThreshold
 		if threshold == 0 {
-			threshold = 10
+			threshold = defaultTrimThreshold
 		}
+		// A trim that finds nothing is not an error: the image simply has no
+		// uniform border to remove.
 		left, top, width, height, err := img.FindTrim(&vips.FindTrimOptions{Threshold: threshold})
 		if err == nil && width > 0 && height > 0 {
 			if err := img.ExtractArea(left, top, width, height); err != nil {
@@ -210,144 +238,159 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		}
 	}
 
-	// Crop
 	if params.CropW > 0 && params.CropH > 0 {
 		if err := img.ExtractArea(params.CropX, params.CropY, params.CropW, params.CropH); err != nil {
 			return fmt.Errorf("crop failed: %w", err)
 		}
 	}
 
-	// Flip
-	if params.Flip != "" {
-		switch params.Flip {
-		case "horizontal":
-			if err := img.Flip(vips.DirectionHorizontal); err != nil {
-				return fmt.Errorf("flip horizontal failed: %w", err)
-			}
-		case "vertical":
-			if err := img.Flip(vips.DirectionVertical); err != nil {
-				return fmt.Errorf("flip vertical failed: %w", err)
-			}
+	switch params.Flip {
+	case "horizontal":
+		if err := img.Flip(vips.DirectionHorizontal); err != nil {
+			return fmt.Errorf("flip horizontal failed: %w", err)
+		}
+	case "vertical":
+		if err := img.Flip(vips.DirectionVertical); err != nil {
+			return fmt.Errorf("flip vertical failed: %w", err)
 		}
 	}
 
-	// Rotate
 	if params.Rotate != 0 {
 		if err := img.Rotate(params.Rotate, nil); err != nil {
 			return fmt.Errorf("rotate failed: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Gravity-aware resize (smart crop)
-	if (params.Width > 0 || params.Height > 0) && params.Gravity != "" {
-		interesting := vips.InterestingCentre
-		switch params.Gravity {
-		case "smart", "attention":
-			interesting = vips.InterestingAttention
-		case "entropy":
-			interesting = vips.InterestingEntropy
+// applyResize scales the image, then enforces the configured ceiling.
+func (p *VipsProcessor) applyResize(img *vips.Image, params *ProcessingParams) error {
+	switch {
+	case (params.Width > 0 || params.Height > 0) && params.Gravity != "":
+		if err := smartResize(img, params); err != nil {
+			return err
 		}
-		w, h := params.Width, params.Height
-		if w == 0 {
-			w = img.Width()
-		}
-		if h == 0 {
-			h = img.Height()
-		}
-		if err := img.ThumbnailImage(w, &vips.ThumbnailImageOptions{
-			Height: h,
-			Crop:   interesting,
-			Size:   vips.SizeBoth,
-		}); err != nil {
-			return fmt.Errorf("smart resize failed: %w", err)
-		}
-	} else if params.Width > 0 || params.Height > 0 {
-		// Resize with upscaling protection
-		// Prevent upscaling attacks - limit requested dimensions to original or max dimensions
-		originalWidth := img.Width()
-		originalHeight := img.Height()
-
-		requestedWidth := params.Width
-		requestedHeight := params.Height
-
-		// explicitBox is true only when the caller gave both dimensions —
-		// a genuine "crop to this exact box" request (e.g. a 128x128
-		// avatar slot), where upscaling a smaller source to fill the box
-		// is the point. When only one dimension is given, the other is
-		// derived below to preserve aspect ratio — that's a resize CAP,
-		// not a box, and must never upscale past the source's native
-		// resolution just because it fits under maxDimensions.
-		explicitBox := requestedWidth > 0 && requestedHeight > 0
-
-		// Calculate missing dimension maintaining aspect ratio
-		if requestedWidth == 0 && requestedHeight > 0 {
-			requestedWidth = (originalWidth * requestedHeight) / originalHeight
-		} else if requestedHeight == 0 && requestedWidth > 0 {
-			requestedHeight = (originalHeight * requestedWidth) / originalWidth
-		}
-
-		// SECURITY: Prevent upscaling beyond original size or max dimensions
-		// This prevents DoS attacks requesting massive upscaling (e.g., 100x100 -> 10000x10000)
-		maxAllowedWidth := originalWidth
-		maxAllowedHeight := originalHeight
-
-		// Allow upscaling up to maxDimensions ONLY for an explicit exact-box
-		// request. A width-only (or height-only) cap must never exceed the
-		// source's native resolution: there's no box to fill, so scaling up
-		// just produces a bigger, blurrier file for no visual gain (measured:
-		// a 150x150 source capped at w=600 with no explicit height came back
-		// 600x600 and 48% heavier before this fix).
-		if explicitBox {
-			if p.maxDimensions.width > 0 && p.maxDimensions.width > originalWidth {
-				maxAllowedWidth = p.maxDimensions.width
-			}
-			if p.maxDimensions.height > 0 && p.maxDimensions.height > originalHeight {
-				maxAllowedHeight = p.maxDimensions.height
-			}
-		}
-
-		// Clamp requested dimensions to allowed maximum
-		if requestedWidth > maxAllowedWidth {
-			// Proportionally reduce both dimensions
-			scale := float64(maxAllowedWidth) / float64(requestedWidth)
-			requestedWidth = maxAllowedWidth
-			requestedHeight = int(float64(requestedHeight) * scale)
-		}
-		if requestedHeight > maxAllowedHeight {
-			// Proportionally reduce both dimensions
-			scale := float64(maxAllowedHeight) / float64(requestedHeight)
-			requestedHeight = maxAllowedHeight
-			requestedWidth = int(float64(requestedWidth) * scale)
-		}
-
-		// Update params with safe dimensions
+	case params.Width > 0 || params.Height > 0:
 		safeParams := *params
-		safeParams.Width = requestedWidth
-		safeParams.Height = requestedHeight
-
+		safeParams.Width, safeParams.Height = p.safeResizeDimensions(img.Width(), img.Height(), params)
 		if err := p.resizeImage(img, &safeParams); err != nil {
 			return fmt.Errorf("resize failed: %w", err)
 		}
 	}
 
-	// Apply max dimensions as final safeguard (should rarely trigger after above protection)
-	if img.Width() > p.maxDimensions.width || img.Height() > p.maxDimensions.height {
-		scale := 1.0
-		if img.Width() > p.maxDimensions.width {
-			scale = float64(p.maxDimensions.width) / float64(img.Width())
+	return p.enforceMaxDimensions(img)
+}
+
+// smartResize crops to the requested box using libvips' content-aware
+// strategies, so the interesting part of the image survives the crop.
+func smartResize(img *vips.Image, params *ProcessingParams) error {
+	interesting := vips.InterestingCentre
+	switch params.Gravity {
+	case "smart", "attention":
+		interesting = vips.InterestingAttention
+	case "entropy":
+		interesting = vips.InterestingEntropy
+	}
+
+	width, height := params.Width, params.Height
+	if width == 0 {
+		width = img.Width()
+	}
+	if height == 0 {
+		height = img.Height()
+	}
+
+	if err := img.ThumbnailImage(width, &vips.ThumbnailImageOptions{
+		Height: height,
+		Crop:   interesting,
+		Size:   vips.SizeBoth,
+	}); err != nil {
+		return fmt.Errorf("smart resize failed: %w", err)
+	}
+	return nil
+}
+
+// safeResizeDimensions works out what the image may actually be resized to,
+// filling in a missing dimension from the aspect ratio and refusing to upscale
+// where upscaling would be pointless.
+//
+// The distinction that matters is between a BOX and a CAP:
+//
+//   - both dimensions given is an exact box (a 128x128 avatar slot), and
+//     upscaling a smaller source to fill it is the whole point;
+//   - one dimension given is a cap, with the other derived to preserve aspect
+//     ratio. Upscaling past the source's native resolution there just produces
+//     a bigger, blurrier file for no visual gain — measured: a 150x150 source
+//     capped at w=600 came back 600x600 and 48% heavier before this was fixed.
+//
+// It is also what stops an upscaling DoS: a request for 100x100 → 10000x10000
+// gets clamped back to the source's own size.
+func (p *VipsProcessor) safeResizeDimensions(originalWidth, originalHeight int, params *ProcessingParams) (width, height int) {
+	width, height = params.Width, params.Height
+	explicitBox := width > 0 && height > 0
+
+	switch {
+	case width == 0 && height > 0:
+		width = (originalWidth * height) / originalHeight
+	case height == 0 && width > 0:
+		height = (originalHeight * width) / originalWidth
+	}
+
+	maxWidth, maxHeight := originalWidth, originalHeight
+	if explicitBox {
+		if p.maxDimensions.width > 0 && p.maxDimensions.width > originalWidth {
+			maxWidth = p.maxDimensions.width
 		}
-		if img.Height() > p.maxDimensions.height {
-			heightScale := float64(p.maxDimensions.height) / float64(img.Height())
-			if heightScale < scale {
-				scale = heightScale
-			}
-		}
-		if err := img.Resize(scale, nil); err != nil {
-			return fmt.Errorf("max dimensions resize failed: %w", err)
+		if p.maxDimensions.height > 0 && p.maxDimensions.height > originalHeight {
+			maxHeight = p.maxDimensions.height
 		}
 	}
 
-	// Brightness
+	// Clamping scales BOTH dimensions so the aspect ratio survives.
+	if width > maxWidth {
+		scale := float64(maxWidth) / float64(width)
+		width = maxWidth
+		height = int(float64(height) * scale)
+	}
+	if height > maxHeight {
+		scale := float64(maxHeight) / float64(height)
+		height = maxHeight
+		width = int(float64(width) * scale)
+	}
+	return width, height
+}
+
+// enforceMaxDimensions is the final safeguard against an oversized result. It
+// should rarely fire — safeResizeDimensions already clamps the common paths —
+// but it also covers images that arrive oversized and are never resized.
+func (p *VipsProcessor) enforceMaxDimensions(img *vips.Image) error {
+	if img.Width() <= p.maxDimensions.width && img.Height() <= p.maxDimensions.height {
+		return nil
+	}
+
+	scale := 1.0
+	if img.Width() > p.maxDimensions.width {
+		scale = float64(p.maxDimensions.width) / float64(img.Width())
+	}
+	if img.Height() > p.maxDimensions.height {
+		if heightScale := float64(p.maxDimensions.height) / float64(img.Height()); heightScale < scale {
+			scale = heightScale
+		}
+	}
+
+	if err := img.Resize(scale, nil); err != nil {
+		return fmt.Errorf("max dimensions resize failed: %w", err)
+	}
+	return nil
+}
+
+// applyColorAdjustments runs the tone and detail operations.
+//
+// Brightness and contrast are expressed as percentages around 0, so they map
+// onto a linear multiplier; contrast pivots around mid-grey (128) so that
+// raising it darkens shadows and lifts highlights instead of just brightening
+// everything.
+func applyColorAdjustments(img *vips.Image, params *ProcessingParams) error {
 	if params.Brightness != 0 {
 		multiplier := 1.0 + (params.Brightness / 100.0)
 		if err := img.Linear([]float64{multiplier, multiplier, multiplier}, []float64{0, 0, 0}, nil); err != nil {
@@ -355,7 +398,6 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		}
 	}
 
-	// Contrast
 	if params.Contrast != 0 {
 		multiplier := 1.0 + (params.Contrast / 100.0)
 		offset := 128.0 * (1.0 - multiplier)
@@ -364,41 +406,44 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 		}
 	}
 
-	// Gamma
+	// Gamma 1.0 is the identity, so it is treated as "not requested".
 	if params.Gamma != 0 && params.Gamma != 1.0 {
 		if err := img.Gamma(&vips.GammaOptions{Exponent: params.Gamma}); err != nil {
 			return fmt.Errorf("gamma failed: %w", err)
 		}
 	}
 
-	// Blur
 	if params.Blur > 0 {
-		sigma := params.Blur / 2.0
-		if err := img.Gaussblur(sigma, nil); err != nil {
+		if err := img.Gaussblur(params.Blur/2.0, nil); err != nil {
 			return fmt.Errorf("blur failed: %w", err)
 		}
 	}
 
-	// Sharpen
 	if params.Sharpen > 0 {
 		if err := img.Sharpen(nil); err != nil {
 			return fmt.Errorf("sharpen failed: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Padding
-	if params.PaddingTop > 0 || params.PaddingRight > 0 || params.PaddingBottom > 0 || params.PaddingLeft > 0 {
-		bg := parseHexColor(params.PaddingColor)
-		newWidth := img.Width() + params.PaddingLeft + params.PaddingRight
-		newHeight := img.Height() + params.PaddingTop + params.PaddingBottom
-		if err := img.Embed(params.PaddingLeft, params.PaddingTop, newWidth, newHeight, &vips.EmbedOptions{
-			Extend:     vips.ExtendBackground,
-			Background: bg,
-		}); err != nil {
-			return fmt.Errorf("padding failed: %w", err)
-		}
+// applyPadding grows the canvas around the image, filling the new area with the
+// requested background colour.
+func applyPadding(img *vips.Image, params *ProcessingParams) error {
+	if params.PaddingTop == 0 && params.PaddingRight == 0 &&
+		params.PaddingBottom == 0 && params.PaddingLeft == 0 {
+		return nil
 	}
 
+	newWidth := img.Width() + params.PaddingLeft + params.PaddingRight
+	newHeight := img.Height() + params.PaddingTop + params.PaddingBottom
+
+	if err := img.Embed(params.PaddingLeft, params.PaddingTop, newWidth, newHeight, &vips.EmbedOptions{
+		Extend:     vips.ExtendBackground,
+		Background: parseHexColor(params.PaddingColor),
+	}); err != nil {
+		return fmt.Errorf("padding failed: %w", err)
+	}
 	return nil
 }
 
@@ -487,6 +532,10 @@ func (p *VipsProcessor) resizeImage(img *vips.Image, params *ProcessingParams) e
 // there is no box to fill, only a cap, so upscaling would just waste CPU
 // and bytes for no visual gain (measured: a 150x150 source requested at
 // w=600 with no explicit height came back 600x600 and 48% heavier).
+//
+// the request onto the matching vips.Size, which is all it does.
+//
+//nolint:revive // the bool is this function's input datum: it maps a fact about
 func coverSize(explicitBox bool) vips.Size {
 	if explicitBox {
 		return vips.SizeBoth
@@ -647,9 +696,9 @@ func (p *VipsProcessor) SetCache(cache Cache) {
 
 // GetCacheStats returns cache statistics.
 //
-// Sin cache configurada devuelve Backend "none" con los campos medibles en
-// statUnmeasured: un CacheStats en cero se leería como "una cache vacía", que
-// no es lo mismo que "no hay cache".
+// With no cache configured it returns Backend "none" with the measurable fields
+// set to statUnmeasured: a zeroed CacheStats would read as "an empty cache",
+// which is not the same thing as "there is no cache".
 func (p *VipsProcessor) GetCacheStats() cache.CacheStats {
 	if p.cache != nil {
 		return p.cache.Stats()
@@ -725,10 +774,10 @@ func (p *VipsProcessor) GenerateCacheKey(storageKey string, params *ProcessingPa
 
 // InvalidateCacheForKey drops every cached variant of a storage key.
 //
-// Todas las variantes de un mismo objeto comparten el prefijo
-// `sha256(storageKey)[:32]` que arma `generateCacheKey`, así que basta con
-// barrer las claves por ese prefijo. Es O(n) sobre las claves de la cache, pero
-// sólo corre en borrado y en update, que son raros comparados con las lecturas.
+// Every variant of the same object shares the `sha256(storageKey)[:32]` prefix
+// that generateCacheKey builds, so sweeping the keys by that prefix is enough.
+// It is O(n) over the cache's keys, but it only runs on delete and update, which
+// are rare next to reads.
 func (p *VipsProcessor) InvalidateCacheForKey(storageKey string) int {
 	if p.cache == nil {
 		return 0
@@ -774,7 +823,7 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	if params.Width > 0 || params.Height > 0 {
 		parts = append(parts, fmt.Sprintf("w%d_h%d", params.Width, params.Height))
 		if params.Fit != "" {
-			parts = append(parts, fmt.Sprintf("f%s", params.Fit))
+			parts = append(parts, "f"+params.Fit)
 		}
 	}
 
@@ -783,7 +832,7 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 		parts = append(parts, fmt.Sprintf("q%d", params.Quality))
 	}
 	if params.Format != "" {
-		parts = append(parts, fmt.Sprintf("fmt%s", params.Format))
+		parts = append(parts, "fmt"+params.Format)
 	}
 
 	// Crop parameters
@@ -796,7 +845,7 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 		parts = append(parts, fmt.Sprintf("rot%.0f", params.Rotate))
 	}
 	if params.Flip != "" {
-		parts = append(parts, fmt.Sprintf("flip%s", params.Flip))
+		parts = append(parts, "flip"+params.Flip)
 	}
 	if params.Flop {
 		parts = append(parts, "flop")
@@ -829,7 +878,7 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 
 	// Extended parameters
 	if params.Gravity != "" {
-		parts = append(parts, fmt.Sprintf("grav%s", params.Gravity))
+		parts = append(parts, "grav"+params.Gravity)
 	}
 	if params.TrimEnabled {
 		parts = append(parts, fmt.Sprintf("trim%.0f", params.TrimThreshold))

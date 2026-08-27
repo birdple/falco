@@ -1,3 +1,9 @@
+// Package processor transforms images with libvips: resizing, cropping,
+// rotation, colour adjustment, padding and format conversion.
+//
+// Concurrency is bounded by a semaphore because every decode holds the whole
+// raster in memory — a burst of large uploads without that bound exhausts RAM
+// rather than queueing.
 package processor
 
 import (
@@ -121,12 +127,13 @@ type ImageProcessor interface {
 	// InvalidateCacheForKey drops every cached variant of a storage key and
 	// returns how many entries were removed.
 	//
-	// Un objeto puede estar cacheado en tantas variantes como combinaciones de
-	// parámetros se hayan pedido, y todas comparten el prefijo
-	// `sha256(storageKey)`. Sin esto, borrar o reemplazar una imagen no tenía
-	// ningún efecto sobre lo que se venía sirviendo: la foto borrada seguía
-	// entregándose hasta 24 h desde RAM —un problema de privacidad, no sólo de
-	// consistencia— y un update parecía no aplicarse.
+	// One object can be cached under as many variants as there are parameter
+	// combinations, and they all share the `sha256(storageKey)` prefix.
+	//
+	// Without this, deleting or replacing an image had no effect on what was
+	// being served: the deleted photo kept coming out of RAM for up to 24 hours
+	// — a privacy problem, not just a consistency one — and an update looked
+	// like it had never applied.
 	InvalidateCacheForKey(storageKey string) int
 
 	// GetMetadata extracts metadata from an image without processing
@@ -151,6 +158,9 @@ type ImageProcessor interface {
 // ResizeMode represents different image resizing modes
 type ResizeMode string
 
+// The supported resize modes. They differ in what they sacrifice when the
+// requested aspect ratio does not match the source: cover crops, contain leaves
+// empty space, fill distorts.
 const (
 	ResizeModeCover   ResizeMode = "cover"   // Maintain aspect ratio, crop if necessary
 	ResizeModeContain ResizeMode = "contain" // Maintain aspect ratio, fit within dimensions
@@ -160,6 +170,10 @@ const (
 // ImageFormat represents supported image formats
 type ImageFormat string
 
+// The image formats falco can decode and encode. These values double as the
+// accepted `?format=` query parameter, so adding one here widens the public API
+// surface — IsValidFormat is the single gate that decides what callers may ask
+// for.
 const (
 	FormatJPEG ImageFormat = "jpeg"
 	FormatPNG  ImageFormat = "png"
