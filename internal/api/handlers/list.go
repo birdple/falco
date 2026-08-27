@@ -9,13 +9,14 @@ import (
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/storage"
 )
 
 // HandleList handles listing files in a bucket/directory
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Un solo parseo del query para todo el handler (ver HandleDelivery).
+	// Parsed once for the whole handler (see HandleDelivery).
 	query := r.URL.Query()
 
 	storageName := query.Get("storage")
@@ -41,57 +42,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var files []types.ListItem
-	directoryMap := make(map[string]*types.DirectoryInfo)
-
-	prefixPath := prefix
-	if prefixPath != "" && prefixPath[len(prefixPath)-1] != '/' {
-		prefixPath = prefixPath + "/"
-	}
-
-	for _, result := range results {
-		key := result.Key
-		if prefixPath != "" && strings.HasPrefix(key, prefixPath) {
-			key = strings.TrimPrefix(key, prefixPath)
-		}
-
-		if strings.Contains(key, "/") {
-			parts := strings.SplitN(key, "/", 2)
-			dirName := parts[0]
-
-			if _, exists := directoryMap[dirName]; !exists {
-				fullPath := prefixPath + dirName
-				if prefixPath == "" {
-					fullPath = dirName
-				}
-				directoryMap[dirName] = &types.DirectoryInfo{
-					Name:      dirName,
-					Path:      strings.TrimSuffix(fullPath, "/"),
-					FileCount: 0,
-				}
-			}
-			directoryMap[dirName].FileCount++
-		} else {
-			files = append(files, types.ListItem{
-				Key:      key,
-				Size:     result.Size,
-				Modified: result.Modified,
-			})
-		}
-	}
-
-	var directories []types.DirectoryInfo
-	for _, dir := range directoryMap {
-		directories = append(directories, *dir)
-	}
-
-	sort.Slice(directories, func(i, j int) bool {
-		return directories[i].Name < directories[j].Name
-	})
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Key < files[j].Key
-	})
+	files, directories := groupListing(results, prefix)
 
 	response := types.ListResponse{
 		Success:     true,
@@ -102,4 +53,57 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// groupListing turns a flat key listing into the one level of files and
+// directories below prefix.
+//
+// Object stores have no directories: "a/b/c.jpg" is one key, not a tree. What
+// this does is synthesise that one level — every key with a slash left in it
+// after the prefix is stripped contributes to a directory entry instead of
+// appearing as a file, and its FileCount counts everything beneath it, however
+// deep.
+//
+// Both slices come back sorted by name so the listing is stable between calls;
+// the backend makes no ordering promise.
+func groupListing(results []storage.ListResult, prefix string) ([]types.ListItem, []types.DirectoryInfo) {
+	prefixPath := prefix
+	if prefixPath != "" && !strings.HasSuffix(prefixPath, "/") {
+		prefixPath += "/"
+	}
+
+	var files []types.ListItem
+	directoryMap := make(map[string]*types.DirectoryInfo)
+
+	for _, result := range results {
+		key := strings.TrimPrefix(result.Key, prefixPath)
+
+		dirName, _, isNested := strings.Cut(key, "/")
+		if !isNested {
+			files = append(files, types.ListItem{
+				Key:      key,
+				Size:     result.Size,
+				Modified: result.Modified,
+			})
+			continue
+		}
+
+		if _, exists := directoryMap[dirName]; !exists {
+			directoryMap[dirName] = &types.DirectoryInfo{
+				Name: dirName,
+				Path: strings.TrimSuffix(prefixPath+dirName, "/"),
+			}
+		}
+		directoryMap[dirName].FileCount++
+	}
+
+	directories := make([]types.DirectoryInfo, 0, len(directoryMap))
+	for _, dir := range directoryMap {
+		directories = append(directories, *dir)
+	}
+
+	sort.Slice(directories, func(i, j int) bool { return directories[i].Name < directories[j].Name })
+	sort.Slice(files, func(i, j int) bool { return files[i].Key < files[j].Key })
+
+	return files, directories
 }

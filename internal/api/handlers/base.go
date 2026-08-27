@@ -2,6 +2,7 @@ package handlers
 
 import (
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -109,15 +110,15 @@ func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message
 	writeJSON(w, statusCode, response)
 }
 
-// writeJSON serializa v y lo manda con el status pedido.
+// writeJSON marshals v and sends it with the requested status.
 //
-// Serializa ANTES de tocar el ResponseWriter a propósito: si el marshal falla
-// todavía se puede responder un 500 honesto, mientras que un encoder en
-// streaming ya habría mandado un 200 con el body cortado a la mitad.
+// It marshals BEFORE touching the ResponseWriter on purpose: if the marshal
+// fails there is still time to answer an honest 500, whereas a streaming encoder
+// would already have sent a 200 with a body cut off halfway.
 //
-// Usa los defaults de encoding/json/v2 (sin escapar &, < ni >). Es un cambio de
-// bytes respecto de v1, pero no de semántica: todo consumidor pasa por un
-// parser de JSON y ninguno de ellos mete la respuesta cruda en HTML.
+// Uses encoding/json/v2's defaults, which do not escape &, < or >. That is a
+// change in bytes from v1 but not in meaning: every consumer goes through a JSON
+// parser and none of them drop the raw response into HTML.
 func writeJSON(w http.ResponseWriter, statusCode int, v any) {
 	data, err := jsonv2.Marshal(v)
 	if err != nil {
@@ -161,7 +162,7 @@ func (h *Handler) rememberFailure(key string, fe *fetchError) {
 	if err != nil {
 		return
 	}
-	h.negativeCache.Set("neg:"+key, data, proxyNegativeCacheTTL)
+	_ = h.negativeCache.Set("neg:"+key, data, proxyNegativeCacheTTL)
 }
 
 // recallFailure returns a previously remembered fetchError for key, if any
@@ -345,7 +346,7 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 		return err
 	}
 	if body != nil {
-		body.Close()
+		_ = body.Close()
 	}
 
 	storedOwner := ""
@@ -363,18 +364,18 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 			Str("key", key).
 			Str("key_name", scope.KeyName).
 			Msg("Denied mutation of legacy (unowned) image by scoped key")
-		return fmt.Errorf("image has no recorded owner; admin scope required")
+		return errors.New("image has no recorded owner; admin scope required")
 	}
 
 	if callerOwner == "" {
-		return fmt.Errorf("X-Owner-Id header is required")
+		return errors.New("X-Owner-Id header is required")
 	}
 	if callerOwner != storedOwner {
 		logger.Warn().
 			Str("key", key).
 			Str("key_name", scope.KeyName).
 			Msg("Owner mismatch on mutation attempt")
-		return fmt.Errorf("caller is not the owner of this image")
+		return errors.New("caller is not the owner of this image")
 	}
 	return nil
 }

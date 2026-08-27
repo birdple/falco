@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -42,13 +43,13 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var deletedKeys []string
-	// Claves que se pidió borrar y no se borraron. Antes se contaban sólo en el
-	// log y la respuesta salía `success: true` igual: con jay caído, el usuario
+	// Keys that were asked to be deleted and were not. These used to be counted
+	// only in the log while the response still said `success: true`: with jay
 	// pedía "borrar mis fotos", recibía `{"success":true,"count":0}`, y
-	// birdple-api lo asentaba como borrado. Las fotos seguían ahí y nadie
+	// down, a user asking to "delete my photos" got `{"success":true,"count":0}`
+	// and birdple-api recorded it as deleted. The photos were still there and
 	// reintentaba.
-	var failedKeys []string
+	var tally deleteTally
 	var truncated bool
 
 	if req.Prefix != "" {
@@ -64,83 +65,23 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			h.sendError(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list files for deletion")
 			return
 		}
+		truncated = len(results) >= listCap
 
-		if len(results) >= listCap {
-			truncated = true
-		}
-
-		// Fan-out parallel deletes. Per-key ownership check runs INSIDE the
-		// worker — a scoped caller must not be able to delete another user's
-		// image by passing a shared prefix. Admin scope bypasses the check
-		// inside checkOwnership.
-		keys := make(chan string, len(results))
+		listedKeys := make([]string, 0, len(results))
 		for _, item := range results {
-			keys <- item.Key
+			listedKeys = append(listedKeys, item.Key)
 		}
-		close(keys)
-
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-
-		for range deleteWorkers {
-			wg.Go(func() {
-				for key := range keys {
-					if ownErr := h.checkOwnership(r, storageBackend, key); ownErr != nil {
-						if storage.IsNotFound(ownErr) {
-							// Ya no existe: el resultado que pedía el llamador.
-							logger.Warn().Str("key", key).Msg("File not found for deletion")
-							continue
-						}
-						logger.Warn().Err(ownErr).Str("key", key).Msg("Ownership check failed; skipping delete")
-						mu.Lock()
-						failedKeys = append(failedKeys, key)
-						mu.Unlock()
-						continue
-					}
-					if err := storageBackend.Delete(ctx, key); err != nil {
-						logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
-						mu.Lock()
-						failedKeys = append(failedKeys, key)
-						mu.Unlock()
-						continue
-					}
-					h.invalidateCache(key)
-					mu.Lock()
-					deletedKeys = append(deletedKeys, key)
-					mu.Unlock()
-				}
-			})
-		}
-		wg.Wait()
+		h.deleteKeysParallel(ctx, r, storageBackend, listedKeys, &tally)
 	}
 
-	if len(req.Keys) > 0 {
-		for _, key := range req.Keys {
-			if ownErr := h.checkOwnership(r, storageBackend, key); ownErr != nil {
-				if storage.IsNotFound(ownErr) {
-					logger.Warn().Str("key", key).Msg("File not found for deletion")
-					continue
-				}
-				logger.Warn().Err(ownErr).Str("key", key).Msg("Ownership check failed; skipping delete")
-				failedKeys = append(failedKeys, key)
-				continue
-			}
-			if err := storageBackend.Delete(ctx, key); err != nil {
-				if storage.IsNotFound(err) {
-					logger.Warn().Str("key", key).Msg("File not found for deletion")
-					continue
-				}
-				logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
-				failedKeys = append(failedKeys, key)
-				continue
-			}
-			h.invalidateCache(key)
-			deletedKeys = append(deletedKeys, key)
-		}
+	for _, key := range req.Keys {
+		h.deleteKey(ctx, r, storageBackend, key, &tally)
 	}
 
-	// Un borrado que no borró todo lo que se le pidió NO es un éxito. El
-	// llamador tiene que poder distinguirlo para reintentar.
+	deletedKeys, failedKeys := tally.results()
+
+	// A delete that did not delete everything it was asked to is NOT a success.
+	// The caller has to be able to tell the difference in order to retry.
 	response := types.DeleteResponse{
 		Success:   len(failedKeys) == 0,
 		Deleted:   deletedKeys,
@@ -162,8 +103,8 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // invalidateCache drops every cached variant of a key that no longer exists (or
-// whose bytes changed). Sin esto, `LRUCache.Delete` existía y no lo llamaba
-// nadie: la imagen borrada se seguía sirviendo hasta 24 h desde RAM.
+// whose bytes changed). Without this, LRUCache.Delete existed and nothing ever
+// called it: a deleted image kept being served from RAM for up to 24 hours.
 func (h *Handler) invalidateCache(key string) {
 	if h.imageProcessor == nil {
 		return
@@ -171,4 +112,90 @@ func (h *Handler) invalidateCache(key string) {
 	if n := h.imageProcessor.InvalidateCacheForKey(key); n > 0 {
 		logger.Debug().Str("key", key).Int("variants", n).Msg("Invalidated cached variants")
 	}
+}
+
+// deleteTally accumulates the outcome of every key a delete request touched.
+// The mutex is there because the prefix path fans out across workers.
+type deleteTally struct {
+	mu      sync.Mutex
+	deleted []string
+	failed  []string
+}
+
+func (t *deleteTally) recordDeleted(key string) {
+	t.mu.Lock()
+	t.deleted = append(t.deleted, key)
+	t.mu.Unlock()
+}
+
+func (t *deleteTally) recordFailed(key string) {
+	t.mu.Lock()
+	t.failed = append(t.failed, key)
+	t.mu.Unlock()
+}
+
+func (t *deleteTally) results() (deleted, failed []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.deleted, t.failed
+}
+
+// deleteKeysParallel deletes a batch of keys across a bounded worker pool.
+//
+// The per-key ownership check runs INSIDE the worker, not before the fan-out: a
+// scoped caller must not be able to delete somebody else's image by passing a
+// prefix they share. Admin scope bypasses the check inside checkOwnership.
+func (h *Handler) deleteKeysParallel(
+	ctx context.Context, r *http.Request, backend storage.StorageBackend,
+	keys []string, tally *deleteTally,
+) {
+	queue := make(chan string, len(keys))
+	for _, key := range keys {
+		queue <- key
+	}
+	close(queue)
+
+	var wg sync.WaitGroup
+	for range deleteWorkers {
+		wg.Go(func() {
+			for key := range queue {
+				h.deleteKey(ctx, r, backend, key, tally)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// deleteKey deletes one key and records the outcome.
+//
+// A key that is already gone counts as neither deleted nor failed: the caller
+// asked for it to not be there, and it is not there. Anything else — a failed
+// ownership check, a backend error — goes to the failed list, because a delete
+// that did not delete must not be reported as success.
+func (h *Handler) deleteKey(
+	ctx context.Context, r *http.Request, backend storage.StorageBackend,
+	key string, tally *deleteTally,
+) {
+	if err := h.checkOwnership(r, backend, key); err != nil {
+		if storage.IsNotFound(err) {
+			logger.Warn().Str("key", key).Msg("File not found for deletion")
+			return
+		}
+		logger.Warn().Err(err).Str("key", key).Msg("Ownership check failed; skipping delete")
+		tally.recordFailed(key)
+		return
+	}
+
+	if err := backend.Delete(ctx, key); err != nil {
+		if storage.IsNotFound(err) {
+			logger.Warn().Str("key", key).Msg("File not found for deletion")
+			return
+		}
+		logger.Warn().Err(err).Str("key", key).Msg("Failed to delete file")
+		tally.recordFailed(key)
+		return
+	}
+
+	h.invalidateCache(key)
+	tally.recordDeleted(key)
 }

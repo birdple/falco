@@ -127,7 +127,7 @@ func proxyExtFromSegment(segment, defaultFormat string) (id, format string) {
 // proxyCacheKey generates a deterministic cache key for a proxy request.
 func proxyCacheKey(rawURL, ext, w, h, q, fit string) string {
 	h256 := sha256.New()
-	fmt.Fprintf(h256, "%s|%s|%s|%s|%s|%s", rawURL, ext, w, h, q, fit)
+	_, _ = fmt.Fprintf(h256, "%s|%s|%s|%s|%s|%s", rawURL, ext, w, h, q, fit)
 	return fmt.Sprintf("proxy:%x", h256.Sum(nil))
 }
 
@@ -137,152 +137,20 @@ func proxyCacheKey(rawURL, ext, w, h, q, fit string) string {
 // Route: GET /api/v1/proxy/*
 // The wildcard captures "{hash}.{ext}" (e.g. "a1b2c3d4e5f6.webp").
 func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
-	// Un solo parseo del query para todo el handler (ver HandleDelivery).
+	// Parsed once for the whole handler (see HandleDelivery).
 	query := r.URL.Query()
 
-	// ── 1. Extract and validate the path segment ──────────────────────
-	segment := chi.URLParam(r, "*")
-	if segment == "" {
-		h.sendError(w, http.StatusBadRequest, "MISSING_SEGMENT", "Missing path segment")
+	target, targetErr := h.resolveProxyTarget(r, query)
+	if targetErr != nil {
+		h.sendError(w, targetErr.status, targetErr.code, targetErr.message)
 		return
 	}
+	rawURL, extFormat := target.rawURL, target.extFormat
 
-	defaultFormat := h.config.Processing.DefaultFormat
-	if defaultFormat == "" {
-		defaultFormat = "webp"
-	}
-
-	_, extFormat := proxyExtFromSegment(segment, defaultFormat)
-	if extFormat == "" {
-		h.sendError(w, http.StatusBadRequest, "INVALID_EXTENSION", "Unknown or missing image extension")
+	params, paramErr := h.parseProxyParams(query, extFormat)
+	if paramErr != nil {
+		h.sendError(w, http.StatusBadRequest, paramErr.code, paramErr.message)
 		return
-	}
-
-	// ── 2. Obtain and validate the target URL ─────────────────────────
-	rawURL := query.Get("url")
-	if rawURL == "" {
-		h.sendError(w, http.StatusBadRequest, "MISSING_URL", "url query parameter is required")
-		return
-	}
-
-	if len(rawURL) > MaxURLLength {
-		h.sendError(w, http.StatusBadRequest, "URL_TOO_LONG", "url exceeds maximum allowed length")
-		return
-	}
-
-	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		h.sendError(w, http.StatusBadRequest, "INVALID_URL", "url must be an absolute http/https URL")
-		return
-	}
-
-	hostname := parsed.Hostname()
-
-	// ── 3. Allowlist check ────────────────────────────────────────────
-	allowlist := cachedProxyAllowedHosts()
-	if _, ok := allowlist[strings.ToLower(hostname)]; !ok {
-		logger.Warn().Str("host", hostname).Msg("Proxy request to disallowed host")
-		h.sendError(w, http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not in the proxy allowlist")
-		return
-	}
-
-	// ── 4. SSRF guard ─────────────────────────────────────────────────
-	// isPrivateHost performs DNS resolution — only do this after the
-	// allowlist check so we never resolve hostile/unexpected hostnames.
-	if isPrivateHost(hostname) {
-		logger.Warn().Str("host", hostname).Msg("Proxy SSRF guard triggered")
-		h.sendError(w, http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not allowed")
-		return
-	}
-
-	// ── 5. Parse processing params from query string ──────────────────
-	params := &processor.ProcessingParams{}
-
-	if width := utils.QueryParam(query, "w", "width"); width != "" {
-		if widthVal, err := strconv.Atoi(width); err == nil && widthVal > 0 && widthVal <= h.config.Processing.MaxDimensions.Width {
-			if widthVal < MinDimensionPixels {
-				h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Width must be at least 16 pixels")
-				return
-			}
-			params.Width = widthVal
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_WIDTH", "Invalid width parameter")
-			return
-		}
-	}
-
-	if height := utils.QueryParam(query, "h", "height"); height != "" {
-		if heightVal, err := strconv.Atoi(height); err == nil && heightVal > 0 && heightVal <= h.config.Processing.MaxDimensions.Height {
-			if heightVal < MinDimensionPixels {
-				h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Height must be at least 16 pixels")
-				return
-			}
-			params.Height = heightVal
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_HEIGHT", "Invalid height parameter")
-			return
-		}
-	}
-
-	if quality := utils.QueryParam(query, "q", "quality"); quality != "" {
-		if q, err := strconv.Atoi(quality); err == nil && q > 0 && q <= 100 {
-			params.Quality = q
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter")
-			return
-		}
-	}
-
-	if fit := query.Get("fit"); fit != "" {
-		if fit == FitCover || fit == FitContain || fit == FitFill {
-			params.Fit = fit
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_FIT", "Invalid fit parameter")
-			return
-		}
-	}
-
-	// Explicit ?f= overrides the path extension; extension is the default.
-	if format := utils.QueryParam(query, "f", "format"); format != "" {
-		if h.imageProcessor.ValidateFormat(format) {
-			params.Format = format
-		} else {
-			h.sendError(w, http.StatusBadRequest, "INVALID_FORMAT", "Unsupported format")
-			return
-		}
-	} else {
-		params.Format = extFormat
-	}
-
-	params.AutoOrient = query.Get("orient") != "0"
-	params.StripMetadata = query.Get("meta") != "1"
-
-	// ── 5b. Safety-net max width ──────────────────────────────────────
-	// When neither w nor h was supplied, cap width at PROXY_MAX_WIDTH so
-	// cache misses on full-resolution originals don't propagate huge files
-	// to the browser. Height is left unset so libvips scales proportionally
-	// — no cropping.
-	if params.Width == 0 && params.Height == 0 {
-		maxW := defaultProxyMaxWidth
-		if v := os.Getenv("PROXY_MAX_WIDTH"); v != "" {
-			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-				maxW = parsed
-			}
-		}
-		params.Width = maxW
-	}
-
-	// ── 5c. Default proxy quality ─────────────────────────────────────
-	// When no ?q= was supplied, use a lower default than delivery (85) since
-	// proxy images come from external CDNs and don't need archival quality.
-	if params.Quality == 0 {
-		proxyQ := defaultProxyQuality
-		if v := os.Getenv("PROXY_DEFAULT_QUALITY"); v != "" {
-			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 100 {
-				proxyQ = parsed
-			}
-		}
-		params.Quality = proxyQ
 	}
 
 	// ── 6. Cache key + LRU hit ────────────────────────────────────────
@@ -296,24 +164,8 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
-		contentType := h.imageProcessor.GetContentType(params.Format)
-		meta := &storage.ImageMetadata{
-			ID:          cacheKey,
-			ContentType: contentType,
-			Format:      params.Format,
-			Size:        int64(len(cachedData)),
-			// Stable epoch, not time.Now(): cacheKey is already a content
-			// hash of (url, format, w, h, q, fit), so any timestamp here
-			// is arbitrary. A moving CreatedAt changes the ETag on every
-			// single response (base.go's etag includes CreatedAt.Unix())
-			// and defeats conditional GETs at the CDN edge. Mirrors the
-			// same fix already in HandleDelivery's cache-hit path.
-			CreatedAt: time.Unix(0, 0),
-			MaxAge:    proxyMaxAge,
-			SMaxAge:   proxySMaxAge,
-		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		h.serveImage(w, r, bytes.NewReader(cachedData), meta)
+		h.serveImage(w, r, bytes.NewReader(cachedData), h.buildProxyCachedMetadata(cacheKey, params.Format, len(cachedData)))
 		return
 	}
 
@@ -322,10 +174,8 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve format default now that we know params (same logic as delivery).
-	if params.Format == "" {
-		params.Format = defaultFormat
-	}
+	// Same fallback chain as delivery: requested, then configured, then webp.
+	params.Format = h.resolveOutputFormat(params.Format)
 
 	// ── 7-8. Fetch + process, deduplicated by cacheKey ─────────────────
 	// sf.Do collapses N concurrent requests for the same (url, format, w,
@@ -336,120 +186,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// waiting on this key, so one client disconnecting must not cancel the
 	// fetch/process that other, still-connected clients are waiting on.
 	v, err, _ := h.sf.Do(cacheKey, func() (any, error) {
-		// Re-check both caches: a sibling request may have just populated
-		// them while this goroutine was queued behind sf.Do's internal lock.
-		if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
-			return &proxyResult{
-				data: cachedData,
-				meta: &storage.ImageMetadata{
-					ID: cacheKey, ContentType: h.imageProcessor.GetContentType(params.Format),
-					Format: params.Format, Size: int64(len(cachedData)),
-					CreatedAt: time.Unix(0, 0), MaxAge: proxyMaxAge, SMaxAge: proxySMaxAge,
-				},
-			}, nil
-		}
-		if fe, found := h.recallFailure(cacheKey); found {
-			return nil, fe
-		}
-
-		m := metrics.Default()
-
-		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer fetchCancel()
-		fetchReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
-		if err != nil {
-			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to build proxy fetch request")
-			return nil, &fetchError{http.StatusBadRequest, "INVALID_URL", "Could not build request for url"}
-		}
-		fetchReq.Header.Set("User-Agent", "falco-proxy/1.0")
-
-		// "fetch" is observed once, below, only on a successful read of the
-		// full body — mixing in fast failures (bad host, connection refused)
-		// would skew the histogram toward looking artificially fast and
-		// defeat its purpose: telling "the CDN is slow" apart from "there's
-		// a queue" (see the semaphore_wait metric in vips_processor.go).
-		fetchStart := time.Now()
-		resp, err := h.httpClient.Do(fetchReq)
-		if err != nil {
-			logger.Warn().Err(err).Str("url", rawURL).Msg("Proxy fetch failed")
-			fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image"}
-			h.rememberFailure(cacheKey, fe)
-			return nil, fe
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			logger.Warn().Int("status", resp.StatusCode).Str("url", rawURL).Msg("Proxy upstream non-2xx")
-			fe := &fetchError{http.StatusBadGateway, "UPSTREAM_ERROR", "Upstream returned a non-2xx status"}
-			h.rememberFailure(cacheKey, fe)
-			return nil, fe
-		}
-
-		// Validate Content-Type is image/*
-		ct := resp.Header.Get("Content-Type")
-		if !strings.HasPrefix(strings.ToLower(ct), "image/") {
-			logger.Warn().Str("content_type", ct).Str("url", rawURL).Msg("Proxy upstream returned non-image content type")
-			fe := &fetchError{http.StatusUnsupportedMediaType, "NOT_AN_IMAGE", "Upstream did not return an image"}
-			h.rememberFailure(cacheKey, fe)
-			return nil, fe
-		}
-
-		limitedBody := io.LimitReader(resp.Body, proxyMaxBodyBytes+1)
-		bodyBytes, err := io.ReadAll(limitedBody)
-		if err != nil {
-			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read proxy response body")
-			fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to read external image"}
-			h.rememberFailure(cacheKey, fe)
-			return nil, fe
-		}
-		m.ImageProcessingDuration.WithLabelValues("fetch").Observe(time.Since(fetchStart).Seconds())
-		if int64(len(bodyBytes)) > proxyMaxBodyBytes {
-			fe := &fetchError{http.StatusRequestEntityTooLarge, "IMAGE_TOO_LARGE", "External image exceeds maximum allowed size"}
-			h.rememberFailure(cacheKey, fe)
-			return nil, fe
-		}
-
-		// Processing failures are not negative-cached: unlike a dead link or
-		// a non-image response, they're not a stable property of the URL
-		// (could be a transient libvips/memory hiccup), so retrying on the
-		// next request is the right default. Duration (semaphore_wait +
-		// transform) is recorded inside Process() itself — vips_processor.go.
-		processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer processCancel()
-		processedImage, err := h.imageProcessor.Process(processCtx, bytes.NewReader(bodyBytes), params, cacheKey)
-		if err != nil {
-			m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "error").Inc()
-			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
-			return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
-		}
-		m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "success").Inc()
-		defer processedImage.Data.Close()
-		data, err := io.ReadAll(processedImage.Data)
-		if err != nil {
-			logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read processed proxy image")
-			return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
-		}
-
-		meta := &storage.ImageMetadata{
-			ID:          cacheKey,
-			Format:      processedImage.Metadata.Format,
-			Size:        processedImage.Metadata.Size,
-			Width:       processedImage.Metadata.Width,
-			Height:      processedImage.Metadata.Height,
-			ContentType: processedImage.Metadata.ContentType,
-			// Stable epoch, not processedImage.Metadata.CreatedAt (time.Now()):
-			// see the cache-hit branch above — the same cacheKey must always
-			// produce the same ETag, whether served from cold processing or a
-			// warm LRU hit.
-			CreatedAt: time.Unix(0, 0),
-			// Proxy responses get long CDN TTLs; no per-request override.
-			MaxAge:  proxyMaxAge,
-			SMaxAge: proxySMaxAge,
-		}
-		if meta.ContentType == "" {
-			meta.ContentType = h.imageProcessor.GetContentType(meta.Format)
-		}
-		return &proxyResult{data: data, meta: meta}, nil
+		return h.fetchAndProcessRemote(rawURL, cacheKey, params)
 	})
 
 	if err != nil {
@@ -473,4 +210,301 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 type proxyResult struct {
 	data []byte
 	meta *storage.ImageMetadata
+}
+
+// proxyTarget is a proxy request whose destination has been validated.
+type proxyTarget struct {
+	rawURL    string
+	hostname  string
+	extFormat string
+}
+
+// proxyError is a rejected proxy request, with the HTTP status it maps to.
+// Unlike paramError, the status varies: a disallowed host is a 403, a malformed
+// URL a 400.
+type proxyError struct {
+	status  int
+	code    string
+	message string
+}
+
+// resolveProxyTarget validates everything about where the request points before
+// a single byte is fetched.
+//
+// The order of the checks is a security property, not a style choice:
+//
+//  1. the path extension has to name a known image format;
+//  2. the url parameter has to be an absolute http/https URL within the length
+//     cap;
+//  3. its host has to be on the allowlist; and only then
+//  4. the SSRF guard resolves it.
+//
+// Step 4 performs DNS resolution, so it comes last on purpose — resolving a
+// hostname is itself an outbound request, and doing it before the allowlist
+// check would let anyone make falco resolve arbitrary names.
+func (h *Handler) resolveProxyTarget(r *http.Request, query url.Values) (proxyTarget, *proxyError) {
+	segment := chi.URLParam(r, "*")
+	if segment == "" {
+		return proxyTarget{}, &proxyError{http.StatusBadRequest, "MISSING_SEGMENT", "Missing path segment"}
+	}
+
+	_, extFormat := proxyExtFromSegment(segment, h.resolveOutputFormat(""))
+	if extFormat == "" {
+		return proxyTarget{}, &proxyError{http.StatusBadRequest, "INVALID_EXTENSION", "Unknown or missing image extension"}
+	}
+
+	rawURL := query.Get("url")
+	switch {
+	case rawURL == "":
+		return proxyTarget{}, &proxyError{http.StatusBadRequest, "MISSING_URL", "url query parameter is required"}
+	case len(rawURL) > MaxURLLength:
+		return proxyTarget{}, &proxyError{http.StatusBadRequest, "URL_TOO_LONG", "url exceeds maximum allowed length"}
+	}
+
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return proxyTarget{}, &proxyError{http.StatusBadRequest, "INVALID_URL", "url must be an absolute http/https URL"}
+	}
+	hostname := parsed.Hostname()
+
+	if _, ok := cachedProxyAllowedHosts()[strings.ToLower(hostname)]; !ok {
+		logger.Warn().Str("host", hostname).Msg("Proxy request to disallowed host")
+		return proxyTarget{}, &proxyError{http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not in the proxy allowlist"}
+	}
+
+	if isPrivateHost(hostname) {
+		logger.Warn().Str("host", hostname).Msg("Proxy SSRF guard triggered")
+		return proxyTarget{}, &proxyError{http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not allowed"}
+	}
+
+	return proxyTarget{rawURL: rawURL, hostname: hostname, extFormat: extFormat}, nil
+}
+
+// parseProxyParams turns the proxy query string into processing parameters.
+//
+// It accepts a narrower set than delivery does — no crop, rotation or colour
+// adjustment — because the proxy exists to re-encode somebody else's image at a
+// sane size, not to be a general-purpose editor pointed at third-party CDNs.
+//
+// Two defaults that delivery does not apply:
+//
+//   - with neither w nor h given, width is capped at PROXY_MAX_WIDTH so that a
+//     cache miss on a full-resolution original does not push a huge file to the
+//     browser. Height stays unset so libvips scales proportionally, never crops.
+//   - quality defaults lower than delivery's, because these images come from
+//     external CDNs and are not archival.
+func (h *Handler) parseProxyParams(query url.Values, extFormat string) (*processor.ProcessingParams, *paramError) {
+	params := &processor.ProcessingParams{}
+
+	if raw := utils.QueryParam(query, "w", "width"); raw != "" {
+		width, err := parseDimension(raw, h.config.Processing.MaxDimensions.Width)
+		if err != nil {
+			return nil, &paramError{"INVALID_WIDTH", err.Error()}
+		}
+		params.Width = width
+	}
+
+	if raw := utils.QueryParam(query, "h", "height"); raw != "" {
+		height, err := parseDimension(raw, h.config.Processing.MaxDimensions.Height)
+		if err != nil {
+			return nil, &paramError{"INVALID_HEIGHT", err.Error()}
+		}
+		params.Height = height
+	}
+
+	if raw := utils.QueryParam(query, "q", "quality"); raw != "" {
+		quality, err := strconv.Atoi(raw)
+		if err != nil || quality <= 0 || quality > maxQuality {
+			return nil, &paramError{"INVALID_QUALITY", "Invalid quality parameter"}
+		}
+		params.Quality = quality
+	}
+
+	if raw := query.Get("fit"); raw != "" {
+		if raw != FitCover && raw != FitContain && raw != FitFill {
+			return nil, &paramError{"INVALID_FIT", "Invalid fit parameter"}
+		}
+		params.Fit = raw
+	}
+
+	// An explicit ?f= wins over the path extension; the extension is the default.
+	switch raw := utils.QueryParam(query, "f", "format"); {
+	case raw != "" && h.imageProcessor.ValidateFormat(raw):
+		params.Format = raw
+	case raw != "":
+		return nil, &paramError{"INVALID_FORMAT", "Unsupported format"}
+	default:
+		params.Format = extFormat
+	}
+
+	params.AutoOrient = query.Get("orient") != "0"
+	params.StripMetadata = query.Get("meta") != "1"
+
+	if params.Width == 0 && params.Height == 0 {
+		params.Width = envPositiveInt("PROXY_MAX_WIDTH", defaultProxyMaxWidth, 0)
+	}
+	if params.Quality == 0 {
+		params.Quality = envPositiveInt("PROXY_DEFAULT_QUALITY", defaultProxyQuality, maxQuality)
+	}
+
+	return params, nil
+}
+
+// envPositiveInt reads a positive integer override from the environment,
+// falling back to fallback when it is unset, unparseable, or outside
+// (0, maxValue]. A maxValue of 0 means "no upper bound".
+func envPositiveInt(name string, fallback, maxValue int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 || (maxValue > 0 && v > maxValue) {
+		return fallback
+	}
+	return v
+}
+
+// buildProxyCachedMetadata describes proxied bytes served from the LRU cache.
+//
+// CreatedAt is a fixed epoch rather than time.Now(): cacheKey is already a
+// content hash of (url, format, w, h, q, fit), so any real timestamp would be
+// arbitrary — and a moving one changes the ETag on every response (base.go
+// folds CreatedAt.Unix() into it), which defeats conditional GETs at the CDN
+// edge.
+func (h *Handler) buildProxyCachedMetadata(cacheKey, format string, size int) *storage.ImageMetadata {
+	return &storage.ImageMetadata{
+		ID:          cacheKey,
+		ContentType: h.imageProcessor.GetContentType(format),
+		Format:      format,
+		Size:        int64(size),
+		CreatedAt:   time.Unix(0, 0),
+		MaxAge:      proxyMaxAge,
+		SMaxAge:     proxySMaxAge,
+	}
+}
+
+// fetchAndProcessRemote downloads an external image and re-encodes it. It is
+// the body shared by every request that collapsed onto the same cache key.
+//
+// Its contexts come from context.Background(), not the request's: the work is
+// shared, so one client hanging up must not cancel the fetch the others are
+// still waiting on.
+//
+// Which failures get negative-cached is a deliberate distinction. A dead link, a
+// non-image response or an oversized body are stable properties of the URL and
+// are remembered, so a crawler hammering the same bad URL does not cost a fetch
+// every time. A processing failure is NOT remembered: it can be transient, and
+// caching it would keep serving an error after the cause is gone.
+func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *processor.ProcessingParams) (*proxyResult, error) {
+	// Re-check both caches: a sibling request may have just populated
+	// them while this goroutine was queued behind sf.Do's internal lock.
+	if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
+		return &proxyResult{
+			data: cachedData,
+			meta: h.buildProxyCachedMetadata(cacheKey, params.Format, len(cachedData)),
+		}, nil
+	}
+	if fe, found := h.recallFailure(cacheKey); found {
+		return nil, fe
+	}
+
+	m := metrics.Default()
+
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer fetchCancel()
+	fetchReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to build proxy fetch request")
+		return nil, &fetchError{http.StatusBadRequest, "INVALID_URL", "Could not build request for url"}
+	}
+	fetchReq.Header.Set("User-Agent", "falco-proxy/1.0")
+
+	// "fetch" is observed once, below, only on a successful read of the
+	// full body — mixing in fast failures (bad host, connection refused)
+	// would skew the histogram toward looking artificially fast and
+	// defeat its purpose: telling "the CDN is slow" apart from "there's
+	// a queue" (see the semaphore_wait metric in vips_processor.go).
+	fetchStart := time.Now()
+	resp, err := h.httpClient.Do(fetchReq)
+	if err != nil {
+		logger.Warn().Err(err).Str("url", rawURL).Msg("Proxy fetch failed")
+		fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image"}
+		h.rememberFailure(cacheKey, fe)
+		return nil, fe
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn().Int("status", resp.StatusCode).Str("url", rawURL).Msg("Proxy upstream non-2xx")
+		fe := &fetchError{http.StatusBadGateway, "UPSTREAM_ERROR", "Upstream returned a non-2xx status"}
+		h.rememberFailure(cacheKey, fe)
+		return nil, fe
+	}
+
+	// Validate Content-Type is image/*
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(strings.ToLower(ct), "image/") {
+		logger.Warn().Str("content_type", ct).Str("url", rawURL).Msg("Proxy upstream returned non-image content type")
+		fe := &fetchError{http.StatusUnsupportedMediaType, "NOT_AN_IMAGE", "Upstream did not return an image"}
+		h.rememberFailure(cacheKey, fe)
+		return nil, fe
+	}
+
+	limitedBody := io.LimitReader(resp.Body, proxyMaxBodyBytes+1)
+	bodyBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read proxy response body")
+		fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to read external image"}
+		h.rememberFailure(cacheKey, fe)
+		return nil, fe
+	}
+	m.ImageProcessingDuration.WithLabelValues("fetch").Observe(time.Since(fetchStart).Seconds())
+	if int64(len(bodyBytes)) > proxyMaxBodyBytes {
+		fe := &fetchError{http.StatusRequestEntityTooLarge, "IMAGE_TOO_LARGE", "External image exceeds maximum allowed size"}
+		h.rememberFailure(cacheKey, fe)
+		return nil, fe
+	}
+
+	// Processing failures are not negative-cached: unlike a dead link or
+	// a non-image response, they're not a stable property of the URL
+	// (could be a transient libvips/memory hiccup), so retrying on the
+	// next request is the right default. Duration (semaphore_wait +
+	// transform) is recorded inside Process() itself — vips_processor.go.
+	processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer processCancel()
+	processedImage, err := h.imageProcessor.Process(processCtx, bytes.NewReader(bodyBytes), params, cacheKey)
+	if err != nil {
+		m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "error").Inc()
+		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
+		return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+	}
+	m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "success").Inc()
+	defer func() { _ = processedImage.Data.Close() }()
+	data, err := io.ReadAll(processedImage.Data)
+	if err != nil {
+		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read processed proxy image")
+		return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
+	}
+
+	meta := &storage.ImageMetadata{
+		ID:          cacheKey,
+		Format:      processedImage.Metadata.Format,
+		Size:        processedImage.Metadata.Size,
+		Width:       processedImage.Metadata.Width,
+		Height:      processedImage.Metadata.Height,
+		ContentType: processedImage.Metadata.ContentType,
+		// Stable epoch, not processedImage.Metadata.CreatedAt (time.Now()):
+		// see the cache-hit branch above — the same cacheKey must always
+		// produce the same ETag, whether served from cold processing or a
+		// warm LRU hit.
+		CreatedAt: time.Unix(0, 0),
+		// Proxy responses get long CDN TTLs; no per-request override.
+		MaxAge:  proxyMaxAge,
+		SMaxAge: proxySMaxAge,
+	}
+	if meta.ContentType == "" {
+		meta.ContentType = h.imageProcessor.GetContentType(meta.Format)
+	}
+	return &proxyResult{data: data, meta: meta}, nil
 }
