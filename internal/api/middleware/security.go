@@ -163,6 +163,8 @@ func NewAPIKeyAuth(apiKey string) *APIKeyAuth {
 // SetDeliveryExempt toggles whether the /api/v1/images/ prefix bypasses API
 // key auth. The default is true (HMAC gates delivery). Pass false to require
 // API keys on delivery in dev/non-HMAC deployments.
+//
+//nolint:revive // setter: the bool is the value being stored, not a control flag
 func (a *APIKeyAuth) SetDeliveryExempt(exempt bool) {
 	const deliveryPrefix = "/api/v1/images/"
 	filtered := make([]string, 0, len(a.exemptPathPrefixes))

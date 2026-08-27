@@ -1,3 +1,18 @@
+# `make check` es lo que tiene que pasar antes de un commit. El gate de lint
+# (.golangci.yml) es lo que impide que la legibilidad se vuelva a degradar.
+.PHONY: check check-fmt check-build
+check: check-fmt vet lint test check-build ## Todo lo que tiene que pasar antes de un commit
+	@echo "ok: check completo"
+
+check-fmt: ## Falla si algo está sin formatear
+	@test -z "$$(gofmt -l . | grep -v vendor)" || \
+		(echo "sin formatear:"; gofmt -l . | grep -v vendor; exit 1)
+
+check-build: ## Compila TODOS los paquetes para el host.
+	@# No usa el target `build`: ese cross-compila a Linux con CGO y no corre
+	@# en macOS, donde libvips es del host.
+	go build ./...
+
 # Makefile de falco — servicio de procesamiento de imágenes
 
 # Variables

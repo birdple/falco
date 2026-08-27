@@ -1,0 +1,106 @@
+# Config de golangci-lint para falco.
+#
+# Los linters por omisión (errcheck, govet, ineffassign, staticcheck, unused) son
+# básicamente "compila y no hay variables sin usar". Los agregados de acá cubren
+# dos cosas más: las clases de bug que este servicio puede pagar caro, y la
+# legibilidad — que es lo que se limpió en agosto de 2026 y lo que este gate
+# existe para que no se vuelva a perder.
+#
+# Se corre con `make check`.
+version: "2"
+
+linters:
+  # misspell SÍ corre acá: falco es un proyecto público y sus comentarios van en
+  # inglés, así que el diccionario del linter aplica de verdad.
+  enable:
+    - bodyclose      # un response body sin cerrar filtra la conexión
+    - errorlint      # == y type-assert sobre errores envueltos: fallan en silencio
+    - copyloopvar    # copias de variable de loop que ya no hacen falta
+    - nolintlint     # sin //nolint pelados: si se silencia algo, hay que decir por qué
+    - perfsprint
+    - revive
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+    - misspell
+
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: waitgroup-by-value
+        # Reglas de legibilidad agregadas en la limpieza de 2026-08:
+        - name: exported            # todo símbolo exportado con godoc
+        - name: var-naming
+        - name: confusing-naming    # dos nombres que difieren sólo en mayúsculas
+        - name: flag-parameter      # booleanos que ramifican el comportamiento
+        - name: bare-return
+        - name: package-comments
+
+  exclusions:
+    rules:
+      # En los tests se aceptan patrones más laxos: lo que se prueba muchas
+      # veces es justamente el valor concreto del error, y un helper de test no
+      # necesita godoc.
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - errorlint
+          - revive
+          # misspell fuera: los datos de prueba llevan palabras en español a
+          # propósito ("variantes", "presentes"), y el diccionario es inglés.
+          - misspell
+
+      # Código GENERADO: no se edita a mano, así que exigirle estilo sólo
+      # produce ruido que nadie puede resolver.
+      - path: (_templ\.go|mock_.*\.go|\.sql\.go|/db/sqlc/)
+        linters:
+          - revive
+          - errcheck
+          - errorlint
+          - perfsprint
+          - unconvert
+          - wastedassign
+          - whitespace
+
+      # Los nombres que "tartamudean" (storage.StorageConfig, cache.CacheStats)
+      # NO se renombran: falco es un proyecto público y esos tipos son su API.
+      # Renombrarlos por estilo rompería a todo consumidor externo, que es un
+      # precio mucho más alto que el de un nombre feo.
+      - path: (internal/storage/interfaces\.go|internal/cache/lru\.go|internal/pkg/circuitbreaker/storage\.go)
+        text: "stutters"
+        linters:
+          - revive
+
+formatters:
+  enable:
+    - gofmt

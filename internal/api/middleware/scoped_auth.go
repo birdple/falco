@@ -110,6 +110,8 @@ func NewScopedAPIKeyAuth(adminKey string, cfg *config.Config) *ScopedAPIKeyAuth 
 // SetDeliveryExempt toggles whether the "/api/v1/images/" prefix bypasses
 // API-key + scope checks. True is the default (HMAC gates delivery). Set to
 // false when HMAC_REQUIRED=false so scope still applies to delivery.
+//
+//nolint:revive // setter: the bool is the value being stored, not a control flag
 func (a *ScopedAPIKeyAuth) SetDeliveryExempt(exempt bool) {
 	a.exemptDeliveryWhenHMACPublic = exempt
 	// Rebuild the prefix list to match.
