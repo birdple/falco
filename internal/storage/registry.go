@@ -97,16 +97,17 @@ func (r *Registry) HealthAll(ctx context.Context) map[string]error {
 	return results
 }
 
-// Closer lo implementan los backends que dejan trabajo en vuelo y hay que
-// esperar al apagar (hoy: ReplicatedStorage con targets async).
+// Closer is implemented by backends that leave work in flight and have to be
+// waited on at shutdown — today, ReplicatedStorage with async targets.
 type Closer interface {
 	Close(ctx context.Context) error
 }
 
-// CloseAll espera a los backends registrados que tengan trabajo pendiente.
-// Devuelve un mapa nombre → error con SÓLO los que fallaron; vacío significa
-// que todos terminaron limpio. Los backends que no implementan Closer no
-// aparecen: no tienen nada que esperar.
+// CloseAll waits on every registered backend that has pending work.
+//
+// Returns a name → error map containing ONLY the ones that failed; empty means
+// they all finished cleanly. Backends that do not implement Closer are absent:
+// there is nothing to wait for.
 func (r *Registry) CloseAll(ctx context.Context) map[string]error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

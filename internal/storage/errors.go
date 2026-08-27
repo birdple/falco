@@ -1,3 +1,9 @@
+// Package storage abstracts where object bytes live.
+//
+// Several backends are supported — jay, S3, MinIO, R2, plain filesystem, and a
+// replicated wrapper over any of them. birdple-v2 runs on jay alone, but all of
+// them are part of falco's public surface and none should be removed as dead
+// code.
 package storage
 
 import "errors"

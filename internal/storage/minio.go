@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/birdple/falco/internal/pkg/logger"
@@ -47,9 +48,7 @@ func NewMinIOStorage(cfg *MinIOConfig) (*MinIOStorage, error) {
 	if err != nil {
 		// Check to see if we already own this bucket
 		exists, errBucketExists := minioClient.BucketExists(ctx, cfg.Bucket)
-		if errBucketExists == nil && exists {
-			// Bucket already exists, this is fine
-		} else {
+		if errBucketExists != nil || !exists {
 			return nil, fmt.Errorf("failed to create bucket: %w", err)
 		}
 	}
@@ -147,7 +146,7 @@ func (m *MinIOStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser,
 	// Get object info for metadata
 	info, err := object.Stat()
 	if err != nil {
-		object.Close()
+		_ = object.Close()
 		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
 			return nil, nil, ErrImageNotFound
 		}
@@ -207,19 +206,18 @@ func (m *MinIOStorage) Exists(ctx context.Context, key string) (bool, error) {
 // Health checks the health of the MinIO storage
 func (m *MinIOStorage) Health(ctx context.Context) error {
 	if m.client == nil {
-		return fmt.Errorf("MinIO client is not initialized")
+		return errors.New("MinIO client is not initialized")
 	}
 
 	// Try to list objects with max 1 result to verify connection and bucket existence
 	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	for objectInfo := range m.client.ListObjects(listCtx, m.bucket, minio.ListObjectsOptions{MaxKeys: 1}) {
-		if objectInfo.Err != nil {
-			return fmt.Errorf("storage health check failed: %w", objectInfo.Err)
-		}
-		// If we get an object or the loop terminates without error, we consider it healthy
-		break
+	// The first result is enough: if it arrives without an error, the bucket is
+	// answering. An unconditional `for ... break` said the same thing, but
+	// staticcheck reads that as a loop that never iterates (SA4004).
+	if objectInfo, ok := <-m.client.ListObjects(listCtx, m.bucket, minio.ListObjectsOptions{MaxKeys: 1}); ok && objectInfo.Err != nil {
+		return fmt.Errorf("storage health check failed: %w", objectInfo.Err)
 	}
 
 	return nil

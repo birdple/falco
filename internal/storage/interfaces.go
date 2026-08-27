@@ -93,6 +93,12 @@ type StorageStats struct {
 // StorageType represents the type of storage backend
 type StorageType string
 
+// The storage backends falco ships with. Each one is registered in the factory
+// and selected through STORAGE_BUCKET_<NAME>_TYPE.
+//
+// All of them are part of falco's public surface even when a given deployment
+// only uses one: birdple-v2 runs on jay alone, but s3, minio, r2 and filesystem
+// are what other users of the project run on.
 const (
 	StorageTypeFilesystem StorageType = "filesystem"
 	StorageTypeS3         StorageType = "s3"
@@ -104,6 +110,11 @@ const (
 // ReplicationMode defines how primary and secondary storage interact
 type ReplicationMode string
 
+// How a replicated backend treats its secondaries.
+//
+// sync waits for every secondary before acknowledging a write, async returns as
+// soon as the primary commits, and read-fallback replicates nothing but serves
+// reads from a secondary when the primary misses.
 const (
 	ReplicationSync         ReplicationMode = "sync"
 	ReplicationAsync        ReplicationMode = "async"

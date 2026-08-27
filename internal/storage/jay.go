@@ -80,7 +80,7 @@ func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 		// HeadBucket fallback — if CreateBucket says it exists we're fine.
 		if _, headErr := c.HeadBucket(cfg.Bucket); headErr != nil {
 			_ = c.Close()
-			return nil, fmt.Errorf("jay: ensure bucket %q: create: %w; head: %v", cfg.Bucket, err, headErr)
+			return nil, fmt.Errorf("jay: ensure bucket %q: create: %w; head: %w", cfg.Bucket, err, headErr)
 		}
 	}
 	return js, nil
@@ -96,7 +96,10 @@ func isBucketAlreadyExists(err error) bool {
 	return false
 }
 
-func isNotFound(err error) bool {
+// isJayNotFound reports whether a jay client error means "the object is not
+// there". Named for its backend to keep it distinct from the package-level
+// IsNotFound, which answers the same question for any backend.
+func isJayNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -109,7 +112,7 @@ func isNotFound(err error) bool {
 // Store uploads an object.
 func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
 	if metadata == nil {
-		return fmt.Errorf("jay: nil metadata")
+		return errors.New("jay: nil metadata")
 	}
 	metadata.StorageKey = key
 	if metadata.CreatedAt.IsZero() {
@@ -131,7 +134,7 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 func (s *JayStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
 	res, err := s.client.GetObject(s.bucket, key)
 	if err != nil {
-		if isNotFound(err) {
+		if isJayNotFound(err) {
 			return nil, nil, ErrImageNotFound
 		}
 		return nil, nil, fmt.Errorf("jay: get %s: %w", key, err)
@@ -150,7 +153,7 @@ func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if isNotFound(err) {
+	if isJayNotFound(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("jay: head %s: %w", key, err)
@@ -159,7 +162,7 @@ func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
 // Delete removes an object.
 func (s *JayStorage) Delete(ctx context.Context, key string) error {
 	if err := s.client.DeleteObject(s.bucket, key); err != nil {
-		if isNotFound(err) {
+		if isJayNotFound(err) {
 			return ErrImageNotFound
 		}
 		return fmt.Errorf("jay: delete %s: %w", key, err)
@@ -208,7 +211,7 @@ func (s *JayStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jay: stats call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("jay: stats http %d: %s", resp.StatusCode, string(b))
@@ -219,8 +222,9 @@ func (s *JayStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 		TotalSizeBytes int64  `json:"total_size_bytes"`
 	}
 	// Defaults de v2 a propósito, NO jsonx.Strict: jay se versiona aparte de
-	// falco y un campo nuevo en su respuesta de stats es un cambio aditivo. Con
-	// RejectUnknownMembers ese cambio tumbaría GetStats y con él el /health.
+	// falco, and a new field in its stats response is an additive change. With
+	// RejectUnknownMembers that change would break GetStats and, with it,
+	// /health.
 	if err := jsonv2.UnmarshalRead(resp.Body, &body); err != nil {
 		return nil, fmt.Errorf("jay: stats decode: %w", err)
 	}
