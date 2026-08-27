@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -51,18 +52,18 @@ func (v *validator) Validate(config *Config) error {
 // /api/v1/images/* unauthenticated.
 func (v *validator) validateSecurity(config *Config) error {
 	if config.Security.APIKeyRequired && config.Security.APIKey == "" {
-		return fmt.Errorf("security.api_key_required=true but security.api_key is empty")
+		return errors.New("security.api_key_required=true but security.api_key is empty")
 	}
 	if config.Security.HMACRequired {
 		if config.Security.HMACKey == "" {
-			return fmt.Errorf("security.hmac_required=true but security.hmac_key is empty")
+			return errors.New("security.hmac_required=true but security.hmac_key is empty")
 		}
 		if config.Security.HMACKeySalt == "" {
-			return fmt.Errorf("security.hmac_required=true but security.hmac_salt is empty")
+			return errors.New("security.hmac_required=true but security.hmac_salt is empty")
 		}
 	}
 	if config.Security.APIKeyRequired && !config.Security.HMACRequired {
-		return fmt.Errorf("security.api_key_required=true requires security.hmac_required=true " +
+		return errors.New("security.api_key_required=true requires security.hmac_required=true " +
 			"because the image delivery route cannot be protected by API key alone " +
 			"(browsers cannot carry API keys on image URLs)")
 	}
@@ -76,7 +77,7 @@ func (v *validator) validateServer(config *Config) error {
 	}
 
 	if config.Server.Host == "" {
-		return fmt.Errorf("host cannot be empty")
+		return errors.New("host cannot be empty")
 	}
 
 	return nil
@@ -100,12 +101,12 @@ func (v *validator) validateStorage(config *Config) error {
 
 	// Must have at least one bucket
 	if len(config.Storage.Buckets) == 0 {
-		return fmt.Errorf("at least one bucket must be configured")
+		return errors.New("at least one bucket must be configured")
 	}
 
 	// Default bucket must exist
 	if config.Storage.Default == "" {
-		return fmt.Errorf("storage.default is required")
+		return errors.New("storage.default is required")
 	}
 	if _, ok := config.Storage.Buckets[config.Storage.Default]; !ok {
 		return fmt.Errorf("default bucket %q not found in storage.buckets", config.Storage.Default)
