@@ -1,3 +1,8 @@
+// Package views holds the view models for falco's admin panel, plus the
+// templ-generated rendering code.
+//
+// The *_templ.go files here are GENERATED from .templ sources — edit those, then
+// re-run templ.
 package views
 
 import "time"

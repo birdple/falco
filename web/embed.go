@@ -1,3 +1,5 @@
+// Package web embeds the admin panel's static assets into the binary, so the UI
+// works from a scratch container with no files alongside it.
 package web
 
 import "embed"

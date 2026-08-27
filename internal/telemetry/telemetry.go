@@ -1,5 +1,11 @@
-// TODO: Extract to shared module (github.com/birdple/birdple-telemetry-go) once
-// private module auth is configured in Dokploy's Docker build pipeline.
+// Package telemetry wires up OpenTelemetry tracing and metrics.
+//
+// This package is a near-copy across owl, auk and falco, and the copies are NOT
+// identical: auk returns early when no OTLP endpoint is configured, while owl
+// and falco initialise the exporter regardless. With no collector listening,
+// those two log "connection refused" until one appears.
+//
+// Keep that difference in mind before copying changes between them.
 package telemetry
 
 import (
