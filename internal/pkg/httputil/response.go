@@ -20,9 +20,9 @@ type ErrorInfo struct {
 
 // WriteJSON writes a JSON response to the http.ResponseWriter.
 //
-// Serializa antes de escribir la cabecera: así un error de marshal se devuelve
-// al llamador con el ResponseWriter todavía intacto, en lugar de dejar un 200
-// con el cuerpo truncado.
+// Marshals before writing the header, so a marshal error comes back to the
+// caller with the ResponseWriter still untouched instead of leaving a 200 with a
+// truncated body.
 func WriteJSON(w http.ResponseWriter, statusCode int, data any) error {
 	body, err := jsonv2.Marshal(data)
 	if err != nil {
