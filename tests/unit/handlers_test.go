@@ -40,7 +40,7 @@ func TestHandleUpload_BinarySuccess(t *testing.T) {
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0} // JPEG header
 
-	req := httptest.NewRequest("POST", "/upload", bytes.NewReader(imageData))
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(imageData))
 	req.Header.Set("Content-Type", "image/jpeg")
 
 	mockProcessor.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
@@ -100,7 +100,7 @@ func TestHandleDelivery_Success(t *testing.T) {
 
 	mockProcessor.On("ValidateFormat", mock.Anything).Return(true).Maybe()
 
-	req := httptest.NewRequest("GET", "/delivery/test-key", nil)
+	req := httptest.NewRequest(http.MethodGet, "/delivery/test-key", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "test-key")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -122,7 +122,7 @@ func TestHandleList_Success(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/list", nil)
+	req := httptest.NewRequest(http.MethodGet, "/list", nil)
 
 	expectedResults := []storage.ListResult{
 		{Key: "image1.jpg", Size: 1024},
@@ -154,7 +154,7 @@ func TestHandleDelete_Success(t *testing.T) {
 		Keys: []string{"test-key"},
 	}
 	reqBody, _ := json.Marshal(deleteReq)
-	req := httptest.NewRequest("DELETE", "/delete", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	mockStorage.On("Delete", mock.Anything, "test-key").
@@ -184,7 +184,7 @@ func TestHandleHealth_Success(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 
 	mockStorage.On("Health", mock.Anything).Return(nil)
 
@@ -210,7 +210,7 @@ func TestHandleUpload_MissingFile(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("POST", "/upload", bytes.NewReader([]byte{}))
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader([]byte{}))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
 
 	w := httptest.NewRecorder()
@@ -230,7 +230,7 @@ func TestHandleDelivery_MissingID(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/delivery/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/delivery/", nil)
 
 	w := httptest.NewRecorder()
 	h.HandleDelivery(w, req)
@@ -248,7 +248,7 @@ func TestHandleDelete_InvalidJSON(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("DELETE", "/delete", bytes.NewReader([]byte("invalid json")))
+	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader([]byte("invalid json")))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()

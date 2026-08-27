@@ -51,7 +51,7 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 	part.Write(imageData)
 	writer.Close()
 
-	req := httptest.NewRequest("POST", "/upload", body)
+	req := httptest.NewRequest(http.MethodPost, "/upload", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	// Setup mocks
@@ -96,7 +96,7 @@ func TestHandleUpload_JSONWithURL(t *testing.T) {
 	}
 	reqBody, _ := json.Marshal(uploadReq)
 
-	req := httptest.NewRequest("POST", "/upload", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	// This will fail in practice because we can't actually fetch the URL
@@ -123,7 +123,7 @@ func TestHandleUpload_InvalidQuality(t *testing.T) {
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
-	req := httptest.NewRequest("POST", "/upload?quality=invalid", bytes.NewReader(imageData))
+	req := httptest.NewRequest(http.MethodPost, "/upload?quality=invalid", bytes.NewReader(imageData))
 	req.Header.Set("Content-Type", "image/jpeg")
 
 	w := httptest.NewRecorder()
@@ -173,7 +173,7 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 		}, nil)
 
 	// Request with transformation parameters
-	req := httptest.NewRequest("GET", "/delivery/test-key?w=100&h=100&f=webp&q=80", nil)
+	req := httptest.NewRequest(http.MethodGet, "/delivery/test-key?w=100&h=100&f=webp&q=80", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "test-key")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -197,7 +197,7 @@ func TestHandleDelivery_InvalidWidth(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/delivery/test-key?w=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/delivery/test-key?w=10", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "test-key")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -221,7 +221,7 @@ func TestHandleDelivery_InvalidFormat(t *testing.T) {
 
 	mockProcessor.On("ValidateFormat", "bmp").Return(false)
 
-	req := httptest.NewRequest("GET", "/delivery/test-key?f=bmp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/delivery/test-key?f=bmp", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "test-key")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -248,7 +248,7 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 		Prefix: "images/2024/",
 	}
 	reqBody, _ := json.Marshal(deleteReq)
-	req := httptest.NewRequest("DELETE", "/delete", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	// Mock listing files with prefix
@@ -289,7 +289,7 @@ func TestHandleDelete_MissingParameters(t *testing.T) {
 
 	deleteReq := types.DeleteRequest{}
 	reqBody, _ := json.Marshal(deleteReq)
-	req := httptest.NewRequest("DELETE", "/delete", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -310,7 +310,7 @@ func TestHandleList_WithPrefix(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/list?prefix=images/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/list?prefix=images/", nil)
 
 	expectedResults := []storage.ListResult{
 		{Key: "photo1.jpg", Size: 1024},
@@ -337,7 +337,7 @@ func TestHandleList_StorageError(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/list", nil)
+	req := httptest.NewRequest(http.MethodGet, "/list", nil)
 
 	mockStorage.On("List", mock.Anything, "").Return([]storage.ListResult{}, errors.New("storage error"))
 
@@ -359,7 +359,7 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 
 	mockStorage.On("Health", mock.Anything).Return(errors.New("storage unavailable"))
 
@@ -393,7 +393,7 @@ func TestHandleUpdate_Success(t *testing.T) {
 		Format:  "webp",
 	}
 	reqBody, _ := json.Marshal(updateReq)
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	// Mock expectations
@@ -431,7 +431,7 @@ func TestHandleUpdate_InvalidJSON(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader([]byte("invalid")))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader([]byte("invalid")))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -457,7 +457,7 @@ func TestHandleUpdate_MissingURL(t *testing.T) {
 		Quality: 80,
 	}
 	reqBody, _ := json.Marshal(updateReq)
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -483,7 +483,7 @@ func TestHandleUpdate_MissingBucket(t *testing.T) {
 		Quality: 80,
 	}
 	reqBody, _ := json.Marshal(updateReq)
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -509,7 +509,7 @@ func TestHandleUpdate_MissingKey(t *testing.T) {
 		Quality: 80,
 	}
 	reqBody, _ := json.Marshal(updateReq)
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -536,7 +536,7 @@ func TestHandleUpdate_InvalidQuality(t *testing.T) {
 		Quality: 150,
 	}
 	reqBody, _ := json.Marshal(updateReq)
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -566,7 +566,7 @@ func TestHandleUpdate_InvalidFormat(t *testing.T) {
 		Format:  "invalid",
 	}
 	reqBody, _ := json.Marshal(updateReq)
-	req := httptest.NewRequest("POST", "/update", bytes.NewReader(reqBody))
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -587,7 +587,7 @@ func TestHandleDocs(t *testing.T) {
 
 	h := handlers.NewHandler(cfg, mockStorage, mockProcessor, startTime)
 
-	req := httptest.NewRequest("GET", "/docs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/docs", nil)
 	w := httptest.NewRecorder()
 
 	h.HandleDocs(w, req)
