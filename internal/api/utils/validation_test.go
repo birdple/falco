@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,9 +52,11 @@ func BenchmarkIsValidImageID_Invalid(b *testing.B) {
 func TestIsValidImageID_MaxLength(t *testing.T) {
 	// Create a valid 100-char ID
 	id := ""
+	var idSb54 strings.Builder
 	for range 100 {
-		id += "a"
+		idSb54.WriteString("a")
 	}
+	id += idSb54.String()
 	assert.True(t, IsValidImageID(id))
 
 	// 101 chars should fail
