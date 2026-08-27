@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+// Sentinel errors returned by URL signature verification. Callers branch on
+// them with errors.Is; the delivery handler maps every one of them to 403 so a
+// client cannot tell a malformed signature from an expired one.
 var (
 	ErrNoSignatureConfig = errors.New("HMAC key and salt are not configured")
 	ErrInvalidEncoding   = errors.New("invalid signature encoding")
@@ -75,9 +78,9 @@ func CanonicalizeRequest(path string, values url.Values) string {
 	if len(values) == 0 {
 		return path
 	}
-	// Copia propia para que el llamador pueda seguir leyendo "sig" del suyo.
-	// Clone es copia profunda: la manual de antes compartía los slices de
-	// valores con el mapa original.
+	// Our own copy, so the caller can still read "sig" from theirs. Clone is a
+	// deep copy: the hand-rolled version this replaced shared the value slices
+	// with the original map.
 	clone := values.Clone()
 	clone.Del("sig")
 	if len(clone) == 0 {
@@ -151,6 +154,10 @@ func appendExpiry(path string, expUnix int64) string {
 // Unix timestamp in the future (in required mode). URLs without "exp" are
 // accepted for backwards compatibility — callers that need to enforce
 // presence of "exp" must use VerifyURLWithPolicy.
+// The `required` parameter is a genuine control switch and a dangerous one:
+// false disables verification entirely. It stays in the signature because this
+// is falco's public API and upstream callers depend on it; production callers
+// MUST pass true (config/validator.validateSecurity enforces HMAC_REQUIRED).
 func VerifyURL(signature, path string, keyHex, saltHex string, signatureSize int, required bool) error {
 	return VerifyURLWithPolicy(signature, path, keyHex, saltHex, signatureSize, required, false)
 }
@@ -158,6 +165,8 @@ func VerifyURL(signature, path string, keyHex, saltHex string, signatureSize int
 // VerifyURLWithPolicy is VerifyURL plus an explicit requireExpiry switch. If
 // requireExpiry is true, the path MUST carry a non-expired "exp" parameter.
 // Use this in production to ensure leaked URLs cannot be reused indefinitely.
+//
+//nolint:revive // public API: `required` is the same control switch VerifyURL exposes
 func VerifyURLWithPolicy(signature, path string, keyHex, saltHex string, signatureSize int, required, requireExpiry bool) error {
 	if !required {
 		// Non-required mode: signature is not enforced. This is a
