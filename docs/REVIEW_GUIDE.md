@@ -66,9 +66,9 @@ needsProcessing := hasTransformations ||
     (metadata.Format == "" || metadata.ContentType == "application/octet-stream")
 ```
 
-Si MinIO no devuelve `Content-Type` (objeto subido por terceros), `metadata.ContentType` es vacío, no `application/octet-stream`. La condición nunca se cumple para ese caso y se sirve el objeto sin detectar el formato real.
+Si el backend no devuelve `Content-Type` (objeto subido por terceros), `metadata.ContentType` es vacío, no `application/octet-stream`. La condición nunca se cumple para ese caso y se sirve el objeto sin detectar el formato real.
 
-**Verificar:** `internal/storage/minio.go` → `Retrieve()`: qué devuelve `info.ContentType` cuando no está definido en los object tags.
+**Verificar:** `internal/storage/s3.go` → `Retrieve()`: qué devuelve el `ContentType` de la respuesta cuando no está definido en el objeto.
 
 ---
 
