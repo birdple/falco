@@ -381,7 +381,7 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 }
 
 // defaultStorageType returns the configured type of the default storage bucket
-// for use in Prometheus metric labels (replaces hardcoded "minio").
+// for use in Prometheus metric labels.
 func (h *Handler) defaultStorageType() string {
 	if h.config.Storage.Default != "" {
 		if b, ok := h.config.Storage.Buckets[h.config.Storage.Default]; ok && b.Type != "" {

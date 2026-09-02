@@ -14,7 +14,6 @@ func init() {
 		return NewFilesystemStorage(config.LocalPath)
 	})
 	Register(StorageTypeS3, newS3StorageFromConfig)
-	Register(StorageTypeMinIO, newMinIOStorageFromConfig)
 	Register(StorageTypeR2, newR2StorageFromConfig)
 	Register(StorageTypeJay, newJayStorageFromConfig)
 }
@@ -42,18 +41,6 @@ func newS3StorageFromConfig(config *StorageConfig) (StorageBackend, error) {
 		Endpoint:  config.S3Endpoint,
 		AccessKey: config.AccessKey,
 		SecretKey: config.SecretKey,
-	})
-}
-
-// newMinIOStorageFromConfig adapter for MinIO storage creation
-func newMinIOStorageFromConfig(config *StorageConfig) (StorageBackend, error) {
-	return NewMinIOStorage(&MinIOConfig{
-		Bucket:    config.MinIOBucket,
-		Endpoint:  config.MinIOEndpoint,
-		Region:    config.MinIORegion,
-		AccessKey: config.AccessKey,
-		SecretKey: config.SecretKey,
-		Secure:    config.MinIOSecure,
 	})
 }
 

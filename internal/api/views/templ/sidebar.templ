@@ -125,12 +125,6 @@ templ bucketIcon(bucketType string, active bool) {
 				templ.KV("bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500", !active) }>
 				R2
 			</div>
-		case "minio":
-			<div class={ "w-7 h-7 rounded-lg flex items-center justify-center text-[9px] font-bold flex-shrink-0",
-				templ.KV("bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-300", active),
-				templ.KV("bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500", !active) }>
-				IO
-			</div>
 		default:
 			<div class={ "w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0",
 				templ.KV("bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-300", active),

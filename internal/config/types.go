@@ -40,15 +40,14 @@ type StorageConfig struct {
 
 // BucketConfig holds configuration for a named storage bucket.
 type BucketConfig struct {
-	Type      string            `mapstructure:"type"`       // s3, minio, r2, filesystem, jay
+	Type      string            `mapstructure:"type"`       // s3, r2, filesystem, jay
 	Path      string            `mapstructure:"path"`       // filesystem only
-	Bucket    string            `mapstructure:"bucket"`     // s3/minio/r2/jay bucket name
-	Region    string            `mapstructure:"region"`     // s3/minio
-	Endpoint  string            `mapstructure:"endpoint"`   // s3/minio
+	Bucket    string            `mapstructure:"bucket"`     // s3/r2/jay bucket name
+	Region    string            `mapstructure:"region"`     // s3
+	Endpoint  string            `mapstructure:"endpoint"`   // s3 (custom endpoint, e.g. MinIO)
 	AccountID string            `mapstructure:"account_id"` // r2
 	AccessKey string            `mapstructure:"access_key"`
 	SecretKey string            `mapstructure:"secret_key"`
-	Secure    bool              `mapstructure:"secure"`  // minio
 	Backups   []BackupRef       `mapstructure:"backups"` // backup targets
 	Keys      []BucketKeyConfig `mapstructure:"keys"`    // bucket-level API keys
 	// Jay-specific fields

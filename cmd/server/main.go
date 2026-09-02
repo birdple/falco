@@ -421,11 +421,6 @@ func buildBucketBackend(bcfg config.BucketConfig) (storage.StorageBackend, error
 		S3Endpoint: bcfg.Endpoint,
 		AccessKey:  bcfg.AccessKey,
 		SecretKey:  bcfg.SecretKey,
-		// MinIO fields
-		MinIOBucket:   bcfg.Bucket,
-		MinIOEndpoint: bcfg.Endpoint,
-		MinIORegion:   bcfg.Region,
-		MinIOSecure:   bcfg.Secure,
 		// R2 fields
 		R2Bucket:    bcfg.Bucket,
 		R2AccountID: bcfg.AccountID,

@@ -88,7 +88,6 @@ func (v *validator) validateStorage(config *Config) error {
 	validTypes := map[string]bool{
 		"filesystem": true,
 		"s3":         true,
-		"minio":      true,
 		"r2":         true,
 		"jay":        true,
 	}
@@ -115,7 +114,7 @@ func (v *validator) validateStorage(config *Config) error {
 	// Validate each bucket
 	for name, bucket := range config.Storage.Buckets {
 		if !validTypes[bucket.Type] {
-			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, minio, r2, or jay)", bucket.Type, name)
+			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, r2, or jay)", bucket.Type, name)
 		}
 
 		// Validate type-specific required fields
@@ -262,13 +261,6 @@ func (v *validator) validateBucketFields(name string, bucket BucketConfig) error
 		}
 		if bucket.Region == "" {
 			return fmt.Errorf("bucket %q (type s3): region is required", name)
-		}
-	case "minio":
-		if bucket.Bucket == "" {
-			return fmt.Errorf("bucket %q (type minio): bucket name is required", name)
-		}
-		if bucket.Endpoint == "" {
-			return fmt.Errorf("bucket %q (type minio): endpoint is required", name)
 		}
 	case "r2":
 		if bucket.Bucket == "" {

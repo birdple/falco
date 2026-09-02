@@ -176,7 +176,6 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 		"_ACCOUNT_ID":   "account_id",
 		"_ACCESS_KEY":   "access_key",
 		"_SECRET_KEY":   "secret_key",
-		"_SECURE":       "secure",
 		"_ADDR":         "addr",
 		"_ADMIN_ADDR":   "admin_addr",
 		"_TOKEN_ID":     "token_id",
@@ -190,10 +189,6 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 			if val := os.Getenv(envPrefix + suffix); val != "" {
 				configKey := fmt.Sprintf("storage.buckets.%s.%s", name, field)
 				switch field {
-				case "secure":
-					if boolVal, err := strconv.ParseBool(val); err == nil {
-						v.Set(configKey, boolVal)
-					}
 				case "pool_size":
 					if intVal, err := strconv.Atoi(val); err == nil {
 						v.Set(configKey, intVal)

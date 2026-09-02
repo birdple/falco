@@ -96,13 +96,11 @@ type StorageType string
 // The storage backends falco ships with. Each one is registered in the factory
 // and selected through STORAGE_BUCKET_<NAME>_TYPE.
 //
-// All of them are part of falco's public surface even when a given deployment
-// only uses one: birdple-v2 runs on jay alone, but s3, minio, r2 and filesystem
-// are what other users of the project run on.
+// A MinIO deployment is addressed with s3: NewS3Storage points BaseEndpoint at
+// the custom endpoint and switches to path-style addressing.
 const (
 	StorageTypeFilesystem StorageType = "filesystem"
 	StorageTypeS3         StorageType = "s3"
-	StorageTypeMinIO      StorageType = "minio"
 	StorageTypeR2         StorageType = "r2"
 	StorageTypeJay        StorageType = "jay"
 )
@@ -130,11 +128,6 @@ type StorageConfig struct {
 	S3Endpoint string
 	AccessKey  string
 	SecretKey  string
-	// MinIO specific fields
-	MinIOEndpoint string
-	MinIOBucket   string
-	MinIORegion   string
-	MinIOSecure   bool
 	// R2 specific fields
 	R2Bucket    string
 	R2AccountID string
@@ -147,16 +140,6 @@ type StorageConfig struct {
 	JayTokenSec  string
 	JayBucket    string
 	JayPoolSize  int
-}
-
-// MinIOConfig holds MinIO storage configuration
-type MinIOConfig struct {
-	Bucket    string
-	Endpoint  string
-	Region    string
-	AccessKey string
-	SecretKey string
-	Secure    bool
 }
 
 // S3Config holds S3 storage configuration
