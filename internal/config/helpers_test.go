@@ -90,7 +90,7 @@ func TestCollectAllKeys(t *testing.T) {
 						{Name: "client-a", Key: "sk-a"},
 					},
 				},
-				"backups": {Type: "minio"},
+				"backups": {Type: "r2"},
 			},
 			Groups: map[string]GroupConfig{
 				"media": {
@@ -135,7 +135,7 @@ func TestCollectAllKeys_GroupKeyWithBucketRestriction(t *testing.T) {
 			Default: "images",
 			Buckets: map[string]BucketConfig{
 				"images":  {Type: "s3"},
-				"backups": {Type: "minio"},
+				"backups": {Type: "r2"},
 			},
 			Groups: map[string]GroupConfig{
 				"media": {

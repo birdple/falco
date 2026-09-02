@@ -101,7 +101,6 @@ func TestValidator_ValidBucketTypes(t *testing.T) {
 	buckets := map[string]BucketConfig{
 		"filesystem": {Type: "filesystem", Path: "/tmp/images"},
 		"s3":         {Type: "s3", Bucket: "my-bucket", Region: "us-east-1"},
-		"minio":      {Type: "minio", Bucket: "my-bucket", Endpoint: "localhost:9000"},
 		"r2":         {Type: "r2", Bucket: "my-bucket", AccountID: "abc123"},
 	}
 	for bucketType, bucketCfg := range buckets {
