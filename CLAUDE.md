@@ -59,6 +59,7 @@ Las que **no** pasan por ese mapa y se leen con `os.Getenv`:
 |---|---|---|
 | `HMAC_REQUIRE_EXPIRY` | `internal/api/handlers/delivery.go` | `/api/v1/images/*` responde 500. Es a propósito: el default sería aceptar URLs firmadas que nunca caducan. |
 | `PROXY_ALLOWED_HOSTS` | `internal/api/handlers/proxy.go` | cae a un allowlist compilado |
+| `WATERMARK_ALLOWED_HOSTS` | `internal/api/handlers/watermark_source.go` | `?wm_url=` responde 403. A propósito no hay fallback: abrirlo convertiría una URL de imagen en un fetch externo arbitrario |
 | `PROXY_MAX_WIDTH`, `PROXY_DEFAULT_QUALITY` | `internal/api/handlers/proxy.go` | caen a sus constantes |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_DEPLOYMENT_ENV` | `internal/telemetry` | telemetría apagada, el arranque sigue |
 
@@ -95,12 +96,21 @@ todos los requests concurrentes de la misma clave.
 
 **El contrato de query params es `parseDeliveryParams`.** Dos clases, y la
 diferencia es deliberada: lo que cambia geometría o encoding (`w`, `h`, `q`,
-`f`, `fit`) rechaza con 400 si viene mal —servir otra imagen sería peor que
-fallar—; lo cosmético (`maxage`, `smaxage`, `gravity`, `pad_*`, `wm_scale`,
-`trim`, `orient`, `meta`) cae a su default. Casi todos tienen alias largo
-(`w|width`, `q|quality`, `b|bucket`, `d|dir|directory`) y la extensión del path
-(`/images/abc.webp`) actúa como default de formato, que es lo que permite
-cachear por extensión en un CDN.
+`f`, `fit`, `crop_*`, `rotate`, `flip`) rechaza con 400 si viene mal —servir
+otra imagen sería peor que fallar—; lo cosmético (`maxage`, `smaxage`,
+`gravity`, `pad_*`, `trim`, `orient`, `meta`, y todo el grupo de color:
+`brightness`, `contrast`, `gamma`, `saturation`, `hue`, `blur`, `sharpen`) cae a
+su default. Casi todos tienen alias largo (`w|width`, `q|quality`, `b|bucket`,
+`d|dir|directory`) y la extensión del path (`/images/abc.webp`) actúa como
+default de formato, que es lo que permite cachear por extensión en un CDN.
+
+**La marca de agua es la excepción a la regla de "cosmético = default".** `wm`
+(id en el propio storage) o `wm_url` (URL externa) se resuelven en
+`fetchAndProcess`, o sea sólo en el miss de cache, y **cualquier fallo se
+reporta** (403/404/422/502): una imagen servida sin la marca que se pidió es
+idéntica a una que funcionó. `wm_url` exige `WATERMARK_ALLOWED_HOSTS`; sin esa
+variable se rechaza, nunca se abre. `wm` se lee por el MISMO backend que la
+imagen, así que un scope no se puede saltar pidiendo la marca de otro bucket.
 
 **La cache es sólo de transformadas y vive en RAM.** Un reinicio la pierde
 entera y el siguiente request paga jay + decode + encode; nunca pierde datos,
@@ -175,12 +185,52 @@ byte. Si falla, se ajusta el tag, nunca el test.
   validación no las exige. Esto contradice la regla del raíz sobre features
   opcionales sin configurar; en el stack lo tapa el docker-compose, que pone
   ambas en `"true"`.
-- **`docs/` no es fuente de verdad.** `ARCHITECTURE.md`, `TECHNICAL_SPEC.md`,
-  `IMPLEMENTATION_ROADMAP.md` y `DEPLOYMENT_GUIDE.md` son documentos previos a
-  la implementación actual (no mencionan jay, ni HMAC, ni el proxy externo), y
-  `REVIEW_GUIDE.md` es una auditoría con hallazgos ya arreglados. `openapi.yaml`
+- **`docs/` no es fuente de verdad; `site/` sí.** La documentación viva es el
+  sitio Astro Starlight de `site/` (publicado en https://birdple.github.io/falco/
+  por `.github/workflows/pages.yml`), escrito verificando contra el código. El
+  README quedó en ~110 líneas y apunta ahí.
+  `docs/ARCHITECTURE.md`, `TECHNICAL_SPEC.md`, `IMPLEMENTATION_ROADMAP.md` y
+  `DEPLOYMENT_GUIDE.md` son documentos previos a la implementación actual (no
+  mencionan jay, ni HMAC, ni el proxy externo, y siguen usando `STORAGE_PRIMARY`),
+  y `REVIEW_GUIDE.md` es una auditoría con hallazgos ya arreglados. `openapi.yaml`
   sí se sirve en `/docs/openapi.yaml`, pero le faltan `/sign` y `/proxy`.
   Verifica contra el código antes de creerles.
+
+## Release y CI
+
+Todo vive en `.github/workflows/` y se apoya en scripts versionados, así que
+cada paso se puede correr a mano:
+
+| Workflow | Cuándo | Qué hace |
+|---|---|---|
+| `ci.yml` | push a `main`/`dev`, PR | test con `-race`, lint, y **compilar + arrancar** el binario en glibc y musl, más construir y arrancar la imagen |
+| `release.yml` | tag `v*` | imagen multi-arch a `ghcr.io/birdple/falco`, cinco binarios y el release de GitHub |
+| `pages.yml` | push a `main` con cambios en `site/` | publica el sitio de docs |
+
+Los jobs de Go corren dentro de `ubuntu:26.04`: es la primera LTS con libvips
+**8.18** en apt, que es la que exige `vipsgen/vips`. El `ubuntu-latest` del runner
+trae 8.15 y no compila.
+
+```bash
+scripts/release-binary.sh 0.13.0 abc1234 dist      # nativo, con la libvips del host
+scripts/build-in-container.sh musl 0.13.0 abc1234 dist
+scripts/lint-in-container.sh                        # el lint de CI, en Linux
+scripts/smoke-image.sh falco:ci 0.0.0-ci
+scripts/release-notes.sh v0.13.0
+```
+
+**`make lint` en macOS no es el lint de CI.** Hay reglas cuyo resultado depende
+de la plataforma: `unconvert` marcó `int64(stat.Bsize)` en Linux, donde
+`Statfs_t.Bsize` ya es `int64`, mientras que en Darwin es `uint32` y la
+conversión es obligatoria. Un `//nolint` tampoco sirve —con `allow-unused:
+false`, en macOS se reporta como directiva sin usar—, así que la salida es
+separar por plataforma con build tags. Antes de empujar, `make lint-linux`.
+
+**Ningún artefacto se publica sin haberse arrancado.** `release-binary.sh` levanta
+el binario en un directorio vacío (no en el repo: viper tomaría el `config.yaml`
+versionado, que declara un bucket jay con credenciales) y exige que `/health`
+reporte la versión inyectada. Un binario CGO que compila todavía no es un binario
+que enlaza.
 
 ## Fuera de alcance
 

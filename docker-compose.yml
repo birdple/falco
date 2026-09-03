@@ -12,12 +12,19 @@ services:
       - PORT=8080
       - HOST=0.0.0.0
       - ENV=development
-      - STORAGE_PRIMARY=filesystem
-      - STORAGE_LOCAL_PATH=/app/data/images
+      # Un bucket es obligatorio: sin STORAGE_DEFAULT y su bucket, la
+      # validación de arranque falla. Las variables viejas (STORAGE_PRIMARY,
+      # STORAGE_LOCAL_PATH) ya no existen y dejaban este compose sin arrancar.
+      - STORAGE_DEFAULT=local
+      - STORAGE_BUCKET_LOCAL_TYPE=filesystem
+      - STORAGE_BUCKET_LOCAL_PATH=/app/data/images
       - CACHE_SIZE_MB=256
       - LOG_LEVEL=debug
       - LOG_FORMAT=text
+      # Ninguna de las dos tiene default en viper: ausentes valen false y falco
+      # arranca abierto. Acá van explícitas porque esto es un compose local.
       - API_KEY_REQUIRED=false
+      - HMAC_REQUIRED=false
       - CORS_ORIGINS=*
       - RATE_LIMIT_RPM=1000
       - ENABLE_METRICS=true

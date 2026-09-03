@@ -350,6 +350,30 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 		params.Fit = raw
 	}
 
+	// Manual crop is all-or-nothing: an origin without a size is a request the
+	// caller did not mean, and guessing a size for it would serve a different
+	// image than the one asked for.
+	cropX, cropY, cropW, cropH, cropErr := parseCrop(query)
+	if cropErr != nil {
+		return nil, cropErr
+	}
+	params.CropX, params.CropY, params.CropW, params.CropH = cropX, cropY, cropW, cropH
+
+	if raw := query.Get("rotate"); raw != "" {
+		angle, err := strconv.ParseFloat(raw, 64)
+		if err != nil || angle < -maxRotateDegrees || angle > maxRotateDegrees {
+			return nil, &paramError{"INVALID_ROTATE", "rotate must be between -360 and 360 degrees"}
+		}
+		params.Rotate = angle
+	}
+
+	if raw := query.Get("flip"); raw != "" {
+		if raw != FlipHorizontal && raw != FlipVertical {
+			return nil, &paramError{"INVALID_FLIP", "flip must be horizontal or vertical"}
+		}
+		params.Flip = raw
+	}
+
 	// From here down every parameter is best-effort: a malformed value leaves
 	// the default in place instead of failing the request.
 	params.MaxAge = nonNegativeInt(query.Get("maxage"), params.MaxAge)
@@ -357,6 +381,48 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 
 	if raw := query.Get("gravity"); validGravities[raw] {
 		params.Gravity = raw
+	}
+
+	// Colour and effects. Out of range counts as malformed, so it falls back to
+	// "not requested" rather than being clamped: a silently clamped value is
+	// indistinguishable from one that worked.
+	params.Brightness = floatInRange(query.Get("brightness"), -100, 100, params.Brightness)
+	params.Contrast = floatInRange(query.Get("contrast"), -100, 100, params.Contrast)
+	params.Gamma = floatInRange(query.Get("gamma"), 0, 3, params.Gamma)
+	params.Saturation = floatInRange(query.Get("saturation"), -100, 500, params.Saturation)
+	params.Hue = int(floatInRange(query.Get("hue"), -180, 180, float64(params.Hue)))
+	params.Blur = floatInRange(query.Get("blur"), 0, 100, params.Blur)
+	params.Sharpen = floatInRange(query.Get("sharpen"), 0, 100, params.Sharpen)
+
+	// The watermark source is only recorded here — resolving it reaches storage
+	// or the network, which this function deliberately does not do. What it
+	// does decide is that naming both is a contradiction rather than a
+	// precedence rule nobody would remember.
+	wmID, wmURL := query.Get("wm"), query.Get("wm_url")
+	switch {
+	case wmID != "" && wmURL != "":
+		return nil, &paramError{"INVALID_WATERMARK", "wm and wm_url are mutually exclusive"}
+	case wmID != "":
+		// The same shape the image id itself takes: an optional directory plus
+		// a final segment, validated the same way, so a watermark cannot be the
+		// one path that escapes its bucket.
+		wmDir, wmFinal := utils.SplitDirectoryAndID(wmID)
+		wmDir = utils.NormalizeDirectoryPath(wmDir)
+		if err := utils.ValidateDirectoryPath(wmDir); err != nil {
+			return nil, &paramError{"INVALID_WATERMARK", "wm has an invalid directory"}
+		}
+		if !utils.IsValidImageID(wmFinal) {
+			return nil, &paramError{"INVALID_WATERMARK", "wm is not a valid image id"}
+		}
+		params.WatermarkSource = watermarkStoredPrefix + utils.BuildStorageKey(wmDir, wmFinal)
+	case wmURL != "":
+		params.WatermarkSource = wmURL
+	}
+
+	params.WatermarkOpacity = floatInRange(query.Get("wm_opacity"), 0, 1, params.WatermarkOpacity)
+
+	if raw := query.Get("wm_position"); processor.IsValidWatermarkPosition(raw) {
+		params.WatermarkPosition = raw
 	}
 
 	if raw := query.Get("wm_scale"); raw != "" {
@@ -399,6 +465,82 @@ func parseDimension(raw string, maxValue int) (int, error) {
 		return 0, fmt.Errorf("must be at least %d pixels", MinDimensionPixels)
 	}
 	return value, nil
+}
+
+// parseCrop reads the four manual-crop parameters as one unit.
+//
+// A crop is either fully specified or absent. Accepting an origin with no size
+// would silently ignore half of what the caller wrote, and accepting a size
+// with no origin would crop from a corner they never named.
+func parseCrop(query url.Values) (x, y, w, h int, err *paramError) {
+	rawX, rawY := query.Get("crop_x"), query.Get("crop_y")
+	rawW, rawH := query.Get("crop_w"), query.Get("crop_h")
+
+	if rawX == "" && rawY == "" && rawW == "" && rawH == "" {
+		return 0, 0, 0, 0, nil
+	}
+	if rawW == "" || rawH == "" {
+		return 0, 0, 0, 0, &paramError{"INVALID_CROP", "crop_w and crop_h are both required to crop"}
+	}
+
+	x, err = cropCoordinate(rawX, "crop_x")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	y, err = cropCoordinate(rawY, "crop_y")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	w, err = cropExtent(rawW, "crop_w")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	h, err = cropExtent(rawH, "crop_h")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return x, y, w, h, nil
+}
+
+// cropCoordinate parses an optional non-negative crop origin.
+func cropCoordinate(raw, name string) (int, *paramError) {
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return 0, &paramError{"INVALID_CROP", name + " must be zero or a positive integer"}
+	}
+	return v, nil
+}
+
+// cropExtent parses a crop width or height, which unlike an origin cannot be
+// zero: a zero-sized crop is an empty image, not a request.
+func cropExtent(raw, name string) (int, *paramError) {
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 || v > maxCropExtent {
+		return 0, &paramError{"INVALID_CROP", name + " must be a positive integer"}
+	}
+	return v, nil
+}
+
+// floatInRange parses an optional float and returns fallback when it is absent,
+// unparseable, or outside the range the transformation accepts.
+//
+// Out of range is treated as malformed rather than clamped on purpose: a
+// clamped value produces an image that is not the one asked for and gives the
+// caller no way to notice, while the fallback at least matches what an omitted
+// parameter does.
+func floatInRange(raw string, low, high, fallback float64) float64 {
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < low || v > high {
+		return fallback
+	}
+	return v
 }
 
 // nonNegativeInt parses an optional non-negative integer, returning fallback
@@ -543,7 +685,7 @@ const fallbackFormat = "webp"
 func wantsTransformation(p *processor.ProcessingParams) bool {
 	return p.Width != 0 || p.Height != 0 || p.Quality != 0 ||
 		p.CropW != 0 || p.CropH != 0 ||
-		p.Rotate != 0 || p.Flip != "" || p.Flop ||
+		p.Rotate != 0 || p.Flip != "" || p.WatermarkSource != "" ||
 		p.Brightness != 0 || p.Contrast != 0 || p.Gamma != 0 ||
 		p.Saturation != 0 || p.Hue != 0 || p.Blur != 0 || p.Sharpen != 0 ||
 		p.Gravity != "" || p.TrimEnabled ||
@@ -658,6 +800,15 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 
 	processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer processCancel()
+
+	// The overlay is loaded here and not at parse time: this is the cache-miss
+	// path, so a request answered from cache never pays for it. A failure is
+	// returned rather than swallowed — an image served without the watermark it
+	// was asked for looks exactly like one that worked.
+	if wmErr := h.resolveWatermark(processCtx, storageBackend, params); wmErr != nil {
+		return nil, wmErr
+	}
+
 	// Duration (split into semaphore_wait + transform) is recorded
 	// inside Process() itself now — see vips_processor.go — so only
 	// the pass/fail counter, which needs the format labels, stays here.
