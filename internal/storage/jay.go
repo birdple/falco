@@ -121,6 +121,13 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 	opts := &jayclient.PutOptions{
 		ContentType: metadata.ContentType,
 		Metadata:    metaToMap(metadata),
+		// falco never reads or serves jay's MD5 ETag (see serveImage in
+		// internal/api/handlers/base.go, which derives its own HTTP ETag from
+		// ID+Size+CreatedAt) and never talks to jay's S3 API for these
+		// objects, so the S3-compatibility ETag jay would otherwise compute
+		// is pure overhead here — profiling in jay showed it costs roughly
+		// twice the CPU of the SHA-256 checksum jay always computes anyway.
+		SkipETag: true,
 	}
 	res, err := s.client.PutObject(s.bucket, key, data, metadata.Size, opts)
 	if err != nil {

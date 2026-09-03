@@ -11,7 +11,7 @@ require (
 	github.com/cshum/vipsgen v1.3.10
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-chi/cors v1.2.2
-	github.com/ivangsm/jay v0.7.1
+	github.com/ivangsm/jay v0.12.0
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/go-redis/v9 v9.22.0
