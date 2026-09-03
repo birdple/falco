@@ -61,6 +61,14 @@ test-performance:
 lint:
 	golangci-lint run
 
+# El lint del host NO es el de CI: hay reglas cuyo resultado depende de la
+# plataforma (unconvert sobre syscall.Statfs_t, por ejemplo, donde el tipo del
+# campo cambia entre Linux y Darwin). Este target corre el mismo golangci-lint
+# que el workflow, dentro de Linux.
+.PHONY: lint-linux
+lint-linux:
+	@scripts/lint-in-container.sh
+
 .PHONY: fmt
 fmt:
 	go fmt ./...

@@ -214,9 +214,17 @@ trae 8.15 y no compila.
 ```bash
 scripts/release-binary.sh 0.13.0 abc1234 dist      # nativo, con la libvips del host
 scripts/build-in-container.sh musl 0.13.0 abc1234 dist
+scripts/lint-in-container.sh                        # el lint de CI, en Linux
 scripts/smoke-image.sh falco:ci 0.0.0-ci
 scripts/release-notes.sh v0.13.0
 ```
+
+**`make lint` en macOS no es el lint de CI.** Hay reglas cuyo resultado depende
+de la plataforma: `unconvert` marcó `int64(stat.Bsize)` en Linux, donde
+`Statfs_t.Bsize` ya es `int64`, mientras que en Darwin es `uint32` y la
+conversión es obligatoria. Un `//nolint` tampoco sirve —con `allow-unused:
+false`, en macOS se reporta como directiva sin usar—, así que la salida es
+separar por plataforma con build tags. Antes de empujar, `make lint-linux`.
 
 **Ningún artefacto se publica sin haberse arrancado.** `release-binary.sh` levanta
 el binario en un directorio vacío (no en el repo: viper tomaría el `config.yaml`
