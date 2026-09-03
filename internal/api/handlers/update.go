@@ -27,44 +27,8 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.URL == "" {
-		h.sendError(w, http.StatusBadRequest, "MISSING_URL", "URL is required")
-		return
-	}
-
-	if req.Bucket == "" {
-		h.sendError(w, http.StatusBadRequest, "MISSING_BUCKET", "Bucket is required")
-		return
-	}
-
-	if req.Key == "" {
-		h.sendError(w, http.StatusBadRequest, "MISSING_KEY", "Key is required")
-		return
-	}
-
-	if req.Quality <= 0 || req.Quality > 100 {
-		h.sendError(w, http.StatusBadRequest, "INVALID_QUALITY", "Quality must be between 1 and 100")
-		return
-	}
-
-	if req.Format != "" && !h.imageProcessor.ValidateFormat(req.Format) {
-		h.sendError(w, http.StatusBadRequest, "INVALID_FORMAT", "Unsupported format")
-		return
-	}
-
-	parsedURL, err := url.Parse(req.URL)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, "INVALID_URL", "Invalid URL format")
-		return
-	}
-
-	if parsedURL.Scheme != "https" && parsedURL.Scheme != "http" {
-		h.sendError(w, http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol")
-		return
-	}
-
-	if len(req.URL) > MaxURLLength {
-		h.sendError(w, http.StatusBadRequest, "INVALID_URL", fmt.Sprintf("URL too long (max %d characters)", MaxURLLength))
+	if valErr := h.validateUpdateRequest(req); valErr != nil {
+		h.sendError(w, http.StatusBadRequest, valErr.code, valErr.message)
 		return
 	}
 
@@ -102,7 +66,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 			if metadata != nil {
 				existingOwnerID = metadata.OwnerID
 			}
-			body.Close() // Only need metadata, close body immediately
+			_ = body.Close() // Only need metadata, close body immediately
 		}
 	}
 
@@ -118,7 +82,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
 		return
 	}
-	defer processedImage.Data.Close()
+	defer func() { _ = processedImage.Data.Close() }()
 
 	imageID := hashutil.GenerateImageIDFromData(imageData)
 
@@ -139,9 +103,9 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Los bytes cambiaron pero la clave de cache no —se deriva de key+params—,
-	// así que sin invalidar se seguía entregando la versión vieja hasta 24 h y
-	// el update parecía no haberse aplicado.
+	// The bytes changed but the cache key did not — it derives from key+params —
+	// so without invalidating, the old version kept being served for up to 24
+	// hours and the update looked like it had never applied.
 	h.invalidateCache(req.Key)
 
 	newSize := processedImage.Metadata.Size
@@ -168,4 +132,36 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// validateUpdateRequest checks an update request before anything is downloaded
+// or written.
+//
+// Every field is required here, unlike upload: an update names an existing
+// object, so there is nothing to infer and a missing field means the caller does
+// not know what it is replacing.
+func (h *Handler) validateUpdateRequest(req types.UpdateRequest) *paramError {
+	switch {
+	case req.URL == "":
+		return &paramError{"MISSING_URL", "URL is required"}
+	case req.Bucket == "":
+		return &paramError{"MISSING_BUCKET", "Bucket is required"}
+	case req.Key == "":
+		return &paramError{"MISSING_KEY", "Key is required"}
+	case req.Quality <= 0 || req.Quality > maxQuality:
+		return &paramError{"INVALID_QUALITY", "Quality must be between 1 and 100"}
+	case req.Format != "" && !h.imageProcessor.ValidateFormat(req.Format):
+		return &paramError{"INVALID_FORMAT", "Unsupported format"}
+	}
+
+	parsedURL, err := url.Parse(req.URL)
+	switch {
+	case err != nil:
+		return &paramError{"INVALID_URL", "Invalid URL format"}
+	case parsedURL.Scheme != "https" && parsedURL.Scheme != "http":
+		return &paramError{"INVALID_URL", "URL must use HTTP or HTTPS protocol"}
+	case len(req.URL) > MaxURLLength:
+		return &paramError{"INVALID_URL", fmt.Sprintf("URL too long (max %d characters)", MaxURLLength)}
+	}
+	return nil
 }

@@ -31,5 +31,5 @@ const redocHTML = `
 func (h *Handler) HandleDocs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, redocHTML)
+	_, _ = fmt.Fprint(w, redocHTML)
 }

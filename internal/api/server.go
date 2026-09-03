@@ -74,10 +74,36 @@ func NewServer(cfg *ServerConfig) *Server {
 }
 
 // setupRouter configures the Chi router with middleware and routes
+// setupRouter builds the chi router: middleware stack first, then routes.
+// Router tuning knobs.
+const (
+	// requestTimeout caps how long any single request may run. Generous
+	// because a cold cache miss on a large original means a Jay fetch plus a
+	// libvips decode and encode.
+	requestTimeout = 30 * time.Second
+
+	// compressionLevel is gzip's default: past it the CPU cost climbs faster
+	// than the bytes saved, and this only ever applies to text responses.
+	compressionLevel = 5
+
+	// corsMaxAgeSeconds is how long a browser may cache a preflight result.
+	corsMaxAgeSeconds = 300
+)
+
 func (s *Server) setupRouter() {
 	r := chi.NewRouter()
+	s.useMiddleware(r)
+	s.mountUIRoutes(r)
+	s.mountOperationalRoutes(r)
+	s.mountAPIRoutes(r)
+	r.NotFound(s.handleNotFound)
+	s.router = r
+}
 
-	// Security middleware
+// useMiddleware installs the middleware stack. Order matters: RequestID and
+// RealIP have to run before the logger so every line carries them, and the
+// size limiter before anything that reads a body.
+func (s *Server) useMiddleware(r chi.Router) {
 	r.Use(apimw.SecurityHeaders)
 	r.Use(middleware.RequestID)
 	// apimw.RealIP replaces chi's middleware.RealIP, which trusts
@@ -85,20 +111,17 @@ func (s *Server) setupRouter() {
 	r.Use(apimw.RealIP)
 	r.Use(apimw.ZerologRequestLogger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(middleware.Timeout(requestTimeout))
 
-	// Request size limiting
-	maxRequestSize := s.config.GetMaxFileSizeBytes() * 2
-	sizeLimiter := apimw.NewRequestSizeLimiter(maxRequestSize)
+	sizeLimiter := apimw.NewRequestSizeLimiter(s.config.GetMaxFileSizeBytes() * 2)
 	r.Use(sizeLimiter.Handler)
 
-	// Compression middleware — only for text-like responses. Do NOT compress
-	// image/* bodies: webp/jpeg/png/avif are already compressed, so gzipping
-	// them on the fly wastes CPU and usually grows the payload. chi's Compress
-	// accepts a variadic allowlist of content types; anything not in the list
-	// is streamed through untouched.
+	// Compression is restricted to text-like responses on purpose. Do NOT
+	// compress image/* bodies: webp, jpeg, png and avif are already compressed,
+	// so gzipping them on the fly burns CPU and usually grows the payload.
+	// Anything outside this allowlist streams through untouched.
 	r.Use(middleware.Compress(
-		5,
+		compressionLevel,
 		"text/html",
 		"text/plain",
 		"text/css",
@@ -110,13 +133,10 @@ func (s *Server) setupRouter() {
 		"image/svg+xml",
 	))
 
-	// Metrics middleware
 	if s.config.Development.EnableMetrics {
-		metricsMiddleware := apimw.NewMetricsMiddleware(s.metrics)
-		r.Use(metricsMiddleware.Handler)
+		r.Use(apimw.NewMetricsMiddleware(s.metrics).Handler)
 	}
 
-	// Rate limiting
 	if s.config.Security.RateLimit.RequestsPerMinute > 0 {
 		rateLimiter := apimw.NewRateLimiter(
 			s.config.Security.RateLimit.RequestsPerMinute,
@@ -125,40 +145,43 @@ func (s *Server) setupRouter() {
 		r.Use(rateLimiter.Handler)
 	}
 
-	// CORS middleware
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   s.config.Security.CORS.Origins,
 		AllowedMethods:   s.config.Security.CORS.Methods,
 		AllowedHeaders:   append(s.config.Security.CORS.Headers, "X-API-Key", "Authorization"),
 		ExposedHeaders:   []string{"Link", "X-RateLimit-Limit", "X-RateLimit-Remaining"},
 		AllowCredentials: false,
-		MaxAge:           300,
+		MaxAge:           corsMaxAgeSeconds,
 	}))
+}
 
-	// UI Routes (public - auth handled internally via cookie/key)
+// mountUIRoutes mounts the admin panel and its static assets. These are public
+// at the router level; the handlers authenticate internally via cookie or key.
+func (s *Server) mountUIRoutes(r chi.Router) {
 	r.Get("/", s.uiHandler.Login)
 	r.Get("/dashboard", s.uiHandler.Dashboard)
 	r.Post("/ui/auth", s.uiHandler.AuthPost)
 	r.Post("/ui/logout", s.uiHandler.LogoutPost)
 	r.Get("/ui/content", s.uiHandler.Content)
 
-	// Static files (embedded in binary)
 	staticFS, _ := fs.Sub(web.StaticFS, "static")
 	r.Handle("/static/*", http.StripPrefix("/static/", apimw.RestrictedFileServer(http.FS(staticFS))))
+}
 
-	// Health check endpoint (no auth required)
+// mountOperationalRoutes mounts health, docs, metrics and pprof.
+func (s *Server) mountOperationalRoutes(r chi.Router) {
+	// Health needs no auth: it is what the orchestrator polls.
 	r.Get("/health", s.handler.HandleHealth)
 	r.Head("/health", s.handler.HandleHealth)
 
-	// robots.txt — disallow all crawlers. Falco is a CDN/origin for images,
-	// not indexable content.
+	// Disallow all crawlers. Falco is a CDN origin for images, not indexable
+	// content.
 	r.Get("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
 
-	// Docs endpoint
 	r.Get("/docs", s.handler.HandleDocs)
 	r.Get("/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		data, err := docs.FS.ReadFile("openapi.yaml")
@@ -167,69 +190,60 @@ func (s *Server) setupRouter() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/yaml")
-		w.Write(data)
+		_, _ = w.Write(data)
 	})
 
-	// Prometheus metrics endpoint (protected by API key when auth is enabled)
 	if s.config.Development.EnableMetrics {
 		r.Group(func(r chi.Router) {
-			if s.config.Security.APIKeyRequired {
-				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
-				r.Use(apiKeyAuth.Handler)
-			}
+			s.useAPIKeyAuth(r)
 			r.Handle("/metrics", promhttp.Handler())
 		})
 	}
 
-	// pprof — apagado salvo que ENABLE_PPROF=true. El router es chi explícito,
-	// así que el import en blanco de net/http/pprof (que se cuelga solo del
-	// DefaultServeMux) no alcanza: hay que montar las rutas a mano.
-	//
-	// Va detrás de la misma API key que /metrics: un perfil de heap o de
-	// goroutines expone rutas de código y estado interno del proceso.
-	//
-	// Además del índice estándar se monta explícitamente el perfil
-	// `goroutineleak` (nuevo en Go 1.27), que es el que sirve para cazar las
-	// goroutines fire-and-forget de ReplicatedStorage: se lanzan con
-	// context.Background(), no las espera ningún WaitGroup y el shutdown no las
-	// contempla.
 	if s.config.Development.EnablePprof {
-		r.Group(func(r chi.Router) {
-			if s.config.Security.APIKeyRequired {
-				apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
-				r.Use(apiKeyAuth.Handler)
-			}
-			r.Get("/debug/pprof/", pprof.Index)
-			r.Get("/debug/pprof/cmdline", pprof.Cmdline)
-			r.Get("/debug/pprof/profile", pprof.Profile)
-			r.Get("/debug/pprof/symbol", pprof.Symbol)
-			r.Post("/debug/pprof/symbol", pprof.Symbol)
-			r.Get("/debug/pprof/trace", pprof.Trace)
-			// pprof.Index ya sirve cualquier perfil registrado por nombre,
-			// goroutineleak incluido, cuando la ruta cuelga de /debug/pprof/.
-			r.Get("/debug/pprof/{profile}", pprof.Index)
-		})
-		logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ — do not enable in production without an API key")
+		s.mountPprof(r)
 	}
+}
 
-	// API routes
+// mountPprof mounts the runtime profiles, behind the same API key as /metrics:
+// a heap or goroutine profile exposes code paths and internal process state.
+//
+// The routes are mounted by hand because this router is an explicit chi one and
+// never falls through to the DefaultServeMux, so the blank import of
+// net/http/pprof would register nothing reachable.
+//
+// The profile worth having here is goroutineleak (new in Go 1.27): it is what
+// catches the fire-and-forget goroutines in ReplicatedStorage, which start on
+// context.Background(), are awaited by no WaitGroup and are not considered by
+// shutdown.
+func (s *Server) mountPprof(r chi.Router) {
+	r.Group(func(r chi.Router) {
+		s.useAPIKeyAuth(r)
+		r.Get("/debug/pprof/", pprof.Index)
+		r.Get("/debug/pprof/cmdline", pprof.Cmdline)
+		r.Get("/debug/pprof/profile", pprof.Profile)
+		r.Get("/debug/pprof/symbol", pprof.Symbol)
+		r.Post("/debug/pprof/symbol", pprof.Symbol)
+		r.Get("/debug/pprof/trace", pprof.Trace)
+		// pprof.Index already serves any profile registered by name —
+		// goroutineleak included — once the route hangs off /debug/pprof/.
+		r.Get("/debug/pprof/{profile}", pprof.Index)
+	})
+	logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ — do not enable in production without an API key")
+}
+
+// mountAPIRoutes mounts /api/v1.
+//
+// Delivery and proxy are deliberately outside the protected group: they gate
+// themselves, by HMAC signature or by API key depending on deployment, because
+// a browser cannot attach an API key to an <img> URL.
+func (s *Server) mountAPIRoutes(r chi.Router) {
 	r.Route("/api/v1", func(r chi.Router) {
-		// Public endpoints
 		r.Get("/images/*", s.handler.HandleDelivery)
 		r.Get("/proxy/*", s.handler.HandleProxy)
 
-		// Protected endpoints
 		r.Group(func(r chi.Router) {
-			if s.config.Security.APIKeyRequired {
-				scopedAuth := apimw.NewScopedAPIKeyAuth(s.config.Security.APIKey, s.config)
-				if scopedAuth.HasScopedKeys() {
-					r.Use(scopedAuth.Handler)
-				} else {
-					apiKeyAuth := apimw.NewAPIKeyAuth(s.config.Security.APIKey)
-					r.Use(apiKeyAuth.Handler)
-				}
-			}
-
+			s.useScopedAuth(r)
 			r.Post("/upload", s.handler.HandleUpload)
 			r.Post("/update", s.handler.HandleUpdate)
 			r.Get("/list", s.handler.HandleList)
@@ -237,10 +251,31 @@ func (s *Server) setupRouter() {
 			r.Post("/sign", s.handler.HandleSignURL)
 		})
 	})
+}
 
-	r.NotFound(s.handleNotFound)
+// useAPIKeyAuth guards a route group with the plain admin API key, when auth is
+// enabled at all.
+func (s *Server) useAPIKeyAuth(r chi.Router) {
+	if s.config.Security.APIKeyRequired {
+		r.Use(apimw.NewAPIKeyAuth(s.config.Security.APIKey).Handler)
+	}
+}
 
-	s.router = r
+// useScopedAuth guards a route group with scoped keys when any are configured,
+// falling back to the single admin key otherwise.
+//
+// Both branches exist because falco serves two deployment shapes: multi-tenant
+// installs give each bucket or group its own key, while birdple-v2 runs with
+// one API_KEY and no scopes at all.
+func (s *Server) useScopedAuth(r chi.Router) {
+	if !s.config.Security.APIKeyRequired {
+		return
+	}
+	if scopedAuth := apimw.NewScopedAPIKeyAuth(s.config.Security.APIKey, s.config); scopedAuth.HasScopedKeys() {
+		r.Use(scopedAuth.Handler)
+		return
+	}
+	r.Use(apimw.NewAPIKeyAuth(s.config.Security.APIKey).Handler)
 }
 
 // handleNotFound handles requests for non-existent routes
@@ -261,9 +296,9 @@ func (s *Server) setupServer() {
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Topes de cabecera: falco es un CDN de imágenes de cara pública detrás
-		// de Cloudflare. MaxHeaderBytes acota el peso y MaxHeaderValueCount
-		// (Go 1.27) la cantidad; sin este último, miles de cabeceras diminutas
-		// pasan el tope de bytes y aun así cuestan parseo.
+		// from Cloudflare. MaxHeaderBytes caps the weight and
+		// MaxHeaderValueCount (Go 1.27) the count; without the latter, thousands
+		// of tiny headers stay under the byte cap and still cost parsing time.
 		MaxHeaderBytes:      s.config.Server.MaxHeaderBytes,
 		MaxHeaderValueCount: s.config.Server.MaxHeaderValueCount,
 	}

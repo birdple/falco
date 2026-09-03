@@ -14,7 +14,7 @@ A blazing-fast, self-hosted image processing service built in Go. Store, transfo
 - **Web Dashboard** — server-rendered UI with HTMX and Tailwind CSS for browsing stored images
 - **Image Update** — download, process, and replace images from external URLs with retry/backoff
 - **File Management** — list images in buckets/directories, delete files or entire directories
-- **Flexible Storage** — local filesystem, MinIO, Amazon S3, or Cloudflare R2 with multi-bucket and directory support
+- **Flexible Storage** — local filesystem, Amazon S3 (and any S3-compatible endpoint), or Cloudflare R2 with multi-bucket and directory support
 - **File Passthrough** — upload and serve any file type (PDFs, ZIPs, videos, etc.) without processing
 - **Bucket Groups** — organize N buckets from N providers into logical groups with shared API keys and 1-level subgroups with inheritance
 - **Multi-Target Backups** — each bucket can have multiple backup targets with independent modes (sync, async, read-fallback)
@@ -47,7 +47,7 @@ A blazing-fast, self-hosted image processing service built in Go. Store, transfo
 
 ### Production Ready
 - **Docker** with multi-stage builds for minimal image size
-- **Docker Compose** profiles including MinIO
+- **Docker Compose** profiles for cache, database, Nginx and monitoring
 - **Graceful shutdown** with configurable timeout
 - **Circuit breaker** for external service calls
 - **HTTP retry with exponential backoff** for external URL downloads
@@ -80,9 +80,6 @@ docker run -p 8080:8080 falco
 
 # With Docker Compose (recommended)
 docker-compose up --build
-
-# With MinIO for local object storage
-docker-compose --profile with-minio up -d
 ```
 
 ---
@@ -118,9 +115,10 @@ storage:
           key: "sk-client-a-secret"
 
     images-backup:
-      type: minio
+      type: s3
       bucket: backup-images
-      endpoint: "http://minio:9000"
+      endpoint: "http://minio:9000"   # any S3-compatible endpoint
+      region: us-east-1
       access_key: ""
       secret_key: ""
 
@@ -480,23 +478,25 @@ curl -X DELETE "http://localhost:8080/api/v1/delete?d=products/thumbnails" \
 
 ---
 
-## MinIO Setup
+## S3-Compatible Endpoints (MinIO, Ceph, LocalStack)
+
+There is no dedicated `minio` bucket type — it was removed. Use `type: s3` and
+point it at your endpoint: when `endpoint` is set, the S3 client overrides
+`BaseEndpoint` and switches to path-style addressing, which is what these
+servers expect.
 
 ```bash
-# Start with Docker Compose
-docker-compose --profile with-minio up -d
-
-# Access MinIO Console: http://localhost:9001
-# Default credentials: minioadmin / minioadmin
-
-STORAGE_DEFAULT=minio
-STORAGE_BUCKET_MINIO_TYPE=minio
-STORAGE_BUCKET_MINIO_BUCKET=images
-STORAGE_BUCKET_MINIO_ENDPOINT=http://localhost:9000
-STORAGE_BUCKET_MINIO_ACCESS_KEY=minioadmin
-STORAGE_BUCKET_MINIO_SECRET_KEY=minioadmin
-STORAGE_BUCKET_MINIO_SECURE=false
+STORAGE_DEFAULT=images
+STORAGE_BUCKET_IMAGES_TYPE=s3
+STORAGE_BUCKET_IMAGES_BUCKET=images
+STORAGE_BUCKET_IMAGES_ENDPOINT=http://localhost:9000
+STORAGE_BUCKET_IMAGES_REGION=us-east-1
+STORAGE_BUCKET_IMAGES_ACCESS_KEY=your-access-key
+STORAGE_BUCKET_IMAGES_SECRET_KEY=your-secret-key
 ```
+
+TLS is not a separate flag: the scheme in `_ENDPOINT` decides it (`https://`
+for a secured endpoint). The old `_SECURE` field no longer exists.
 
 ---
 
@@ -543,7 +543,7 @@ storage:
 | `async` | Writes to primary, replicates to backup in background |
 | `read-fallback` | Writes only to primary; reads fall back to backup on 404 |
 
-Backup targets must reference other buckets defined in the config. A single bucket can have any number of backups mixing different modes and providers (e.g., sync to MinIO + async to R2).
+Backup targets must reference other buckets defined in the config. A single bucket can have any number of backups mixing different modes and providers (e.g., sync to a second S3 bucket + async to R2).
 
 ---
 
@@ -622,7 +622,7 @@ Both Falco and [imgproxy](https://imgproxy.net) are self-hosted, libvips-based i
 | | Falco | imgproxy |
 |--|-------|---------|
 | **Model** | Storage + processing service | Processing proxy only |
-| **Image storage** | Built-in (local FS, S3, MinIO, R2) with bucket groups and multi-target backups | None — processes remote URLs on-the-fly |
+| **Image storage** | Built-in (local FS, S3, R2) with bucket groups and multi-target backups | None — processes remote URLs on-the-fly |
 | **Image upload** | Yes — REST API with deduplication | No |
 | **Image management** | List, delete, directory organization | No |
 | **Web dashboard** | Yes — HTMX + Tailwind UI | No (Pro plan only) |

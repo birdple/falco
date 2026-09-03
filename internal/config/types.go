@@ -21,13 +21,13 @@ type ServerConfig struct {
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	IdleTimeout     time.Duration `mapstructure:"idle_timeout"`
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
-	// MaxHeaderBytes es el tope de bytes de cabecera que el servidor acepta
-	// por request. Sin él la stdlib usa 1 MB, que para un CDN de imágenes
-	// público es mucho más de lo que cualquier cliente legítimo necesita.
+	// MaxHeaderBytes caps the header bytes accepted per request. Left unset
+	// the stdlib allows 1 MB, which for a public image CDN is far more than
+	// any legitimate client needs.
 	MaxHeaderBytes int `mapstructure:"max_header_bytes"`
-	// MaxHeaderValueCount es el tope de CANTIDAD de valores de cabecera
+	// MaxHeaderValueCount caps the NUMBER of header values
 	// (net/http, Go 1.27). Complementa a MaxHeaderBytes: miles de cabeceras
-	// diminutas pesan poco en bytes pero caras en parseo.
+	// tiny headers weigh almost nothing in bytes but are expensive to parse.
 	MaxHeaderValueCount int `mapstructure:"max_header_value_count"`
 }
 
@@ -40,15 +40,14 @@ type StorageConfig struct {
 
 // BucketConfig holds configuration for a named storage bucket.
 type BucketConfig struct {
-	Type      string            `mapstructure:"type"`       // s3, minio, r2, filesystem, jay
+	Type      string            `mapstructure:"type"`       // s3, r2, filesystem, jay
 	Path      string            `mapstructure:"path"`       // filesystem only
-	Bucket    string            `mapstructure:"bucket"`     // s3/minio/r2/jay bucket name
-	Region    string            `mapstructure:"region"`     // s3/minio
-	Endpoint  string            `mapstructure:"endpoint"`   // s3/minio
+	Bucket    string            `mapstructure:"bucket"`     // s3/r2/jay bucket name
+	Region    string            `mapstructure:"region"`     // s3
+	Endpoint  string            `mapstructure:"endpoint"`   // s3 (custom endpoint, e.g. MinIO)
 	AccountID string            `mapstructure:"account_id"` // r2
 	AccessKey string            `mapstructure:"access_key"`
 	SecretKey string            `mapstructure:"secret_key"`
-	Secure    bool              `mapstructure:"secure"`  // minio
 	Backups   []BackupRef       `mapstructure:"backups"` // backup targets
 	Keys      []BucketKeyConfig `mapstructure:"keys"`    // bucket-level API keys
 	// Jay-specific fields
@@ -114,9 +113,9 @@ type ProcessingConfig struct {
 	MaxDimensions     MaxDimensions `mapstructure:"max_dimensions"`
 }
 
-// MaxDimensions acota el tamaño de salida. Es un tipo con nombre y no un
-// struct anónimo para que se pueda construir en un literal: anónimo, el único
-// modo de poblarlo era asignar campo por campo después de crear el Config.
+// MaxDimensions caps the output size. It is a named type rather than an
+// anonymous struct so it can be built in a literal: anonymous, the only way to
+// populate it was field-by-field assignment after creating the Config.
 type MaxDimensions struct {
 	Width  int `mapstructure:"width"`
 	Height int `mapstructure:"height"`
@@ -136,7 +135,7 @@ type SecurityConfig struct {
 	HMACRequired      bool   `mapstructure:"hmac_required"`
 }
 
-// CORSConfig y RateLimitConfig son tipos con nombre por la misma razón que
+// CORSConfig and RateLimitConfig are named types for the same reason as
 // MaxDimensions: como structs anónimos no se podían escribir en un literal.
 
 // CORSConfig holds the CORS policy.

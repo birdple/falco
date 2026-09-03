@@ -34,9 +34,9 @@ func (d *defaultsProvider) setServerDefaults(v *viper.Viper) {
 	v.SetDefault("server.write_timeout", "30s")
 	v.SetDefault("server.idle_timeout", "60s")
 	v.SetDefault("server.shutdown_timeout", "30s")
-	// 64 KiB de cabeceras y 100 valores alcanzan de sobra para un request real
-	// detrás de Cloudflare; los defaults de la stdlib (1 MiB y 500) son más
-	// laxos de lo que necesita un CDN de imágenes de cara pública.
+	// 64 KiB of headers and 100 values are plenty for a real request behind
+	// Cloudflare; the stdlib defaults (1 MiB and 500) are looser than a
+	// public-facing image CDN has any use for.
 	v.SetDefault("server.max_header_bytes", 64*1024)
 	v.SetDefault("server.max_header_value_count", 100)
 }
@@ -60,10 +60,11 @@ func (d *defaultsProvider) setCacheDefaults(v *viper.Viper) {
 
 // setProcessingDefaults sets processing default values
 func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
-	// 10 MB, alineado con `config.yaml`, los dos docker-compose y el límite que
-	// validan birdple-api y la app. El default compilado era 5 y nadie lo veía
-	// porque todos los ambientes fijan la variable: un deploy que la olvidara
-	// habría rechazado con 413 imágenes que el resto del stack da por buenas.
+	// 10 MB, matching config.yaml, both docker-compose files, and the limit
+	// birdple-api and the mobile app validate against. The compiled default was
+	// 5 and nobody noticed because every environment sets the variable — a
+	// deployment that forgot to would have rejected with 413 images the rest of
+	// the stack considers fine.
 	v.SetDefault("processing.max_file_size_mb", 10)
 	v.SetDefault("processing.default_quality", 85)
 	v.SetDefault("processing.default_format", "webp")

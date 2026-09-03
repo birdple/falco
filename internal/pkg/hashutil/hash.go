@@ -1,3 +1,8 @@
+// Package hashutil derives image IDs from content.
+//
+// Content-addressing is what makes uploads idempotent: the same bytes always
+// land on the same key, so re-uploading is a no-op at the storage layer instead
+// of a duplicate.
 package hashutil
 
 import (
@@ -22,16 +27,16 @@ func GenerateSHA256FromReader(reader io.Reader) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// imageIDLength es cuántos caracteres del hash forman el ID de una imagen.
+// imageIDLength is how many characters of the hash make up an image ID.
 const imageIDLength = 16
 
 // GenerateImageID generates a unique image ID from hash.
 // Format: <first16chars_of_hash>
 //
-// Un hash más corto que imageIDLength se devuelve entero en lugar de paniquear.
-// Hoy el único llamador es GenerateSHA256 (64 caracteres siempre), pero la
-// función está exportada y `hash[:16]` a secas paniquea con cualquier cadena
-// corta que le pase alguien de afuera.
+// A hash shorter than imageIDLength is returned whole rather than panicking.
+// Today the only caller is GenerateSHA256, which is always 64 characters, but
+// this function is exported and a bare `hash[:16]` panics on any short string an
+// outside caller hands it.
 func GenerateImageID(hash string) string {
 	if len(hash) < imageIDLength {
 		return hash

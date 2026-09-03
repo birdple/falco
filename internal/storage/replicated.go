@@ -19,9 +19,9 @@ type BackupTarget struct {
 type ReplicatedStorage struct {
 	primary StorageBackend
 	backups []BackupTarget
-	// async cuenta las réplicas en vuelo. Sin él, apagar el proceso mientras
-	// una réplica async está a medio camino la pierde en silencio y el backup
-	// queda desincronizado sin que nada lo diga. Close lo espera.
+	// async tracks in-flight replications. Without it, shutting the process
+	// down mid-replication loses that copy silently and leaves the backup out
+	// of sync with nothing to say so. Close waits on it.
 	async sync.WaitGroup
 }
 
@@ -33,11 +33,11 @@ func NewReplicatedStorage(primary StorageBackend, backups []BackupTarget) *Repli
 	}
 }
 
-// Close espera a que terminen las réplicas asíncronas en vuelo.
+// Close waits for in-flight asynchronous replications to finish.
 //
-// Devuelve el error del contexto si se agota antes de que terminen: las que
-// queden se perdieron, y quien apaga el proceso tiene que poder enterarse en
-// vez de suponer que salió bien.
+// Returns the context's error if it expires first: whatever was still in flight
+// is lost, and whoever is shutting the process down needs to be able to find
+// that out rather than assume it went fine.
 func (rs *ReplicatedStorage) Close(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
@@ -146,8 +146,8 @@ func (rs *ReplicatedStorage) Delete(ctx context.Context, key string) error {
 				}
 			})
 		case ReplicationReadFallback:
-			// Best-effort delete: el error se registra, no se propaga — el
-			// backup de read-fallback no es fuente de verdad para el borrado.
+			// Best-effort delete: logged, not propagated — a read-fallback
+			// backup is not the source of truth for deletion.
 			t, idx := target, i
 			rs.async.Go(func() {
 				if err := t.Backend.Delete(context.Background(), key); err != nil && !IsNotFound(err) {

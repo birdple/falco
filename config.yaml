@@ -28,7 +28,7 @@ storage:
       bucket: "falco-images"
       pool_size: 4
 
-    # Example: S3 bucket with sync backup to MinIO and async to R2
+    # Example: S3 bucket with sync backup to another S3 target and async to R2
     # images:
     #   type: s3
     #   bucket: prod-images
@@ -47,9 +47,10 @@ storage:
     #       key: "sk-client-b-secret"
     #
     # images-backup:
-    #   type: minio
+    #   type: s3
     #   bucket: backup-images
-    #   endpoint: "http://minio:9000"
+    #   endpoint: "http://minio:9000"  # any S3-compatible endpoint
+    #   region: us-east-1
     #   access_key: ""
     #   secret_key: ""
     #

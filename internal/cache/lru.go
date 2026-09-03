@@ -1,3 +1,9 @@
+// Package cache holds falco's cache backends: an in-process sharded LRU and an
+// optional Redis one.
+//
+// What is cached are TRANSFORMED images, keyed by the source key plus the
+// parameters that produced them. Originals live in storage and are never
+// evicted, so a cold cache costs latency, never data.
 package cache
 
 import (
@@ -22,10 +28,10 @@ type CacheItem struct {
 
 // CacheStats holds cache statistics.
 //
-// Las tres implementaciones de Cache devuelven este mismo tipo. No todas
-// pueden medir todos los campos: los que un backend no sabe responder sin una
-// llamada de red van en statUnmeasured (-1), que NO es lo mismo que 0. Backend
-// dice cuál de ellas produjo las cifras.
+// All three Cache implementations return this same type. Not all of them can
+// measure every field: whatever a backend cannot answer without a network round
+// trip is reported as statUnmeasured (-1), which is NOT the same as 0. Backend
+// names which implementation produced the numbers.
 type CacheStats struct {
 	Backend   string  `json:"backend"`
 	Hits      int64   `json:"hits"`
@@ -36,11 +42,12 @@ type CacheStats struct {
 	HitRatio  float64 `json:"hit_ratio"`
 }
 
-// statUnmeasured marca un campo de CacheStats que el backend no puede medir.
+// statUnmeasured marks a CacheStats field this backend cannot measure.
 const statUnmeasured = -1
 
-// NoCacheStats describe la ausencia de cache. Se distingue de una cache vacía:
-// los campos que sólo tendrían sentido con una cache detrás van marcados como
+// NoCacheStats describes the absence of a cache. It is deliberately
+// distinguishable from an empty cache: the fields that would only mean anything
+// with a cache behind them are marked as
 // no medidos en vez de en cero.
 func NoCacheStats() CacheStats {
 	return CacheStats{
@@ -168,11 +175,11 @@ func (c *LRUCache) Clear() {
 
 // Stop gracefully stops the cache cleanup goroutine.
 //
-// Cierra el canal en vez de mandarle un valor: el envío no bloqueante que
-// había antes caía en el `default` cuando la goroutine estaba dentro de
-// cleanupExpired en ese instante, y entonces Stop no detenía nada y la
-// goroutine quedaba viva para siempre. Cerrar despierta al receptor esté donde
-// esté, y el sync.Once hace que llamar a Stop dos veces sea inofensivo.
+// Closes the channel rather than sending on it. The non-blocking send this
+// replaced fell through to its `default` whenever the goroutine happened to be
+// inside cleanupExpired at that moment — so Stop stopped nothing and the
+// goroutine outlived the process's interest in it. Closing wakes the receiver
+// wherever it is, and the sync.Once makes calling Stop twice harmless.
 func (c *LRUCache) Stop() {
 	c.stopOnce.Do(func() { close(c.stopCleanup) })
 }

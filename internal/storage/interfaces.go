@@ -93,10 +93,14 @@ type StorageStats struct {
 // StorageType represents the type of storage backend
 type StorageType string
 
+// The storage backends falco ships with. Each one is registered in the factory
+// and selected through STORAGE_BUCKET_<NAME>_TYPE.
+//
+// A MinIO deployment is addressed with s3: NewS3Storage points BaseEndpoint at
+// the custom endpoint and switches to path-style addressing.
 const (
 	StorageTypeFilesystem StorageType = "filesystem"
 	StorageTypeS3         StorageType = "s3"
-	StorageTypeMinIO      StorageType = "minio"
 	StorageTypeR2         StorageType = "r2"
 	StorageTypeJay        StorageType = "jay"
 )
@@ -104,6 +108,11 @@ const (
 // ReplicationMode defines how primary and secondary storage interact
 type ReplicationMode string
 
+// How a replicated backend treats its secondaries.
+//
+// sync waits for every secondary before acknowledging a write, async returns as
+// soon as the primary commits, and read-fallback replicates nothing but serves
+// reads from a secondary when the primary misses.
 const (
 	ReplicationSync         ReplicationMode = "sync"
 	ReplicationAsync        ReplicationMode = "async"
@@ -119,11 +128,6 @@ type StorageConfig struct {
 	S3Endpoint string
 	AccessKey  string
 	SecretKey  string
-	// MinIO specific fields
-	MinIOEndpoint string
-	MinIOBucket   string
-	MinIORegion   string
-	MinIOSecure   bool
 	// R2 specific fields
 	R2Bucket    string
 	R2AccountID string
@@ -136,16 +140,6 @@ type StorageConfig struct {
 	JayTokenSec  string
 	JayBucket    string
 	JayPoolSize  int
-}
-
-// MinIOConfig holds MinIO storage configuration
-type MinIOConfig struct {
-	Bucket    string
-	Endpoint  string
-	Region    string
-	AccessKey string
-	SecretKey string
-	Secure    bool
 }
 
 // S3Config holds S3 storage configuration

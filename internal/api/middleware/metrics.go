@@ -1,3 +1,9 @@
+// Package middleware holds falco's HTTP middleware: security headers, API key
+// and scoped-key authentication, rate limiting, request size limits, real client
+// IP resolution and metrics.
+//
+// The RealIP middleware here replaces chi's, which trusts X-Forwarded-For
+// unconditionally. This one only believes it from an allowlisted proxy.
 package middleware
 
 import (

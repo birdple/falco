@@ -38,8 +38,8 @@ func postSign(t *testing.T, body string) *httptest.ResponseRecorder {
 // así que un campo desconocido salía como "path is required" aunque el caller
 // sí hubiera mandado path — y con json/v2, que es case-sensitive y rechaza
 // campos desconocidos, ese caso pasó de inalcanzable a común.
-func TestHandleSignURL_DecodeErrorNoSeDisfrazaDePathFaltante(t *testing.T) {
-	casos := []struct {
+func TestHandleSignURL_DecodeErrorIsNotDisguisedAsMissingPath(t *testing.T) {
+	cases := []struct {
 		nombre string
 		body   string
 		codigo string
@@ -71,7 +71,7 @@ func TestHandleSignURL_DecodeErrorNoSeDisfrazaDePathFaltante(t *testing.T) {
 		},
 	}
 
-	for _, c := range casos {
+	for _, c := range cases {
 		t.Run(c.nombre, func(t *testing.T) {
 			rec := postSign(t, c.body)
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -80,7 +80,7 @@ func TestHandleSignURL_DecodeErrorNoSeDisfrazaDePathFaltante(t *testing.T) {
 	}
 }
 
-func TestHandleSignURL_BodyValidoDevuelveURLFirmada(t *testing.T) {
+func TestHandleSignURL_ValidBodyReturnsSignedURL(t *testing.T) {
 	rec := postSign(t, `{"path":"/api/v1/images/abc","expires_in":600}`)
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"signed_url"`)

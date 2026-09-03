@@ -1,7 +1,14 @@
+// Package httputil holds HTTP helpers: a hardened client for outbound fetches,
+// trusted-proxy resolution and JSON response writing.
+//
+// Trusted-proxy handling is fail-closed: with no TRUSTED_PROXIES configured only
+// loopback is believed, so a forwarded header cannot be used to spoof a client
+// IP past the rate limiter.
 package httputil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -55,10 +62,15 @@ func SetTrustedProxies(cidrs []string) {
 	trustedProxyCIDRs = parseCIDRs(combined)
 }
 
-// isTrustedProxy checks if the remote address is from a trusted proxy.
-// Fail-closed: if the allowlist is empty (misconfiguration) no forwarded
-// header is trusted. See package doc on trustedProxyCIDRs.
-func isTrustedProxy(remoteIP string) bool {
+// IsTrustedProxy reports whether the remote address belongs to a trusted proxy.
+//
+// Fail-closed: if the allowlist is empty (misconfiguration) no forwarded header
+// is trusted. See the package doc on trustedProxyCIDRs.
+//
+// Used internally by GetClientIP and externally by the RealIP middleware
+// (internal/api/middleware/realip.go) to gate X-Forwarded-For / X-Real-IP
+// rewriting.
+func IsTrustedProxy(remoteIP string) bool {
 	if len(trustedProxyCIDRs) == 0 {
 		return false
 	}
@@ -74,13 +86,6 @@ func isTrustedProxy(remoteIP string) bool {
 	return false
 }
 
-// IsTrustedProxy is the exported form of isTrustedProxy, used by the
-// Falco-owned RealIP middleware (internal/api/middleware/realip.go) to gate
-// X-Forwarded-For / X-Real-IP rewriting.
-func IsTrustedProxy(remoteIP string) bool {
-	return isTrustedProxy(remoteIP)
-}
-
 // GetClientIP extracts the client IP address from the request.
 // Forwarded headers are only trusted when the direct connection is from a trusted proxy.
 func GetClientIP(r *http.Request) string {
@@ -89,7 +94,7 @@ func GetClientIP(r *http.Request) string {
 		remoteIP = r.RemoteAddr
 	}
 
-	if isTrustedProxy(remoteIP) {
+	if IsTrustedProxy(remoteIP) {
 		xff := r.Header.Get("X-Forwarded-For")
 		if xff != "" {
 			ips := strings.Split(xff, ",")
@@ -175,7 +180,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
+				return errors.New("too many redirects")
 			}
 			return nil
 		},
@@ -255,7 +260,7 @@ func downloadOnce(ctx context.Context, client *http.Client, url string, maxSize 
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to download: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 500 {
 		return nil, "", fmt.Errorf("server error: status %d", resp.StatusCode)

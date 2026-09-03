@@ -1,3 +1,7 @@
+// Package ui serves falco's admin panel.
+//
+// It authenticates on its own, by cookie or API key, rather than sitting behind
+// the API-key middleware: a browser cannot attach a header to a navigation.
 package ui
 
 import (
@@ -155,7 +159,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	views.LoginPage(views.LoginData{}).Render(r.Context(), w)
+	_ = views.LoginPage(views.LoginData{}).Render(r.Context(), w)
 }
 
 // AuthPost validates the key and sets a cookie.
@@ -246,7 +250,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	data := h.buildDashboardData(ctx, scope, bucketItems, currentBucket, currentPrefix)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	views.DashboardPage(data).Render(ctx, w)
+	_ = views.DashboardPage(data).Render(ctx, w)
 }
 
 // Content returns the main content area as an HTMX partial.
@@ -277,7 +281,7 @@ func (h *Handler) Content(w http.ResponseWriter, r *http.Request) {
 	data := h.buildDashboardData(ctx, scope, bucketItems, currentBucket, currentPrefix)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	views.MainContent(data).Render(ctx, w)
+	_ = views.MainContent(data).Render(ctx, w)
 }
 
 // buildDashboardData constructs the full DashboardData for a given scope + bucket.
@@ -399,8 +403,8 @@ func (h *Handler) buildDashboardData(ctx context.Context, scope *uiScope, bucket
 
 // writeJSON writes a JSON response.
 //
-// Serializa antes de tocar el ResponseWriter: si el marshal falla todavía se
-// puede responder un 500, en vez de un 200 con el body cortado.
+// Marshals before touching the ResponseWriter: if the marshal fails there is
+// still time to answer a 500, rather than a 200 with a truncated body.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	data, err := jsonv2.Marshal(v)
 	if err != nil {

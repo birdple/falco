@@ -44,10 +44,10 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SignURLRequest
-	// El error de decode va aparte de la validación: colapsarlos hacía que un
-	// campo desconocido o una mayúscula que no coincide con el tag salieran
-	// reportados como "path is required" aunque el caller sí hubiera mandado
-	// path. json/v2 es case-sensitive, así que ese caso ahora se alcanza.
+	// The decode error is reported separately from validation: collapsing them
+	// made an unknown field, or a capitalisation that does not match the tag,
+	// come back as "path is required" even when the caller did send path.
+	// json/v2 is case-sensitive, so that case is now reachable.
 	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
 		return
@@ -112,7 +112,6 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 			h.sendError(w, http.StatusInternalServerError, "SIGNING_ERROR", "Failed to generate signature")
 			return
 		}
-		pathToSign = pathWithExp
 		writeSignedResponse(w, pathWithExp, sig, expUnix)
 		return
 	}

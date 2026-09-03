@@ -266,11 +266,11 @@ func TestJayStorage_GetStats_HTTP(t *testing.T) {
 	// in-memory.
 	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/_stats/falco-images" {
-			http.Error(w, "wrong path: "+r.URL.Path, 404)
+			http.Error(w, "wrong path: "+r.URL.Path, http.StatusNotFound)
 			return
 		}
 		if r.Header.Get("Authorization") != "Bearer tid-1:secret-1" {
-			http.Error(w, "bad auth", 401)
+			http.Error(w, "bad auth", http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

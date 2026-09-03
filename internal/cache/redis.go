@@ -17,8 +17,8 @@ type RedisCache struct {
 	client *redis.Client
 	ttl    time.Duration
 	// Contadores propios de este proceso. Redis no puede decirnos cuántos
-	// aciertos tuvo ESTA cache (su INFO agrega a todos los clientes del
-	// servidor), pero nosotros sí sabemos cómo respondió cada Get.
+	// hits THIS cache had — its INFO aggregates every client of the server —
+	// but we do know how each of our own Gets was answered.
 	hits   atomic.Int64
 	misses atomic.Int64
 }
@@ -104,10 +104,10 @@ func (r *RedisCache) Clear() {
 
 // Stats returns Redis cache statistics.
 //
-// Hits y Misses son reales: los cuenta este proceso en cada Get. Size, MaxSize
-// e ItemCount van en statUnmeasured porque conocerlos exigiría un DBSIZE o un
-// SCAN completo en cada llamada, y devolver 0 sería indistinguible de una cache
-// vacía. Para el detalle del pool de conexiones está PoolStats.
+// Hits and Misses are real: this process counts them on every Get. Size,
+// MaxSize and ItemCount are statUnmeasured because knowing them would mean a
+// DBSIZE or a full SCAN per call, and returning 0 would be indistinguishable
+// from an empty cache. For connection-pool detail, see PoolStats.
 func (r *RedisCache) Stats() CacheStats {
 	hits := r.hits.Load()
 	misses := r.misses.Load()
@@ -127,9 +127,9 @@ func (r *RedisCache) Stats() CacheStats {
 	}
 }
 
-// PoolStats expone las métricas del pool de conexiones de go-redis. Antes
-// venían mezcladas dentro del map que devolvía Stats; ahora que Stats tiene un
-// tipo uniforme para los tres backends, viven aquí.
+// PoolStats exposes go-redis connection-pool metrics. These used to be mixed
+// into the map Stats returned; now that Stats has one uniform type across all
+// three backends, they live here instead.
 func (r *RedisCache) PoolStats() *redis.PoolStats {
 	return r.client.PoolStats()
 }
@@ -199,5 +199,5 @@ func (r *RedisCache) Len() int {
 
 // Stop closes the Redis client
 func (r *RedisCache) Stop() {
-	r.client.Close()
+	_ = r.client.Close()
 }

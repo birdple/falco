@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -51,18 +52,18 @@ func (v *validator) Validate(config *Config) error {
 // /api/v1/images/* unauthenticated.
 func (v *validator) validateSecurity(config *Config) error {
 	if config.Security.APIKeyRequired && config.Security.APIKey == "" {
-		return fmt.Errorf("security.api_key_required=true but security.api_key is empty")
+		return errors.New("security.api_key_required=true but security.api_key is empty")
 	}
 	if config.Security.HMACRequired {
 		if config.Security.HMACKey == "" {
-			return fmt.Errorf("security.hmac_required=true but security.hmac_key is empty")
+			return errors.New("security.hmac_required=true but security.hmac_key is empty")
 		}
 		if config.Security.HMACKeySalt == "" {
-			return fmt.Errorf("security.hmac_required=true but security.hmac_salt is empty")
+			return errors.New("security.hmac_required=true but security.hmac_salt is empty")
 		}
 	}
 	if config.Security.APIKeyRequired && !config.Security.HMACRequired {
-		return fmt.Errorf("security.api_key_required=true requires security.hmac_required=true " +
+		return errors.New("security.api_key_required=true requires security.hmac_required=true " +
 			"because the image delivery route cannot be protected by API key alone " +
 			"(browsers cannot carry API keys on image URLs)")
 	}
@@ -76,7 +77,7 @@ func (v *validator) validateServer(config *Config) error {
 	}
 
 	if config.Server.Host == "" {
-		return fmt.Errorf("host cannot be empty")
+		return errors.New("host cannot be empty")
 	}
 
 	return nil
@@ -87,7 +88,6 @@ func (v *validator) validateStorage(config *Config) error {
 	validTypes := map[string]bool{
 		"filesystem": true,
 		"s3":         true,
-		"minio":      true,
 		"r2":         true,
 		"jay":        true,
 	}
@@ -100,12 +100,12 @@ func (v *validator) validateStorage(config *Config) error {
 
 	// Must have at least one bucket
 	if len(config.Storage.Buckets) == 0 {
-		return fmt.Errorf("at least one bucket must be configured")
+		return errors.New("at least one bucket must be configured")
 	}
 
 	// Default bucket must exist
 	if config.Storage.Default == "" {
-		return fmt.Errorf("storage.default is required")
+		return errors.New("storage.default is required")
 	}
 	if _, ok := config.Storage.Buckets[config.Storage.Default]; !ok {
 		return fmt.Errorf("default bucket %q not found in storage.buckets", config.Storage.Default)
@@ -114,7 +114,7 @@ func (v *validator) validateStorage(config *Config) error {
 	// Validate each bucket
 	for name, bucket := range config.Storage.Buckets {
 		if !validTypes[bucket.Type] {
-			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, minio, r2, or jay)", bucket.Type, name)
+			return fmt.Errorf("invalid type %q for bucket %q (must be filesystem, s3, r2, or jay)", bucket.Type, name)
 		}
 
 		// Validate type-specific required fields
@@ -261,13 +261,6 @@ func (v *validator) validateBucketFields(name string, bucket BucketConfig) error
 		}
 		if bucket.Region == "" {
 			return fmt.Errorf("bucket %q (type s3): region is required", name)
-		}
-	case "minio":
-		if bucket.Bucket == "" {
-			return fmt.Errorf("bucket %q (type minio): bucket name is required", name)
-		}
-		if bucket.Endpoint == "" {
-			return fmt.Errorf("bucket %q (type minio): endpoint is required", name)
 		}
 	case "r2":
 		if bucket.Bucket == "" {

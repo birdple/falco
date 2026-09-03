@@ -78,10 +78,10 @@ type StorageBackend struct {
 
 // NewStorageBackend creates a new circuit breaker wrapped storage backend
 func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSettings) *StorageBackend {
-	// El default vive acá y no sólo en `DefaultSettings` porque un llamador
-	// puede construir `CircuitBreakerSettings{}` a mano: con `IsSuccessful` en
-	// nil, gobreaker cuenta como fallo **todo** error no nulo, y volvería el
-	// "no existe" a tumbar el bucket entero.
+	// The default lives here and not only in DefaultSettings because a caller
+	// can build CircuitBreakerSettings{} by hand: with IsSuccessful nil,
+	// gobreaker counts EVERY non-nil error as a failure, which would let plain
+	// "object not found" responses trip the breaker for the whole bucket.
 	isSuccessful := settings.IsSuccessful
 	if isSuccessful == nil {
 		isSuccessful = func(err error) bool { return !IsBackendFailure(err) }
@@ -103,13 +103,13 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 	}
 }
 
-// execute corre fn detrás del circuit breaker y devuelve su resultado ya
-// tipado.
+// execute runs fn behind the circuit breaker and returns its result already
+// typed.
 //
-// Es un método con su propio type param (Go 1.27). gobreaker.Execute trabaja
-// con `any`, así que sin esto cada wrapper repetía la misma aserción de tipo
-// sin comprobar — siete oportunidades de paniquear si alguna devolvía otra
-// cosa. Aquí la aserción es una sola y sí se comprueba.
+// gobreaker.Execute works in terms of `any`, so without this every wrapper
+// repeated the same unchecked type assertion — seven separate chances to panic
+// if one of them ever returned something else. Here the assertion happens once,
+// and it is checked.
 func (s *StorageBackend) execute[T any](fn func() (T, error)) (T, error) {
 	var zero T
 	res, err := s.cb.Execute(func() (any, error) {
@@ -129,7 +129,7 @@ func (s *StorageBackend) execute[T any](fn func() (T, error)) (T, error) {
 	return v, nil
 }
 
-// executeVoid corre una operación sin valor de retorno detrás del breaker.
+// executeVoid runs an operation with no return value behind the breaker.
 func (s *StorageBackend) executeVoid(fn func() error) error {
 	_, err := s.cb.Execute(func() (any, error) {
 		return nil, fn()

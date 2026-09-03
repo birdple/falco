@@ -1,7 +1,13 @@
+// Command falco serves the image processing service: upload, delivery, proxying
+// of external images, and the admin panel.
+//
+// Object bytes are not stored here — they are delegated to a storage backend,
+// which in birdple-v2 is jay over its native TCP protocol.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -23,71 +29,123 @@ import (
 	"github.com/cshum/vipsgen/vips"
 )
 
+// defaultShutdownTimeout is used when SERVER_SHUTDOWN_TIMEOUT is unset.
+const defaultShutdownTimeout = 30 * time.Second
+
 func main() {
-	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
-	// Setup logger from config
 	logger.Setup(logger.Config{
 		Level:        cfg.Logging.Level,
 		Format:       cfg.Logging.Format,
 		Output:       cfg.Logging.Output,
 		EnableCaller: cfg.Logging.EnableCaller,
 	})
-
 	logger.Info().Msg("Starting Falco Image Processing Service")
 
-	// Initialize OpenTelemetry. Non-fatal: if OTEL_EXPORTER_OTLP_ENDPOINT is
-	// unset, telemetry is silently skipped (avoids "connection refused" spam
-	// in local dev). Shutdown runs before HTTP shutdown below to flush spans.
+	// Non-fatal: with OTEL_EXPORTER_OTLP_ENDPOINT unset, telemetry is skipped
+	// rather than failing — otherwise local dev drowns in "connection refused".
 	otelShutdown, err := telemetry.Init(context.Background(), "falco")
 	if err != nil {
 		logger.Warn().Err(err).Msg("telemetry init failed, continuing without")
 	}
 
-	// Configure trusted proxies for X-Forwarded-For / X-Real-IP header trust.
-	// Loopback is always trusted; an empty TRUSTED_PROXIES env var means no
-	// external proxy is trusted (fail-closed) — operators must opt into
-	// trusting their reverse-proxy/load-balancer subnet explicitly.
+	configureTrustedProxies(cfg)
+	startVips()
+	defer vips.Shutdown()
+
+	logConfiguration(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	storageReg, err := initializeStorage(cfg)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Failed to initialize storage")
+	}
+
+	imageProcessor := buildImageProcessor(cfg)
+	appCache := buildCache(cfg)
+	if appCache != nil {
+		imageProcessor.SetCache(appCache)
+	}
+
+	server := api.NewServer(&api.ServerConfig{
+		Config:          cfg,
+		Storage:         storageReg.Default(),
+		StorageRegistry: storageReg,
+		ImageProcessor:  imageProcessor,
+	})
+
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info().Str("address", cfg.GetServerAddress()).Msg("Server starting")
+		if err := server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		logger.Error().Err(err).Msg("Server error")
+	case <-setupGracefulShutdown(ctx, cancel):
+		logger.Info().Msg("Shutdown signal received")
+	}
+
+	shutdownEverything(cfg, otelShutdown, server, storageReg, appCache)
+}
+
+// configureTrustedProxies decides whose X-Forwarded-For / X-Real-IP headers are
+// believed.
+//
+// Loopback is always trusted. An empty TRUSTED_PROXIES means no external proxy
+// is — fail-closed, so an operator has to opt their load balancer's subnet in
+// explicitly rather than inherit a spoofable client IP by accident.
+func configureTrustedProxies(cfg *config.Config) {
 	httputil.SetTrustedProxies(cfg.Security.TrustedProxies)
 	if len(cfg.Security.TrustedProxies) > 0 {
 		logger.Info().Strs("trusted_proxies", cfg.Security.TrustedProxies).Msg("Trusted proxies configured")
-	} else {
-		logger.Info().Msg("No TRUSTED_PROXIES set; only loopback is trusted to forward client IPs")
+		return
 	}
+	logger.Info().Msg("No TRUSTED_PROXIES set; only loopback is trusted to forward client IPs")
+}
 
-	// Initialize VIPS. vips.Startup(nil) looks harmless but isn't: vipsgen
-	// treats a nil config as "vector (SIMD) disabled" (vips_vector_set_enabled(0)),
-	// which measurably slows every encode. Pass an explicit Config instead —
-	// the zero values below match nil's other defaults (operation cache off,
-	// which is correct here since every proxied image is distinct), and
-	// VectorEnabled is the one field we deliberately flip on.
+// startVips boots libvips.
+//
+// vips.Startup(nil) looks harmless but is not: vipsgen reads a nil config as
+// "vector (SIMD) disabled", which measurably slows every encode. The explicit
+// Config below matches nil's other defaults — the operation cache stays off,
+// which is right here because every proxied image is distinct — and flips
+// VectorEnabled on, which is the whole point of passing one.
+func startVips() {
 	vips.Startup(&vips.Config{
 		ConcurrencyLevel: 1,    // 1 thread per pipeline; CONCURRENT_WORKERS governs real parallelism
 		MaxCacheFiles:    0,    // operation cache off (unchanged from nil default)
 		MaxCacheMem:      0,    // unchanged from nil default
 		MaxCacheSize:     0,    // unchanged from nil default
-		VectorEnabled:    true, // enable libvips' SIMD paths — was silently off under Startup(nil)
+		VectorEnabled:    true, // enable libvips' SIMD paths — silently off under Startup(nil)
 	})
-	defer vips.Shutdown()
+}
 
-	// Log sanitized configuration (no secrets)
-	logBucketNames := make([]string, 0, len(cfg.Storage.Buckets))
+// logConfiguration emits the effective configuration at startup. Bucket and
+// group names only, never their credentials.
+func logConfiguration(cfg *config.Config) {
+	bucketNames := make([]string, 0, len(cfg.Storage.Buckets))
 	for name := range cfg.Storage.Buckets {
-		logBucketNames = append(logBucketNames, name)
+		bucketNames = append(bucketNames, name)
 	}
-	logGroupNames := make([]string, 0, len(cfg.Storage.Groups))
+	groupNames := make([]string, 0, len(cfg.Storage.Groups))
 	for name := range cfg.Storage.Groups {
-		logGroupNames = append(logGroupNames, name)
+		groupNames = append(groupNames, name)
 	}
 
 	logger.Info().
 		Str("default_bucket", cfg.Storage.Default).
-		Strs("buckets", logBucketNames).
-		Strs("groups", logGroupNames).
+		Strs("buckets", bucketNames).
+		Strs("groups", groupNames).
 		Int("port", cfg.Server.Port).
 		Str("host", cfg.Server.Host).
 		Int("cache_size_mb", cfg.Cache.SizeMB).
@@ -105,17 +163,11 @@ func main() {
 		Bool("metrics_enabled", cfg.Development.EnableMetrics).
 		Bool("debug", cfg.Development.Debug).
 		Msg("Configuration loaded")
+}
 
-	// Create application context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Initialize components
-	storageReg, err := initializeStorage(cfg)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to initialize storage")
-	}
-
+// buildImageProcessor creates the processor and applies the runtime knobs that
+// only exist on the vips implementation.
+func buildImageProcessor(cfg *config.Config) processor.ImageProcessor {
 	imageProcessor := processor.NewImageProcessor(
 		cfg.Processing.MaxFileSizeMB,
 		cfg.Processing.DefaultQuality,
@@ -124,105 +176,91 @@ func main() {
 		cfg.Processing.MaxDimensions.Height,
 	)
 
-	// Limit concurrent image processing to avoid CPU/memory exhaustion,
-	// configure the WebP encoder's effort/speed tradeoff, and set the real
-	// per-entry cache TTL (see SetCacheTTL for why this used to be a no-op).
-	if vp, ok := imageProcessor.(*processor.VipsProcessor); ok {
-		if cfg.Processing.ConcurrentWorkers > 0 {
-			vp.SetMaxConcurrency(cfg.Processing.ConcurrentWorkers)
-			logger.Info().Int("max_concurrent", cfg.Processing.ConcurrentWorkers).Msg("Processing concurrency limit set")
-		}
-		vp.SetWebPEffort(cfg.Processing.WebPEffort)
-		logger.Info().Int("webp_effort", cfg.Processing.WebPEffort).Msg("WebP encode effort set")
-		vp.SetCacheTTL(cfg.GetCacheTTL())
-		logger.Info().Dur("cache_ttl", cfg.GetCacheTTL()).Msg("Cache entry TTL set")
+	vp, ok := imageProcessor.(*processor.VipsProcessor)
+	if !ok {
+		return imageProcessor
 	}
 
-	// Initialize cache
-	var appCache processor.Cache
+	// Bounding concurrency is what keeps a burst of large uploads from
+	// exhausting CPU and memory: every decode holds the whole raster.
+	if cfg.Processing.ConcurrentWorkers > 0 {
+		vp.SetMaxConcurrency(cfg.Processing.ConcurrentWorkers)
+		logger.Info().Int("max_concurrent", cfg.Processing.ConcurrentWorkers).Msg("Processing concurrency limit set")
+	}
+	vp.SetWebPEffort(cfg.Processing.WebPEffort)
+	logger.Info().Int("webp_effort", cfg.Processing.WebPEffort).Msg("WebP encode effort set")
+	vp.SetCacheTTL(cfg.GetCacheTTL())
+	logger.Info().Dur("cache_ttl", cfg.GetCacheTTL()).Msg("Cache entry TTL set")
+
+	return imageProcessor
+}
+
+// buildCache picks the cache backend: Redis when configured and reachable,
+// otherwise an in-process sharded LRU. Returns nil when caching is disabled.
+//
+// A Redis that fails to connect degrades to the LRU rather than aborting: the
+// cache is an optimisation, and falco still serves correctly without it.
+func buildCache(cfg *config.Config) processor.Cache {
 	if cfg.Cache.EnableRedis && cfg.Cache.RedisURL != "" {
 		redisCache, err := cache.NewRedisCache(cfg.Cache.RedisURL, cfg.GetCacheTTL())
 		if err != nil {
 			logger.Warn().Err(err).Msg("Failed to initialize Redis cache, falling back to LRU cache")
 		} else {
-			appCache = redisCache
 			logger.Info().Str("redis_url", cfg.Cache.RedisURL).Msg("Redis cache initialized")
+			return redisCache
 		}
 	}
 
-	if appCache == nil {
-		cacheSize := cfg.GetCacheSizeBytes()
-		if cacheSize > 0 {
-			// cfg.Cache.CleanupInterval (default 10m), NOT cfg.GetCacheTTL():
-			// this second argument is NewShardedCache's background sweep
-			// frequency, an entirely different knob from the per-entry TTL
-			// (which VipsProcessor.SetCacheTTL now sets, above). The two
-			// were previously conflated here — raising CACHE_TTL_HOURS did
-			// nothing because it only ever reached this cleanup-interval
-			// parameter, never the actual expiry used when writing an entry.
-			shardedCache := cache.NewShardedCache(cacheSize, cfg.Cache.CleanupInterval)
-			appCache = shardedCache
-			logger.Info().Int("cache_size_mb", cfg.Cache.SizeMB).Dur("cleanup_interval", cfg.Cache.CleanupInterval).Msg("Sharded LRU cache initialized")
-		}
+	cacheSize := cfg.GetCacheSizeBytes()
+	if cacheSize <= 0 {
+		return nil
 	}
 
-	if appCache != nil {
-		imageProcessor.SetCache(appCache)
+	// The second argument is the background sweep frequency, NOT the per-entry
+	// TTL — those are different knobs, and conflating them here is what once
+	// made CACHE_TTL_HOURS a no-op: it only ever reached this parameter and
+	// never the expiry actually used when writing an entry. The per-entry TTL
+	// is set by VipsProcessor.SetCacheTTL.
+	shardedCache := cache.NewShardedCache(cacheSize, cfg.Cache.CleanupInterval)
+	logger.Info().
+		Int("cache_size_mb", cfg.Cache.SizeMB).
+		Dur("cleanup_interval", cfg.Cache.CleanupInterval).
+		Msg("Sharded LRU cache initialized")
+	return shardedCache
+}
+
+// shutdownEverything tears the process down in order.
+//
+// Telemetry flushes first, so the spans describing the shutdown itself make it
+// out; then the server stops accepting requests; only then are the resources
+// those requests were using released.
+func shutdownEverything(
+	cfg *config.Config,
+	otelShutdown func(context.Context) error,
+	server *api.Server,
+	storageReg *storage.Registry,
+	appCache processor.Cache,
+) {
+	timeout := cfg.Server.ShutdownTimeout
+	if timeout == 0 {
+		timeout = defaultShutdownTimeout
 	}
-
-	// Initialize API server
-	server := api.NewServer(&api.ServerConfig{
-		Config:          cfg,
-		Storage:         storageReg.Default(),
-		StorageRegistry: storageReg,
-		ImageProcessor:  imageProcessor,
-	})
-
-	// Start server in a goroutine
-	serverErr := make(chan error, 1)
-	go func() {
-		logger.Info().Str("address", cfg.GetServerAddress()).Msg("Server starting")
-		if err := server.Start(); err != nil && err != http.ErrServerClosed {
-			serverErr <- err
-		}
-	}()
-
-	// Set up graceful shutdown
-	shutdown := setupGracefulShutdown(ctx, cancel)
-
-	// Wait for either server error or shutdown signal
-	select {
-	case err := <-serverErr:
-		logger.Error().Err(err).Msg("Server error")
-	case <-shutdown:
-		logger.Info().Msg("Shutdown signal received")
-	}
-
-	// Perform graceful shutdown
-	shutdownTimeout := cfg.Server.ShutdownTimeout
-	if shutdownTimeout == 0 {
-		shutdownTimeout = 30 * time.Second
-	}
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer shutdownCancel()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	logger.Info().Msg("Initiating graceful shutdown...")
 
-	// Phase 0: Flush in-flight OTel spans/metrics before tearing down servers.
 	if otelShutdown != nil {
 		if err := otelShutdown(shutdownCtx); err != nil {
 			logger.Warn().Err(err).Msg("Telemetry shutdown error")
 		}
 	}
 
-	// Phase 1: Stop accepting new requests
 	logger.Info().Msg("Phase 1: Stopping server (no new requests)")
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error().Err(err).Msg("Server shutdown error")
 	}
 
-	// Phase 2: Clean up resources
 	logger.Info().Msg("Phase 2: Cleaning up resources")
 	cleanupResources(shutdownCtx, storageReg, appCache)
 
@@ -259,9 +297,9 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 
 // cleanupResources performs cleanup of application resources.
 //
-// Espera de verdad a las réplicas asíncronas en vuelo (Registry.CloseAll) en
-// lugar del `time.Sleep(100ms)` que había antes: un sleep fijo no sabe si el
-// trabajo terminó, sólo disimula que sí.
+// Actually waits on in-flight async replications via Registry.CloseAll, instead
+// of the fixed time.Sleep(100ms) this replaced: a sleep does not know whether
+// the work finished, it only pretends it did.
 func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCache processor.Cache) {
 	if appCache != nil {
 		logger.Info().Msg("Stopping cache...")
@@ -294,7 +332,7 @@ func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCach
 // ReplicatedStorage if they have backups, and registers them in a Registry.
 func initializeStorage(cfg *config.Config) (*storage.Registry, error) {
 	if len(cfg.Storage.Buckets) == 0 {
-		return nil, fmt.Errorf("no storage buckets configured")
+		return nil, errors.New("no storage buckets configured")
 	}
 
 	// First pass: build raw backends (without backup wrappers)
@@ -383,11 +421,6 @@ func buildBucketBackend(bcfg config.BucketConfig) (storage.StorageBackend, error
 		S3Endpoint: bcfg.Endpoint,
 		AccessKey:  bcfg.AccessKey,
 		SecretKey:  bcfg.SecretKey,
-		// MinIO fields
-		MinIOBucket:   bcfg.Bucket,
-		MinIOEndpoint: bcfg.Endpoint,
-		MinIORegion:   bcfg.Region,
-		MinIOSecure:   bcfg.Secure,
 		// R2 fields
 		R2Bucket:    bcfg.Bucket,
 		R2AccountID: bcfg.AccountID,

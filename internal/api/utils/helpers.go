@@ -1,3 +1,9 @@
+// Package utils holds the request-parsing helpers shared by falco's handlers:
+// query parameters with aliases, directory path validation and storage key
+// construction.
+//
+// The path validation is security-relevant, not cosmetic: it is what stops a
+// directory parameter from escaping its bucket.
 package utils
 
 import (
@@ -11,15 +17,15 @@ import (
 
 // GetQueryParam returns the first non-empty value from multiple parameter names.
 //
-// Parsea el query UNA vez: la versión anterior llamaba a r.URL.Query() dentro
-// del bucle, así que GetQueryParam(r, "p", "prefix", "d", "dir", "directory")
-// reparseaba RawQuery hasta cinco veces por llamada.
+// Parses the query ONCE: the previous version called r.URL.Query() inside the
+// loop, so GetQueryParam(r, "p", "prefix", "d", "dir", "directory") reparsed
+// RawQuery up to five times per call.
 func GetQueryParam(r *http.Request, names ...string) string {
 	return QueryParam(r.URL.Query(), names...)
 }
 
-// QueryParam es GetQueryParam sobre un url.Values ya parseado, para los
-// handlers que hoistearon r.URL.Query() a una variable local.
+// QueryParam is GetQueryParam over an already-parsed url.Values, for handlers
+// that hoisted r.URL.Query() into a local.
 func QueryParam(query url.Values, names ...string) string {
 	for _, name := range names {
 		if value := query.Get(name); value != "" {
@@ -157,10 +163,12 @@ func ValidateDirectoryPath(path string) error {
 
 	// Validate characters (allow alphanumeric, hyphens, underscores, forward slashes)
 	for _, char := range path {
-		if !((char >= 'a' && char <= 'z') ||
-			(char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') ||
-			char == '-' || char == '_' || char == '/' || char == '.') {
+		switch {
+		case char >= 'a' && char <= 'z',
+			char >= 'A' && char <= 'Z',
+			char >= '0' && char <= '9',
+			char == '-', char == '_', char == '/', char == '.':
+		default:
 			return fmt.Errorf("invalid character in path: %q", char)
 		}
 	}
@@ -178,14 +186,14 @@ func BuildStorageKey(directory, imageID string) string {
 
 // BuildImageURL builds the image URL with optional bucket and directory parameters
 func BuildImageURL(imageID, bucket, directory string) string {
-	baseURL := fmt.Sprintf("/api/v1/images/%s", imageID)
+	baseURL := "/api/v1/images/" + imageID
 	params := []string{}
 
 	if bucket != "" {
-		params = append(params, fmt.Sprintf("b=%s", url.QueryEscape(bucket)))
+		params = append(params, "b="+url.QueryEscape(bucket))
 	}
 	if directory != "" {
-		params = append(params, fmt.Sprintf("d=%s", url.QueryEscape(directory)))
+		params = append(params, "d="+url.QueryEscape(directory))
 	}
 
 	if len(params) > 0 {

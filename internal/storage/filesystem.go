@@ -71,8 +71,8 @@ func (fs *FilesystemStorage) Store(ctx context.Context, key string, data io.Read
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer os.Remove(tempFile.Name()) // Clean up temp file on error
-	defer tempFile.Close()
+	defer func() { _ = os.Remove(tempFile.Name()) }() // Clean up temp file on error
+	defer func() { _ = tempFile.Close() }()
 
 	// Copy data to temp file
 	size, err := io.Copy(tempFile, data)
@@ -86,7 +86,7 @@ func (fs *FilesystemStorage) Store(ctx context.Context, key string, data io.Read
 	metadata.CreatedAt = time.Now()
 
 	// Close temp file before moving
-	tempFile.Close()
+	_ = tempFile.Close()
 
 	// Atomic move to final location
 	if err := os.Rename(tempFile.Name(), filePath); err != nil {
@@ -96,7 +96,7 @@ func (fs *FilesystemStorage) Store(ctx context.Context, key string, data io.Read
 	// Write metadata
 	if err := fs.writeMetadata(metaPath, metadata); err != nil {
 		// Try to clean up the file if metadata write fails
-		os.Remove(filePath)
+		_ = os.Remove(filePath)
 		return fmt.Errorf("failed to write metadata: %w", err)
 	}
 
@@ -188,7 +188,7 @@ func (fs *FilesystemStorage) Health(ctx context.Context) error {
 	if err := os.WriteFile(testFile, []byte("health check"), 0644); err != nil {
 		return fmt.Errorf("failed to write test file: %w", err)
 	}
-	defer os.Remove(testFile)
+	defer func() { _ = os.Remove(testFile) }()
 
 	return nil
 }
@@ -319,8 +319,8 @@ func (fs *FilesystemStorage) writeMetadata(path string, metadata *ImageMetadata)
 		return fmt.Errorf("failed to create metadata directory: %w", err)
 	}
 
-	// Wire: el .meta.json en disco es formato de datos persistido, tiene que
-	// seguir saliendo byte por byte como lo escribía encoding/json v1.
+	// Wire: the on-disk .meta.json is a persisted data format and has to keep
+	// coming out byte-for-byte as encoding/json v1 wrote it.
 	data, err := jsonv2.Marshal(metadata, jsonx.Wire, jsontext.WithIndent("  "))
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -343,8 +343,8 @@ func (fs *FilesystemStorage) readMetadata(path string) (*ImageMetadata, error) {
 		return nil, fmt.Errorf("failed to read metadata file: %w", err)
 	}
 
-	// Lenient al leer: un .meta.json escrito por una versión vieja puede traer
-	// UTF-8 roto en el nombre original y no queremos volverlo ilegible.
+	// Lenient on read: a .meta.json written by an older version can carry broken
+	// UTF-8 in the original filename, and it must not become unreadable.
 	var metadata ImageMetadata
 	if err := jsonv2.Unmarshal(data, &metadata, jsonx.Lenient); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)

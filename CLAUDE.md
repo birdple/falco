@@ -1,180 +1,189 @@
-# falco — Procesamiento de Imágenes
+# falco — procesamiento y entrega de imágenes
 
-## Qué hace
-
-Servicio Go de procesamiento de imágenes sobre **libvips**: resize, crop, watermark, conversión de formato, cache LRU in-memory y HMAC URL signing. Backend de almacenamiento **delegado a Jay** (único consumidor del protocolo binario nativo de Jay en el stack).
+Recibe imágenes, las reencoda con libvips y las sirve transformadas al vuelo.
+No guarda bytes: el almacenamiento se delega a jay por su protocolo TCP nativo.
+Además es un proyecto open source público, así que hay código que birdple-v2 no
+usa y que no se borra.
 
 ## Stack
 
-- Go 1.27+, Chi router, govips (libvips ≥ 8.x)
-- zerolog (JSON estructurado)
-- Storage backend: `github.com/ivangsm/jay/proto/client` (protocolo TCP nativo)
-- Cache: LRU in-memory (no Redis por default)
-- Observabilidad: Prometheus metrics + OTel collector para traces
+- Go 1.27, chi v5, zerolog.
+- libvips vía `github.com/cshum/vipsgen` (cgo). No es govips.
+- Config: defaults en código + viper sobre `config.yaml` + godotenv + env vars.
+- Cache de imágenes transformadas: LRU sharded en proceso; Redis opcional.
+- Storage: `github.com/ivangsm/jay/proto/client`.
+- Panel admin: templ, con los assets embebidos en `web/`.
+- Prometheus (`/metrics`) + OTel (`internal/telemetry`); `gobreaker` envuelve el
+  backend de storage.
 
-## Cómo arrancar
+## Arrancar, probar, revisar
 
 ```bash
-# Desde la raíz del monorepo, con jay ya corriendo:
-docker compose up -d jay falco
-
-# Dev local (requiere libvips instalado en el host):
-cd falco && go run ./cmd/server
+make check            # gate de commit: fmt + vet + lint + test + go build ./...
+make test             # go test ./...
+make lint             # golangci-lint, config en .golangci.yml
+go run ./cmd/server   # exige libvips en el host
 ```
 
-## Variables de entorno
+libvips es un requisito del host, no algo opcional: sin él ni siquiera compila
+(`brew install vips` en macOS, `apt install libvips-dev` en Linux). El
+Dockerfile ya lo trae.
 
-Todas las variables marcadas **obligatorias** deben estar en `.env` — sin defaults.
+No uses `make build`: cross-compila a Linux con CGO y no corre en macOS. Para
+compilar todo en el host está `make check-build`.
 
-| Variable | Obligatoria | Propósito |
+En el stack completo: `docker compose up -d falco` desde la raíz del monorepo.
+Depende de jay con `condition: service_healthy`, así que sin jay sano falco no
+arranca.
+
+## Configuración: tres capas, y `config.yaml` gana en local
+
+Orden real (`internal/config/loader.go`): defaults en código → `config.yaml` de
+la raíz del repo → variables de entorno.
+
+**`config.yaml` está versionado y es el que manda en un `go run` a secas.** Fija
+`server.port: 8080`, `storage.default: local` (filesystem en `./data/images`) y
+`security.api_key_required: false`. O sea: un falco arrancado a mano no escucha
+en 4009, no habla con jay y no pide auth. El 4009, el backend jay y las claves
+salen del bloque `falco` del `docker-compose.yml` de la raíz, que es la
+configuración de verdad del stack.
+
+El inventario de variables está en `getEnvMappings()` de
+`internal/config/loader.go`, más el auto-descubrimiento por patrón
+`STORAGE_BUCKET_<NAME>_<SUFIJO>` (`_TYPE`, `_ADDR`, `_ADMIN_ADDR`, `_TOKEN_ID`,
+`_TOKEN_SECRET`, `_BUCKET`, `_POOL_SIZE`, …). Léelo de ahí; no lo copies aquí.
+
+Las que **no** pasan por ese mapa y se leen con `os.Getenv`:
+
+| Variable | Dónde se lee | Si falta |
 |---|---|---|
-| `PORT` | no (default 4009) | Puerto HTTP |
-| `STORAGE_DEFAULT` | sí | Nombre del bucket por defecto (usar `jay`) |
-| `STORAGE_BUCKET_JAY_TYPE` | sí | Tipo de backend (`jay`) |
-| `STORAGE_BUCKET_JAY_ADDR` | sí | Dirección del protocolo nativo (`jay:4012`) |
-| `STORAGE_BUCKET_JAY_ADMIN_ADDR` | sí | Dirección HTTP para GetStats — mismo puerto que S3 API (`jay:4010`) |
-| `STORAGE_BUCKET_JAY_BUCKET` | sí | Nombre del bucket en Jay (`falco-images`) |
-| `STORAGE_BUCKET_JAY_TOKEN_ID` | sí | Token ID de Jay (del seed) |
-| `STORAGE_BUCKET_JAY_TOKEN_SECRET` | sí | Secret plano del token Jay |
-| `STORAGE_BUCKET_JAY_POOL_SIZE` | no (default 4) | Tamaño del pool de conexiones TCP |
-| `API_KEY` | sí | API key para autenticar uploads |
-| `HMAC_KEY`, `HMAC_SALT` | sí | Firma HMAC de URLs |
-| `HMAC_REQUIRED` | sí (sin default) | `true` activa verificación HMAC en delivery. Cuando es `false`, delivery ya NO queda abierto: cae al path de API-key + scope en `HandleDelivery`. |
-| `HMAC_REQUIRE_EXPIRY` | sí (sin default, fail-closed) | `true` obliga a que todas las URLs firmadas traigan `?exp=<unix>` y que no hayan expirado. `false` acepta URLs sin expiry (sólo compat temporal). Se lee vía `os.Getenv` — si falta, `/api/v1/images/*` devuelve 500. |
-| `CACHE_SIZE_MB` | no (default 256) | Cache LRU en MB |
-| `DEFAULT_FORMAT` | no (default webp) | Formato de salida por default |
-| `DEFAULT_QUALITY` | no (default 85) | Calidad JPEG/WebP para delivery (`/api/v1/images/{id}`) |
-| `PROXY_MAX_WIDTH` | no (default 600) | Cap de ancho aplicado al proxy externo cuando no se pasa `?w` ni `?h`. Calibrado para activar resize en BGG `__itemrep@2x` (~984 px). |
-| `PROXY_DEFAULT_QUALITY` | no (default 75) | Calidad webp/jpeg aplicada en `/api/v1/proxy/*` cuando no se pasa `?q`. Más bajo que delivery porque las imágenes proxy vienen de CDNs externos. |
-| `TRUSTED_PROXIES` | no (default vacío → solo loopback `127.0.0.0/8`, `::1/128`) | Lista separada por comas de CIDRs/IPs de proxies confiables. Solo desde estas direcciones se respetan `X-Forwarded-For` / `X-Real-IP`; fail-closed si no se configura. Detrás de Nginx/Traefik/ELB hay que listar la subred del proxy o el rate-limit per-IP no cuenta al cliente real. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no (default vacío → OTel apagado) | Endpoint OTLP gRPC del collector (ej. `otel-collector:4317`). Si está vacío, telemetry queda apagado en silencio — útil para dev local sin collector. Si está seteado, se exportan traces y metrics. |
-| `OTEL_DEPLOYMENT_ENV` | no (default `development`) | Valor del recurso `deployment.environment` en spans/metrics (`development` / `staging` / `production`). |
-| `ENABLE_PPROF` | no (default `false`) | Monta `/debug/pprof/*` (índice, heap, goroutine, `goroutineleak`, profile, trace). Va detrás de la misma API key que `/metrics` cuando `API_KEY_REQUIRED=true`. Hasta la migración a Go 1.27 este flag existía pero **nadie lo leía**. |
-| `MAX_HEADER_BYTES` | no (default 65536) | Tope de bytes de cabecera por request. Más ajustado que el 1 MiB de la stdlib. |
-| `MAX_HEADER_VALUE_COUNT` | no (default 100) | Tope de cantidad de valores de cabecera (`http.Server.MaxHeaderValueCount`, Go 1.27). Miles de cabeceras diminutas pesan poco en bytes pero caras en parseo. |
+| `HMAC_REQUIRE_EXPIRY` | `internal/api/handlers/delivery.go` | `/api/v1/images/*` responde 500. Es a propósito: el default sería aceptar URLs firmadas que nunca caducan. |
+| `PROXY_ALLOWED_HOSTS` | `internal/api/handlers/proxy.go` | cae a un allowlist compilado |
+| `PROXY_MAX_WIDTH`, `PROXY_DEFAULT_QUALITY` | `internal/api/handlers/proxy.go` | caen a sus constantes |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_DEPLOYMENT_ENV` | `internal/telemetry` | telemetría apagada, el arranque sigue |
 
-## Estructura (lo no obvio)
+`API_KEY_REQUIRED=true` **obliga** a `HMAC_REQUIRED=true`: `validateSecurity` se
+niega a arrancar si no, porque un `<img>` no puede llevar una API key y la ruta
+de delivery quedaría sin ninguna protección.
 
-- `internal/storage/jay.go` — backend custom que habla protocolo nativo con Jay. **Único backend en uso en este stack.** Los otros (`filesystem.go`, `s3.go`, `minio.go`, `r2.go`) quedan upstream pero no se usan.
-- `internal/storage/factory.go` — registry pattern. `StorageTypeJay` se registra en `init()`.
-- `internal/config/loader.go` — env vars se auto-descubren bajo `STORAGE_BUCKET_<NAME>_*`. Para jay se añadieron sufijos `_ADDR`, `_ADMIN_ADDR`, `_TOKEN_ID`, `_TOKEN_SECRET`, `_POOL_SIZE`.
-- `cmd/server/main.go:buildBucketBackend` — mapea `config.BucketConfig.JayXxx` a `storage.StorageConfig.JayXxx`.
+## Arquitectura
 
-## Cómo funciona
+Las rutas se montan en `internal/api/server.go`; esa función es el inventario.
+Lo que hay que saber antes de tocarla:
 
-**Upload:**
-```
-cliente → POST /api/v1/upload → libvips decode (w/h/format) → JayStorage.Store → client.PutObject TCP :4012 → bbolt tx + fs atomic write → response { id, url, w, h, size }
-```
+- `/api/v1/upload|update|list|delete|sign` van dentro del grupo autenticado
+  (scoped keys si hay alguna configurada, si no la `API_KEY` única).
+- `/api/v1/images/*` (delivery) y `/api/v1/proxy/*` quedan **fuera** de ese
+  grupo a propósito y se autorizan solas: firma HMAC, o API key + scope cuando
+  `HMAC_REQUIRED=false`. No las muevas al grupo autenticado.
+- `/metrics` y `/debug/pprof/*` sólo se montan con `ENABLE_METRICS` /
+  `ENABLE_PPROF`, y detrás de la API key.
 
-**Delivery:**
-```
-cliente → GET /api/v1/images/{id}?w=400 → LRU cache?
-  hit  → serve (nunca toca Jay)
-  miss → JayStorage.Retrieve (client.GetObject) → libvips transform → cache → serve
-```
+**El upload no guarda el original.** `prepareForStorage` corre `Process` sobre
+lo subido y almacena el resultado reencodado a `DEFAULT_FORMAT` (webp) salvo que
+el request pida `?f=`. SVG, HTML y XML se rechazan con 415; el resto de content
+types que no son imagen pasan tal cual, sin tocar. El id sale del hash del
+contenido crudo, así que subir dos veces lo mismo cae en la misma clave y jay,
+que es idempotente por clave, lo trata como no-op.
 
-## Comunicación
+**Delivery tiene dos caminos.** Sin transformaciones ni formato, se hace stream
+directo desde jay (`deliverRaw`) y no se cachea: no hay CPU que compartir y el
+streaming mantiene la memoria plana. Con transformaciones o formato, la clave de
+cache es computable sólo del query, así que se responde desde cache antes de
+tocar jay; en miss, un `singleflight` comparte fetch + decode + encode entre
+todos los requests concurrentes de la misma clave.
 
-- **Recibe HTTP de:** nadie todavía (la adopción por `birdple-api` / `birdple` / `colibri` es trabajo de specs futuras)
-- **Habla con:** `jay:4012` por protocolo binario nativo. Falco es el único consumidor nativo del stack (dogfooding intencional)
-- **Métricas:** `GET /metrics` (Prometheus, scrape local) + OTel metrics vía OTLP gRPC al collector cuando `OTEL_EXPORTER_OTLP_ENDPOINT` está seteado
-- **OTel traces:** exportados vía OTLP gRPC al endpoint en `OTEL_EXPORTER_OTLP_ENDPOINT` (típicamente `otel-collector:4317`). Init está en [`internal/telemetry`](./internal/telemetry/), que replica el patrón canónico de `auk`/`owl`. Sin endpoint, telemetry queda apagado.
+**El contrato de query params es `parseDeliveryParams`.** Dos clases, y la
+diferencia es deliberada: lo que cambia geometría o encoding (`w`, `h`, `q`,
+`f`, `fit`) rechaza con 400 si viene mal —servir otra imagen sería peor que
+fallar—; lo cosmético (`maxage`, `smaxage`, `gravity`, `pad_*`, `wm_scale`,
+`trim`, `orient`, `meta`) cae a su default. Casi todos tienen alias largo
+(`w|width`, `q|quality`, `b|bucket`, `d|dir|directory`) y la extensión del path
+(`/images/abc.webp`) actúa como default de formato, que es lo que permite
+cachear por extensión en un CDN.
 
-## Endpoints principales
+**La cache es sólo de transformadas y vive en RAM.** Un reinicio la pierde
+entera y el siguiente request paga jay + decode + encode; nunca pierde datos,
+porque los originales están en jay, pero un redeploy en hora pico se nota.
+`CACHE_SIZE_MB` es el techo (256 por default) y en `0` desactiva la cache por
+completo. `CACHE_TTL_HOURS` es el TTL por entrada y `CACHE_CLEANUP_INTERVAL` la
+frecuencia del barrido: son knobs distintos y confundirlos ya volvió a
+`CACHE_TTL_HOURS` un no-op una vez.
 
-| Método | Ruta | Propósito |
-|---|---|---|
-| POST | `/api/v1/upload` | Subir imagen (multipart/form-data) |
-| GET | `/api/v1/images/{id}` | Obtener imagen (con `?w=`, `?h=`, `?format=`) |
-| DELETE | `/api/v1/images/{id}` | Borrar imagen |
-| GET | `/health` | Health check |
-| GET | `/metrics` | Prometheus |
+## Quién consume falco
+
+birdple (el SSR firma las URLs), birdple-api (`src/modules/images/`),
+birdple_app y colibri. La firma HMAC está reimplementada en TypeScript en
+`birdple/src/server/images/sign.ts` y
+`birdple-api/src/modules/images/images.sign.ts`, con tests de paridad byte a
+byte contra `internal/security/signature.go`. **Cambiar la canonicalización de
+la firma rompe los tres a la vez**, y el síntoma es un 403 `INVALID_SIGNATURE`
+en producción, no un test rojo aquí.
 
 ## JSON: `encoding/json/v2`
 
-Todo el código de producción usa `encoding/json/v2` (Go 1.27); `encoding/json`
-v1 sólo sobrevive en tests. Las opciones viven en
-[`internal/jsonx`](./internal/jsonx/jsonx.go) y hay tres:
+El código de producción usa `encoding/json/v2`; v1 sólo sobrevive en tests. Las
+opciones están en `internal/jsonx/jsonx.go`:
 
 | Perfil | Dónde | Por qué |
 |---|---|---|
-| `jsonx.Wire` | Metadata que se persiste (`storage/metadata.go`, `storage/filesystem.go`) y la cache negativa | Emite **exactamente** los mismos bytes que emitía v1. Cambiarlos es un cambio de formato de datos, no de estilo. |
-| `jsonx.Lenient` | Lectura de metadata vieja | Acepta UTF-8 roto y llaves duplicadas para no volver ilegible un archivo escrito por una versión anterior. |
-| `jsonx.Strict` | Bodies de **nuestra** API (`/upload`, `/update`, `/delete`, `/sign`, login del panel) | Rechaza campos desconocidos: un `{"qualty": 90}` mal escrito devuelve 400 en vez de ignorarse en silencio. |
+| `jsonx.Wire` | metadata que se persiste y la cache negativa | emite exactamente los bytes de v1; cambiarlos es un cambio de formato de datos |
+| `jsonx.Lenient` | lectura de metadata vieja | acepta UTF-8 roto y llaves duplicadas para no volver ilegible un archivo escrito por una versión anterior |
+| `jsonx.Strict` | bodies de nuestra API | rechaza campos desconocidos: un `{"qualty": 90}` da 400 en vez de ignorarse |
 
-Dos reglas que se rompen fácil:
+Dos cosas que se rompen fácil: en v2 `omitempty` **no** omite el cero, así que
+los campos numéricos y booleanos llevan `omitzero` (slices y mapas se quedan en
+`omitempty`, que ahí sí coincide); y quien custodia esto es
+`internal/jsonx/jsonx_diff_test.go`, que compara v1 contra v2+`Wire` byte a
+byte. Si falla, se ajusta el tag, nunca el test.
 
-- **`omitempty` en números y bools no significa lo mismo en v2.** v1 omitía el
-  cero; v2 sólo omite lo que serializa a `null`, `""`, `{}` o `[]`. Por eso los
-  campos numéricos y booleanos llevan **`omitzero`**. Los slices y mapas se
-  quedan en `omitempty`, que ahí sí coincide.
-- **El test diferencial de `internal/jsonx` es el que custodia esto.** Compara
-  v1 contra v2+`Wire` byte por byte sobre todos los tipos del servicio. Si
-  falla, se ajusta el tag, no el test. `ImageMetadata` además tiene un golden
-  de bytes literales en `internal/storage/metadata_test.go`.
+## Reglas del repo
 
-La respuesta HTTP usa los **defaults de v2**, que no escapan `&`, `<` ni `>`.
-Es un cambio de bytes respecto de v1 sin cambio de semántica: todos los
-consumidores pasan por un parser de JSON.
+- Los comentarios del código van en **inglés** (el proyecto es público) — por
+  eso `misspell` está en el gate de lint. Es la excepción local a la regla del
+  monorepo.
+- Los mocks de `tests/mocks/` los genera mockery a partir de `.mockery.yml`; no
+  los edites a mano.
+- Después de un tag nuevo de jay:
+  `go get -u github.com/ivangsm/jay@latest && go mod tidy` y `make check`.
+- No comprimas `image/*`: la lista de tipos de `middleware.Compress` en
+  `server.go` es una allowlist a propósito, porque webp/jpeg/png ya vienen
+  comprimidos y gzipearlos quema CPU y suele agrandar el payload.
 
-## Gotchas
+## Decisiones tomadas
 
-- **libvips en el host**: dev local requiere libvips instalado (`brew install vips` en macOS, `apt install libvips-dev` en Linux). El Dockerfile ya lo incluye.
-- **Cache LRU in-memory**: reinicio del contenedor pierde la cache, pero los originales están seguros en Jay.
-- **HMAC URL signing**: deshabilitado en dev (`HMAC_REQUIRED=false`). Activarlo antes de exponer Falco públicamente.
-- **Actualizar cliente nativo de Jay**: después de un tag nuevo en `github.com/ivangsm/jay`, correr `cd falco && go get -u github.com/ivangsm/jay@latest && go mod tidy` y levantar los tests.
-- **Arranca después de Jay**: `depends_on.jay.condition: service_healthy` en docker-compose. Si Jay no arranca, Falco no arranca.
+- **`vips.Startup` recibe un `Config` explícito, no `nil`.** vipsgen lee un nil
+  como "SIMD desactivado", lo que hace más lento cada encode. Ver `startVips()`.
+- **`TRUSTED_PROXIES` vacío = sólo loopback.** `X-Forwarded-For` y `X-Real-IP`
+  se ignoran salvo desde los CIDRs listados: fail-closed. Detrás de
+  Nginx/Traefik/ELB hay que listar la subred del proxy o el rate limit por IP
+  cuenta al proxy, no al cliente.
+- **`robots.txt` prohíbe todo.** falco es origen de un CDN de imágenes, no
+  contenido indexable.
+- **`goroutineleak` en pprof.** Es el perfil que atrapa las goroutines
+  fire-and-forget de `ReplicatedStorage`, que arrancan con `context.Background()`
+  y a las que no espera ningún `WaitGroup`.
 
----
+## Trampas conocidas
 
-## Falco es upstream público — no borrar funcionalidad upstream
+- **`falco/.env` local está viejo.** No está versionado y trae variables que ya
+  no existen (`STORAGE_PRIMARY`) más `PORT=8080`. godotenv no
+  pisa lo que ya está en el entorno, pero si dependes de él para arrancar vas a
+  levantar un falco filesystem en 8080 creyendo que es el del stack.
+- **Sin `API_KEY_REQUIRED` ni `HMAC_REQUIRED`, falco arranca abierto.** Ninguna
+  de las dos tiene default en viper, así que ausente vale `false` y la
+  validación no las exige. Esto contradice la regla del raíz sobre features
+  opcionales sin configurar; en el stack lo tapa el docker-compose, que pone
+  ambas en `"true"`.
+- **`docs/` no es fuente de verdad.** `ARCHITECTURE.md`, `TECHNICAL_SPEC.md`,
+  `IMPLEMENTATION_ROADMAP.md` y `DEPLOYMENT_GUIDE.md` son documentos previos a
+  la implementación actual (no mencionan jay, ni HMAC, ni el proxy externo), y
+  `REVIEW_GUIDE.md` es una auditoría con hallazgos ya arreglados. `openapi.yaml`
+  sí se sirve en `/docs/openapi.yaml`, pero le faltan `/sign` y `/proxy`.
+  Verifica contra el código antes de creerles.
 
-Falco es un proyecto **open-source público**. La configuración en birdple-v2 (jay + LRU + API key simple + HMAC) es **una de muchas posibles**. Los siguientes módulos existen intencionalmente aunque birdple-v2 no los use — otros usuarios del proyecto sí pueden necesitarlos:
+## Fuera de alcance
 
-### Storage backends soportados upstream
-
-Registrados en [`internal/storage/factory.go`](./internal/storage/factory.go) y disponibles para cualquier usuario de Falco:
-
-| Archivo | Backend | Estado en birdple-v2 | Estado upstream |
-|---|---|---|---|
-| `internal/storage/jay.go` | Jay (protocolo binario nativo) | ✅ En uso | Específico de birdple |
-| `internal/storage/s3.go` | AWS S3 | No usado | ✅ Funcional |
-| `internal/storage/minio.go` | MinIO | No usado | ✅ Funcional |
-| `internal/storage/r2.go` | Cloudflare R2 | No usado | ✅ Funcional |
-| `internal/storage/filesystem.go` | Filesystem local | No usado | ✅ Funcional |
-
-**No remover** ninguno de estos, ni sus campos en `StorageConfig`, ni sus ramas en `config/validator.go`. Son parte de la API pública de Falco.
-
-### ReplicatedStorage (primary + N backups)
-
-[`internal/storage/replicated.go`](./internal/storage/replicated.go) implementa replicación sync/async/read-fallback a múltiples backends. **birdple-v2 no lo configura**, pero es una feature válida del proyecto — usuarios pueden replicar S3 → R2, o jay → filesystem para backups. No remover.
-
-### Redis cache
-
-[`internal/cache/redis.go`](./internal/cache/redis.go) + `ENABLE_REDIS` / `REDIS_URL` envs. **birdple-v2 usa LRU in-memory**, pero Redis es la opción correcta para:
-- Múltiples instancias de Falco compartiendo cache
-- Persistencia de cache a través de reinicios
-- Cache más grande que la RAM de un solo contenedor
-
-No remover — es una decisión operativa, no dead code.
-
-### Scoped API keys, groups, subgroups
-
-Toda la lógica de auto-discovery en [`internal/config/loader.go`](./internal/config/loader.go) (funciones `discoverBucketsFromEnv`, `discoverGroupsFromEnv`, `discoverSubgroupsFromEnv`, `discoverBucketKeysFromEnv`, etc.) más [`internal/api/middleware/scoped_auth.go`](./internal/api/middleware/scoped_auth.go) permiten:
-
-- Keys con acceso limitado a buckets específicos
-- Agrupar buckets lógicamente (groups / subgroups)
-- Keys por-grupo y por-subgrupo
-
-**birdple-v2 usa la auth simple** (una sola `API_KEY`), por lo que `ScopedAPIKeyAuth.HasScopedKeys()` devuelve false y se cae al fallback `APIKeyAuth`. Esto es intencional — otros usuarios multi-tenant sí lo necesitan. No remover.
-
-### Regla para auditorías
-
-Cualquier auditoría que recomiende borrar estos módulos como "dead code" está aplicando el criterio incorrecto. El criterio correcto es:
-
-1. ¿Lo usa birdple-v2? → puede que no.
-2. ¿Es parte de la superficie pública de Falco? → **sí** (todos los anteriores).
-3. ¿Lo necesitan otros usuarios de Falco? → sí, por eso existe.
-
-Solo se remueve código si (1) no lo usa birdple-v2 **y** (2) no es parte de la API pública upstream.
+- **No hay DB ni NATS.** falco no persiste nada propio y no publica ni consume
+  eventos: todo su estado son la cache en RAM y lo que vive en jay.
+- **No hay migraciones ni seed.**

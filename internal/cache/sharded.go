@@ -13,9 +13,9 @@ const defaultShardCount = 16
 type ShardedCache struct {
 	shards []*LRUCache
 	count  uint64
-	// seed se crea una sola vez: maphash.String hashea el string sin copiarlo
-	// a []byte y sin instanciar un hasher por llamada, que es lo que hacía la
-	// versión con fnv en CADA Get/Set/Delete/Contains.
+	// The seed is created once. maphash.String hashes the string without
+	// copying it to a []byte and without allocating a hasher per call, which is
+	// what the previous fnv version did on EVERY Get/Set/Delete/Contains.
 	seed maphash.Seed
 }
 
@@ -45,10 +45,10 @@ func (sc *ShardedCache) forEach(f func(*LRUCache)) {
 	}
 }
 
-// sum acumula sobre todas las shards el valor que devuelve pick.
+// sum accumulates the value pick returns across every shard.
 //
-// Es un método con su propio type param (Go 1.27): así Size, MaxSize y Len
-// quedan en una línea cada uno en vez de repetir tres veces el mismo bucle.
+// Generic so that Size, MaxSize and Len are one line each instead of three
+// copies of the same loop.
 func (sc *ShardedCache) sum[T ~int | ~int64](pick func(*LRUCache) T) T {
 	var total T
 	for _, s := range sc.shards {

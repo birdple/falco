@@ -89,12 +89,23 @@ func parseLevel(s string) zerolog.Level {
 	}
 }
 
-// Convenience functions that operate on the global Logger.
+// Convenience wrappers around the package-level Logger. Each starts a new
+// event at the named level; Fatal exits the process once the event is written.
 
+// Debug starts a debug-level event on the global Logger.
 func Debug() *zerolog.Event { return Logger.Debug() }
-func Info() *zerolog.Event  { return Logger.Info() }
-func Warn() *zerolog.Event  { return Logger.Warn() }
+
+// Info starts an info-level event on the global Logger.
+func Info() *zerolog.Event { return Logger.Info() }
+
+// Warn starts a warn-level event on the global Logger.
+func Warn() *zerolog.Event { return Logger.Warn() }
+
+// Error starts an error-level event on the global Logger.
 func Error() *zerolog.Event { return Logger.Error() }
+
+// Fatal starts a fatal-level event on the global Logger. Writing the event
+// terminates the process.
 func Fatal() *zerolog.Event { return Logger.Fatal() }
 
 // Err starts a new error-level event with the given error attached.

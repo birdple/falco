@@ -1,6 +1,7 @@
 package unit
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -51,7 +52,7 @@ func TestGetQueryParam(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tt.url, nil)
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			result := utils.GetQueryParam(req, tt.params...)
 			assert.Equal(t, tt.expected, result)
 		})
