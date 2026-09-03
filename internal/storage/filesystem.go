@@ -220,7 +220,7 @@ func (fs *FilesystemStorage) GetStats(ctx context.Context) (*StorageStats, error
 	// Get disk usage information
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(fs.basePath, &stat); err == nil {
-		stats.FreeSpace = int64(stat.Bavail) * int64(stat.Bsize)
+		stats.FreeSpace = int64(stat.Bavail) * statBlockSize(&stat)
 	}
 
 	return stats, nil
