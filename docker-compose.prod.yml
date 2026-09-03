@@ -15,13 +15,25 @@ services:
       - PORT=8080
       - HOST=0.0.0.0
       - ENV=production
-      - STORAGE_PRIMARY=filesystem
-      - STORAGE_LOCAL_PATH=/app/data/images
+      # Las variables viejas (STORAGE_PRIMARY, STORAGE_LOCAL_PATH) ya no
+      # existen: sin un bucket declarado, falco se niega a arrancar.
+      - STORAGE_DEFAULT=local
+      - STORAGE_BUCKET_LOCAL_TYPE=filesystem
+      - STORAGE_BUCKET_LOCAL_PATH=/app/data/images
       - CACHE_SIZE_MB=512
       - LOG_LEVEL=info
       - LOG_FORMAT=json
       - API_KEY_REQUIRED=true
       - API_KEY=${API_KEY}
+      # API_KEY_REQUIRED=true OBLIGA a HMAC_REQUIRED=true: un <img> no puede
+      # mandar una API key, así que sin firma la ruta de delivery quedaría sin
+      # ninguna protección. La validación de arranque lo exige.
+      - HMAC_REQUIRED=true
+      - HMAC_KEY=${HMAC_KEY}
+      - HMAC_SALT=${HMAC_SALT}
+      # Sin esta variable el delivery contesta 500: el default sería aceptar
+      # URLs firmadas que no caducan nunca.
+      - HMAC_REQUIRE_EXPIRY=${HMAC_REQUIRE_EXPIRY:-true}
       - CORS_ORIGINS=${CORS_ORIGINS:-https://yourdomain.com}
       - RATE_LIMIT_RPM=1000
       - MAX_FILE_SIZE_MB=10
