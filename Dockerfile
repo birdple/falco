@@ -33,18 +33,34 @@ COPY . .
 # Copia el archivo OpenAPI (excluido por .dockerignore pero necesario para /docs)
 COPY docs/openapi.yaml ./docs/openapi.yaml
 
+# Versión y commit que reporta /health. Vacíos por omisión: sin ellos el binario
+# conserva el valor compilado en internal/version, en vez de reportar "dev" y
+# hacer que un build local mienta sobre qué es.
+ARG VERSION=""
+ARG COMMIT=""
+
 # Compila el binario con optimizaciones
 # Build tags:
 #   - netgo: Usa DNS resolver nativo de Go (portable en Alpine)
 #   - osusergo: Usa implementación Go para user/group ops (portable)
 # Flags:
 #   - ldflags "-w -s": Omite debug info y symbol table (reduce ~40% tamaño)
+#   - -trimpath: quita las rutas absolutas del builder del binario
 # Nota: No se puede hacer build estático porque vipsgen requiere CGO y libvips dinámica
-RUN CGO_ENABLED=1 go build \
-    -tags 'netgo osusergo' \
-    -ldflags="-w -s" \
-    -o falco-server \
-    cmd/server/main.go
+RUN set -eux; \
+    LDFLAGS="-w -s"; \
+    if [ -n "$VERSION" ]; then \
+      LDFLAGS="$LDFLAGS -X github.com/birdple/falco/internal/version.Version=$VERSION"; \
+    fi; \
+    if [ -n "$COMMIT" ]; then \
+      LDFLAGS="$LDFLAGS -X github.com/birdple/falco/internal/version.Commit=$COMMIT"; \
+    fi; \
+    CGO_ENABLED=1 go build \
+      -tags 'netgo osusergo' \
+      -trimpath \
+      -ldflags="$LDFLAGS" \
+      -o falco-server \
+      ./cmd/server
 
 # ----------------------------------------
 # Runtime stage (Etapa de Ejecución)

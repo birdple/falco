@@ -1,0 +1,208 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.27.0"
+  IMAGE: ghcr.io/birdple/falco
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # La imagen va primero y se publica sólo después de arrancarla. El release de
+  # GitHub es lo que la anuncia, así que se crea al final: un release cuyo
+  # `docker pull` apunta a nada es una promesa rota.
+  # ---------------------------------------------------------------------------
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      # El tag lleva "v" delante; internal/version no. Pasar el ref crudo haría
+      # que la imagen reporte "v0.13.0" y los binarios del mismo release
+      # "0.13.0".
+      - name: Build metadata
+        id: vars
+        run: |
+          {
+            echo "commit=${GITHUB_SHA::7}"
+            echo "version=${GITHUB_REF_NAME#v}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Se construye primero sólo para la arquitectura del runner, se arranca y
+      # recién entonces se hace el build multi-arch que se publica.
+      - name: Build for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: falco:smoke
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            COMMIT=${{ steps.vars.outputs.commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        run: scripts/smoke-image.sh falco:smoke "${{ steps.vars.outputs.version }}"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            COMMIT=${{ steps.vars.outputs.commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Las atestaciones agregan entradas unknown/unknown al listado de tags
+          # de ghcr.
+          provenance: false
+
+  # ---------------------------------------------------------------------------
+  # Cinco binarios, cada uno compilado y arrancado en la plataforma que le toca.
+  # No hay cross-compilación: falco enlaza libvips por CGO, y un binario cruzado
+  # es justo el que compila y no arranca.
+  #
+  # Linux se cubre dos veces por libc a propósito: el binario de glibc no corre
+  # en Alpine y el de musl no corre en Debian.
+  # ---------------------------------------------------------------------------
+  binaries:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux/amd64 (glibc)
+            runner: ubuntu-latest
+            libc: glibc
+          - name: linux/arm64 (glibc)
+            runner: ubuntu-24.04-arm
+            libc: glibc
+          - name: linux/amd64 (musl)
+            runner: ubuntu-latest
+            libc: musl
+          - name: linux/arm64 (musl)
+            runner: ubuntu-24.04-arm
+            libc: musl
+          - name: darwin/arm64
+            runner: macos-latest
+            libc: native
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build metadata
+        id: vars
+        run: |
+          {
+            echo "commit=${GITHUB_SHA::7}"
+            echo "version=${GITHUB_REF_NAME#v}"
+          } >> "$GITHUB_OUTPUT"
+
+      # macOS compila nativo con la libvips de Homebrew; Linux compila dentro
+      # del contenedor que aporta su libc con libvips 8.18.
+      - uses: actions/setup-go@v5
+        if: matrix.libc == 'native'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install libvips
+        if: matrix.libc == 'native'
+        run: brew install vips
+
+      - name: Build and smoke test (macOS)
+        if: matrix.libc == 'native'
+        run: scripts/release-binary.sh "${{ steps.vars.outputs.version }}" "${{ steps.vars.outputs.commit }}" dist
+
+      - name: Build and smoke test (Linux)
+        if: matrix.libc != 'native'
+        run: scripts/build-in-container.sh "${{ matrix.libc }}" "${{ steps.vars.outputs.version }}" "${{ steps.vars.outputs.commit }}" dist
+
+      # El nombre del artefacto no puede repetirse entre jobs de la matriz.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.runner }}-${{ matrix.libc }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs: [image, binaries]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Sin el historial completo no hay tag anterior y el changelog sale
+          # vacío.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: artifacts
+        run: |
+          set -eux
+          sha256sum ./*.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Release notes
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
+
+      # `--verify-tag` evita publicar un release para un tag que no existe en el
+      # remoto. prerelease se decide por el propio tag (v1.0.0-rc.1).
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          prerelease=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag \
+            $prerelease \
+            artifacts/*.tar.gz artifacts/checksums.txt
