@@ -31,7 +31,6 @@ type ProcessingParams struct {
 	CropH  int     `json:"crop_h,omitzero"` // Crop height
 	Rotate float64 `json:"rotate,omitzero"` // Rotation angle in degrees
 	Flip   string  `json:"flip,omitempty"`  // "horizontal", "vertical"
-	Flop   bool    `json:"flop,omitzero"`   // Mirror horizontally
 
 	// Filters and effects
 	Brightness float64 `json:"brightness,omitzero"` // -100 to 100
@@ -42,11 +41,21 @@ type ProcessingParams struct {
 	Blur       float64 `json:"blur,omitzero"`       // 0.0 to 100.0
 	Sharpen    float64 `json:"sharpen,omitzero"`    // 0.0 to 100.0
 
-	// Watermark
-	WatermarkURL      string  `json:"watermark_url,omitempty"`
+	// Watermark.
+	//
+	// WatermarkSource identifies the overlay for the cache key: a stored image
+	// id ("wm") or an external URL ("wm_url"). WatermarkImage carries the bytes
+	// the handler already resolved from it.
+	//
+	// The split exists because the processor does no I/O of its own — it
+	// neither reaches storage nor the network — while the cache key has to
+	// distinguish two different overlays. Keying on the bytes would mean
+	// hashing the overlay on every request; keying on the source costs nothing.
+	WatermarkSource   string  `json:"watermark_source,omitempty"`
+	WatermarkImage    []byte  `json:"-"`
 	WatermarkOpacity  float64 `json:"watermark_opacity,omitzero"`   // 0.0 to 1.0
 	WatermarkPosition string  `json:"watermark_position,omitempty"` // "top-left", "top-right", "bottom-left", "bottom-right", "center"
-	WatermarkScale    float64 `json:"watermark_scale,omitzero"`     // 0.0 to 1.0, scale relative to image width
+	WatermarkScale    float64 `json:"watermark_scale,omitzero"`     // 0.0 to 1.0, relative to the final image width
 
 	// Gravity for resize/crop (smart cropping)
 	// Values: "center", "north", "south", "east", "west",

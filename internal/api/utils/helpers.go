@@ -184,6 +184,22 @@ func BuildStorageKey(directory, imageID string) string {
 	return directory + "/" + imageID
 }
 
+// SplitDirectoryAndID separates a storage path into its directory and its final
+// segment.
+//
+// It is the inverse of BuildStorageKey, and it exists for the places that
+// receive a path as one string — a watermark id, say — rather than as the
+// separate id and directory parameters the delivery route uses. The split is on
+// the LAST separator: a directory with a slash in the middle of its name is
+// still a directory.
+func SplitDirectoryAndID(path string) (directory, id string) {
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return "", path
+	}
+	return path[:idx], path[idx+1:]
+}
+
 // BuildImageURL builds the image URL with optional bucket and directory parameters
 func BuildImageURL(imageID, bucket, directory string) string {
 	baseURL := "/api/v1/images/" + imageID

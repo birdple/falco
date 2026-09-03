@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -196,7 +197,10 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 //  2. resizing comes next, so the expensive colour work runs on the smallest
 //     pixel count;
 //  3. colour adjustments;
-//  4. padding last, so the padding is not itself scaled or colour-shifted.
+//  4. padding, so the padding is not itself scaled or colour-shifted;
+//  5. the watermark last of all — its scale is relative to the width the
+//     viewer actually gets, and a logo that went through the colour
+//     adjustments would come out tinted by them.
 func (p *VipsProcessor) applyTransformations(img *vips.Image, params *ProcessingParams) error {
 	if err := applyGeometry(img, params); err != nil {
 		return err
@@ -207,7 +211,10 @@ func (p *VipsProcessor) applyTransformations(img *vips.Image, params *Processing
 	if err := applyColorAdjustments(img, params); err != nil {
 		return err
 	}
-	return applyPadding(img, params)
+	if err := applyPadding(img, params); err != nil {
+		return err
+	}
+	return applyWatermark(img, params)
 }
 
 // defaultTrimThreshold is the channel distance used when trimming is requested
@@ -256,9 +263,47 @@ func applyGeometry(img *vips.Image, params *ProcessingParams) error {
 	}
 
 	if params.Rotate != 0 {
-		if err := img.Rotate(params.Rotate, nil); err != nil {
-			return fmt.Errorf("rotate failed: %w", err)
+		if err := rotateImage(img, params.Rotate); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// rotateImage turns the image, using the exact rotation for right angles.
+//
+// vips_rotate interpolates, which for a quarter turn means resampling every
+// pixel and coming out a pixel short (a 400x300 rotated 90 degrees measured
+// 300x399). vips_rot is a transpose: lossless, faster, and exactly the size the
+// caller expects. Right angles are also the overwhelmingly common request.
+func rotateImage(img *vips.Image, degrees float64) error {
+	switch normalizeAngle(degrees) {
+	case 0:
+		return nil
+	case 90:
+		return wrapRotateErr(img.Rot(vips.AngleD90))
+	case 180:
+		return wrapRotateErr(img.Rot(vips.AngleD180))
+	case 270:
+		return wrapRotateErr(img.Rot(vips.AngleD270))
+	}
+
+	return wrapRotateErr(img.Rotate(degrees, nil))
+}
+
+// normalizeAngle folds an angle into [0, 360) so that -90 and 270 take the same
+// exact-rotation branch instead of only one of them doing so.
+func normalizeAngle(degrees float64) float64 {
+	normalized := math.Mod(degrees, 360)
+	if normalized < 0 {
+		normalized += 360
+	}
+	return normalized
+}
+
+func wrapRotateErr(err error) error {
+	if err != nil {
+		return fmt.Errorf("rotate failed: %w", err)
 	}
 	return nil
 }
@@ -413,6 +458,10 @@ func applyColorAdjustments(img *vips.Image, params *ProcessingParams) error {
 		}
 	}
 
+	if err := applySaturationAndHue(img, params); err != nil {
+		return err
+	}
+
 	if params.Blur > 0 {
 		if err := img.Gaussblur(params.Blur/2.0, nil); err != nil {
 			return fmt.Errorf("blur failed: %w", err)
@@ -420,8 +469,86 @@ func applyColorAdjustments(img *vips.Image, params *ProcessingParams) error {
 	}
 
 	if params.Sharpen > 0 {
-		if err := img.Sharpen(nil); err != nil {
+		// The parameter is a 0-100 dial, not a sigma. libvips' own default
+		// sigma is 0.5, which is barely visible; 3.0 is where the halo starts
+		// to show on a photograph. Passing nil here — which is what this used
+		// to do — ignored the requested amount entirely and always sharpened
+		// by the default.
+		opts := vips.DefaultSharpenOptions()
+		opts.Sigma = minSharpenSigma + (params.Sharpen/100.0)*(maxSharpenSigma-minSharpenSigma)
+		if err := img.Sharpen(opts); err != nil {
 			return fmt.Errorf("sharpen failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// Sharpen maps the 0-100 request onto a libvips sigma in this range.
+const (
+	minSharpenSigma = 0.5
+	maxSharpenSigma = 3.0
+)
+
+// applySaturationAndHue rotates hue and scales chroma.
+//
+// Both are done in LCh, where chroma and hue are their own bands, so each is a
+// single multiply-and-add rather than a matrix over RGB. The image is converted
+// back to the space it arrived in: leaving it in LCh would change what the
+// encoder writes out.
+//
+// vips_colourspace carries extra bands through, so an image with an alpha
+// channel keeps it — which is why the coefficient arrays are sized from the
+// band count *after* the conversion, not before.
+func applySaturationAndHue(img *vips.Image, params *ProcessingParams) error {
+	if params.Saturation == 0 && params.Hue == 0 {
+		return nil
+	}
+
+	original := img.Interpretation()
+	if err := img.Colourspace(vips.InterpretationLch, nil); err != nil {
+		return fmt.Errorf("saturation colourspace failed: %w", err)
+	}
+
+	bands := img.Bands()
+	if bands < 3 {
+		// Not something LCh conversion produces, but bailing out beats
+		// indexing past the end of the coefficient arrays.
+		return fmt.Errorf("unexpected band count after LCh conversion: %d", bands)
+	}
+
+	multipliers := make([]float64, bands)
+	offsets := make([]float64, bands)
+	for i := range multipliers {
+		multipliers[i] = 1
+	}
+
+	if params.Saturation != 0 {
+		// -100 drains the colour completely, 0 is the identity, and the
+		// documented ceiling of 500 is a six-fold boost.
+		multipliers[1] = 1.0 + (params.Saturation / 100.0)
+		if multipliers[1] < 0 {
+			multipliers[1] = 0
+		}
+	}
+	if params.Hue != 0 {
+		// The h band is in degrees, and the conversion back is trigonometric,
+		// so a value that lands outside 0-360 wraps on its own.
+		offsets[2] = float64(params.Hue)
+	}
+
+	if err := img.Linear(multipliers, offsets, nil); err != nil {
+		return fmt.Errorf("saturation/hue failed: %w", err)
+	}
+
+	// Back to where it came from — but not every interpretation has a route
+	// from LCh. An image that libvips tagged "multiband" (a TIFF with an
+	// unusual band layout, say) fails here, and the transformation itself has
+	// already succeeded by this point, so falling back to sRGB serves the image
+	// rather than turning a saturation request into a 422. sRGB is also what
+	// every encoder downstream wants.
+	if err := img.Colourspace(original, nil); err != nil {
+		if srgbErr := img.Colourspace(vips.InterpretationSrgb, nil); srgbErr != nil {
+			return fmt.Errorf("saturation colourspace restore failed: %w", srgbErr)
 		}
 	}
 	return nil
@@ -847,9 +974,6 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	if params.Flip != "" {
 		parts = append(parts, "flip"+params.Flip)
 	}
-	if params.Flop {
-		parts = append(parts, "flop")
-	}
 
 	// Color adjustments
 	if params.Brightness != 0 {
@@ -888,6 +1012,15 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	}
 	if params.AutoOrient {
 		parts = append(parts, "orient")
+	}
+
+	// The watermark keys on its source, never on its bytes: two requests for
+	// different overlays must not collide, and hashing the overlay on every
+	// request to find that out would cost more than the composite does.
+	if params.WatermarkSource != "" {
+		parts = append(parts, fmt.Sprintf("wm%s_%.2f_%s_%.2f",
+			params.WatermarkSource, params.WatermarkOpacity,
+			params.WatermarkPosition, params.WatermarkScale))
 	}
 
 	return strings.Join(parts, "_")
