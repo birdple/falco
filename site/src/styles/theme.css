@@ -1,0 +1,79 @@
+/*
+ * Falco's palette is the bird's: warm charcoal for the ground, amber for the
+ * plumage, a single pale sand for emphasis. Deliberately not jay's blue — the
+ * two services sit next to each other in the same stack and should not be
+ * mistaken for one another at a glance.
+ */
+:root {
+	--falco-ink: #1b1714;
+	--falco-ink-2: #262019;
+	--falco-amber: #e08b3c;
+	--falco-amber-bright: #f0b562;
+	--falco-sand: #e8d5b5;
+	--falco-paper: #faf6f0;
+
+	--sl-font: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+	--sl-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Dark is Starlight's default root. */
+:root {
+	--sl-color-accent-low: #4a2f14;
+	--sl-color-accent: #c2762f;
+	--sl-color-accent-high: #f3d3a5;
+	--sl-color-white: #faf6f0;
+	--sl-color-gray-1: #ece4d9;
+	--sl-color-gray-2: #cec2b2;
+	--sl-color-gray-3: #9a8b78;
+	--sl-color-gray-4: #6b5d4c;
+	--sl-color-gray-5: #423728;
+	--sl-color-gray-6: #2a2218;
+	--sl-color-black: #1b1714;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #f7e3c8;
+	--sl-color-accent: #a35c17;
+	--sl-color-accent-high: #4a2f14;
+	--sl-color-white: #1b1714;
+	--sl-color-gray-1: #2a2218;
+	--sl-color-gray-2: #423728;
+	--sl-color-gray-3: #6f6153;
+	--sl-color-gray-4: #9c8d7c;
+	--sl-color-gray-5: #ddd2c2;
+	--sl-color-gray-6: #efe7db;
+	--sl-color-gray-7: #f8f3ec;
+	--sl-color-black: #ffffff;
+}
+
+/* Most of the reference is parameter tables, so they get real attention. */
+.sl-markdown-content table {
+	font-size: 0.875rem;
+	border-collapse: collapse;
+	width: 100%;
+}
+.sl-markdown-content th {
+	font-weight: 600;
+	text-align: left;
+	border-bottom: 2px solid var(--sl-color-gray-5);
+	padding: 0.5rem 0.75rem 0.5rem 0;
+}
+.sl-markdown-content td {
+	border-bottom: 1px solid var(--sl-color-gray-6);
+	padding: 0.5rem 0.75rem 0.5rem 0;
+	vertical-align: top;
+}
+.sl-markdown-content tbody tr:hover {
+	background: var(--sl-color-gray-6);
+}
+.sl-markdown-content :not(pre) > code {
+	font-size: 0.9em;
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 2px;
+}
+
+/* The site title should read as the wordmark, not as generic UI text. */
+.site-title span {
+	font-weight: 600;
+	letter-spacing: -0.02em;
+}

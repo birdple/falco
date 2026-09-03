@@ -1,0 +1,537 @@
+---
+import '@fontsource/ibm-plex-sans/latin-400.css';
+import '@fontsource/ibm-plex-sans/latin-600.css';
+import '@fontsource/ibm-plex-mono/latin-400.css';
+import '@fontsource/ibm-plex-mono/latin-500.css';
+
+const base = import.meta.env.BASE_URL;
+const github = 'https://github.com/birdple/falco';
+const title = 'Falco — images in, every size out';
+const description =
+  'A self-hosted image service in Go. Upload once, transform from the URL, serve signed. libvips for the pixels; the filesystem, S3, R2 or Jay for the bytes.';
+
+// The anatomy of a delivery URL, which is the whole API surface of the read path.
+const urlParts = [
+  { text: '/api/v1/images', kind: 'route', note: 'delivery route' },
+  { text: '/avatars', kind: 'dir', note: 'directory' },
+  { text: '/6d556268', kind: 'id', note: 'content hash' },
+  { text: '.webp', kind: 'ext', note: 'output format' },
+  { text: '?w=300&h=300', kind: 'geom', note: 'geometry — 400 if malformed' },
+  { text: '&gravity=smart', kind: 'cosm', note: 'cosmetic — default if malformed' },
+  { text: '&sig=Yk3…', kind: 'sig', note: 'covers path and query' },
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href={`${base}favicon.svg`} type="image/svg+xml" />
+    <link rel="canonical" href="https://birdple.github.io/falco/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content="https://birdple.github.io/falco/" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="topbar">
+      <a class="wordmark" href={base} aria-label="Falco home">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="wordmark-text">falco</span>
+      </a>
+      <nav aria-label="Main">
+        <a href={`${base}quickstart/`}>Quickstart</a>
+        <a href={`${base}reference/transformations/`}>Transformations</a>
+        <a href={`${base}internals/vs-imgproxy/`}>vs imgproxy</a>
+        <a href={github} rel="noopener">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero">
+        <div class="hero-copy">
+          <h1>Images in. Every size out.</h1>
+          <p class="lede">
+            Falco stores your images and transforms them on the way out, from the
+            URL. libvips does the pixels; the filesystem, S3, R2 or Jay holds the
+            bytes. One process, no database, no broker.
+          </p>
+          <div class="actions">
+            <a class="btn btn-primary" href={`${base}quickstart/`}>Get started</a>
+            <a class="btn" href={github} rel="noopener">Read the source</a>
+          </div>
+          <div class="run">
+            <pre><code>docker run -p 8080:8080 -v falco-data:/app/data \
+  -e STORAGE_DEFAULT=local \
+  -e STORAGE_BUCKET_LOCAL_TYPE=filesystem \
+  -e STORAGE_BUCKET_LOCAL_PATH=/app/data/images \
+  ghcr.io/birdple/falco:latest</code></pre>
+            <button type="button" class="copy" data-copy>Copy</button>
+          </div>
+        </div>
+
+        <figure class="anatomy">
+          <figcaption>One GET is the entire read API</figcaption>
+          <div class="url">
+            {urlParts.map((p) => (
+              <span class={`part part-${p.kind}`}>
+                <code>{p.text}</code>
+                <em>{p.note}</em>
+              </span>
+            ))}
+          </div>
+          <div class="anatomy-rule">
+            <span>Nothing is pre-generated. Every size is a URL.</span>
+          </div>
+        </figure>
+      </section>
+
+      <section class="facts">
+        <dl>
+          <div><dt>Databases</dt><dd>0</dd></div>
+          <div><dt>Message brokers</dt><dd>0</dd></div>
+          <div><dt>Storage backends</dt><dd>4</dd></div>
+          <div><dt>License</dt><dd>GPLv3</dd></div>
+        </dl>
+      </section>
+
+      <section class="band">
+        <h2>One GET, two paths through it.</h2>
+        <p class="band-lede">
+          Which one a request takes is decided from the query string alone, before
+          any storage I/O — and that is the point, because it is what lets the
+          cache answer without opening a connection to anything.
+        </p>
+        <div class="split">
+          <div class="split-half">
+            <h3>No transformation</h3>
+            <pre><code>GET /api/v1/images/6d556268</code></pre>
+            <p>
+              Streamed straight from storage and <strong>not cached</strong>. There
+              is no CPU work to amortise, and streaming keeps memory flat whatever
+              the file size.
+            </p>
+          </div>
+          <div class="split-half">
+            <h3>With one</h3>
+            <pre><code>GET /api/v1/images/6d556268?w=300&h=300</code></pre>
+            <p>
+              Cache first. On a miss, concurrent requests for the same key share
+              one fetch, one decode and one encode instead of each doing their own.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="band">
+        <h2>Signed, or not served at all.</h2>
+        <p class="band-lede">
+          A transformation costs CPU, so an unsigned delivery URL is an invitation
+          to make your server encode ten thousand sizes of one image. With
+          <code>HMAC_REQUIRED=true</code> the signature covers the path
+          <em>and</em> the query, so the only transformations that exist are the
+          ones you minted. No API key is involved, because an
+          <code>&lt;img&gt;</code> tag cannot send one.
+        </p>
+        <div class="two-col">
+          <div>
+            <h3>What it accepts</h3>
+            <p>
+              A signature over the canonical path and query, with an
+              <code>exp</code> that is signed along with everything else — so
+              nobody pushes out an expiry by editing the URL.
+            </p>
+          </div>
+          <div>
+            <h3>What it refuses</h3>
+            <p>
+              <code>API_KEY_REQUIRED=true</code> with
+              <code>HMAC_REQUIRED=false</code>. It looks careful and it leaves
+              delivery open to anyone who can guess an id. Falco will not start.
+            </p>
+          </div>
+        </div>
+        <p class="band-foot">
+          <a href={`${base}guides/signed-urls/`}>How signing works, and how to do it in your own process</a>
+        </p>
+      </section>
+
+      <section class="band">
+        <h2>Every storage target is a bucket.</h2>
+        <p class="band-lede">
+          A local directory, an S3 bucket, an R2 bucket and a
+          <a href="https://github.com/ivangsm/jay" rel="noopener">Jay</a> namespace
+          are the same kind of thing with different credentials. Because backups
+          are a decorator over a bucket rather than a feature of a backend,
+          "S3 backed up to R2" and "the local disk backed up to Jay" are one
+          code path.
+        </p>
+        <table class="modes">
+          <caption>Backup modes, and what each one actually promises</caption>
+          <thead>
+            <tr><th scope="col">Mode</th><th scope="col">On write</th><th scope="col">Promise</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>sync</code></th>
+              <td>Primary and target, before answering</td>
+              <td>It is in two places when you get the 200</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>async</code></th>
+              <td>Primary, then the target in the background</td>
+              <td>Best effort. A crash in between loses the copy silently</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>read-fallback</code></th>
+              <td>Primary only</td>
+              <td>Nothing — it is a migration aid, reads fall through on 404</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="band-foot">
+          Targets are validated at startup: a typo in a backup target stops the
+          process instead of producing a deployment that believes it has a backup.
+        </p>
+      </section>
+
+      <section class="band">
+        <h2>What it refuses to do.</h2>
+        <p class="band-lede">
+          Every one of these could have been a default. Each one is a failure
+          instead, because the alternative is a service that looks fine and is not.
+        </p>
+        <ol class="steps">
+          <li>
+            <h3>Start without a bucket</h3>
+            <p>
+              There is no implicit <code>./data/images</code>. A service that
+              invents its own storage location writes your images somewhere you
+              did not choose.
+            </p>
+          </li>
+          <li>
+            <h3>Serve delivery without an expiry policy</h3>
+            <p>
+              Unset <code>HMAC_REQUIRE_EXPIRY</code> answers <strong>500</strong>,
+              not "false". The quiet fallback would be accepting signed URLs that
+              never expire.
+            </p>
+          </li>
+          <li>
+            <h3>Store an SVG</h3>
+            <p>
+              SVG, HTML and XML are rejected with <strong>415</strong>. All three
+              can carry script, and serving them from the image origin would run
+              it with that origin's privileges.
+            </p>
+          </li>
+          <li>
+            <h3>Guess at a malformed size</h3>
+            <p>
+              A bad <code>w</code>, <code>h</code>, <code>q</code>, <code>f</code>,
+              <code>fit</code>, <code>crop_*</code>, <code>rotate</code> or
+              <code>flip</code> is a <strong>400</strong>. Ignoring the typo
+              would serve an image that is not the one asked for.
+            </p>
+          </li>
+          <li>
+            <h3>Serve an image missing the watermark you asked for</h3>
+            <p>
+              An overlay that could not be loaded fails the request: falling back
+              to the bare image would return something
+              <strong>indistinguishable from success</strong>. An external
+              watermark host has to be allowlisted before it is fetched at all.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="cta">
+        <h2>Run it in about a minute.</h2>
+        <p>
+          One container, one bucket, a volume. Nothing to provision, nothing to
+          migrate, no broker to point it at.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" href={`${base}quickstart/`}>Quickstart</a>
+          <a class="btn" href={`${base}what-falco-is/`}>What Falco is and is not</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>GPLv3. Built by <a href="https://github.com/ivangsm" rel="noopener">Iván Salazar</a>.</p>
+      <nav aria-label="Footer">
+        <a href={`${base}what-falco-is/`}>Docs</a>
+        <a href={`${base}reference/configuration/`}>Configuration</a>
+        <a href={github} rel="noopener">GitHub</a>
+      </nav>
+    </footer>
+
+    <script>
+      document.querySelector('[data-copy]')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget as HTMLButtonElement;
+        const code = btn.parentElement?.querySelector('code')?.textContent ?? '';
+        try {
+          await navigator.clipboard.writeText(code);
+          btn.textContent = 'Copied';
+        } catch {
+          btn.textContent = 'Press ⌘C';
+        }
+        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      });
+    </script>
+  </body>
+</html>
+
+<style>
+	:root {
+		--ink: #1b1714;
+		--ink-2: #241e18;
+		--ink-3: #362c21;
+		--amber: #e08b3c;
+		--amber-bright: #f0b562;
+		--amber-deep: #c2762f;
+		--amber-deeper: #a35c17;
+		--sand: #e8d5b5;
+		--paper: #faf6f0;
+		--muted: #a3927c;
+		--line: #3a2f23;
+		--measure: 68ch;
+		color-scheme: dark;
+	}
+
+	* { box-sizing: border-box; }
+
+	html { -webkit-text-size-adjust: 100%; }
+
+	body {
+		margin: 0;
+		background: var(--ink);
+		color: var(--paper);
+		font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+		font-size: 16px;
+		line-height: 1.6;
+	}
+
+	a { color: var(--amber-bright); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+	a:hover { color: var(--paper); }
+	code { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 0.92em; }
+	h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+
+	:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+
+	.skip {
+		position: absolute; left: -9999px;
+		background: var(--paper); color: var(--ink); padding: 0.5rem 1rem;
+	}
+	.skip:focus { left: 1rem; top: 1rem; z-index: 10; }
+
+	/* ---------- top bar ---------- */
+	.topbar {
+		display: flex; align-items: center; justify-content: space-between;
+		gap: 2rem; flex-wrap: wrap;
+		max-width: 1140px; margin: 0 auto; padding: 1.25rem 1.5rem;
+	}
+	.wordmark { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; color: var(--paper); }
+	.wordmark-text { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.04em; }
+	/* Crop marks around a filled frame — the service in one glyph. */
+	.mark {
+		width: 26px; height: 26px; flex: none; position: relative;
+		border-left: 2px solid var(--amber); border-right: 2px solid var(--amber);
+	}
+	.mark::before, .mark::after {
+		content: ''; position: absolute; left: -4px; right: -4px; height: 2px;
+		background: var(--amber);
+	}
+	.mark::before { top: 5px; }
+	.mark::after { bottom: 5px; }
+
+	.topbar nav { display: flex; gap: 1.5rem; font-size: 0.9375rem; flex-wrap: wrap; }
+	.topbar nav a { color: var(--muted); text-decoration: none; }
+	.topbar nav a:hover { color: var(--paper); }
+
+	/* ---------- hero ---------- */
+	.hero {
+		max-width: 1140px; margin: 0 auto; padding: 4rem 1.5rem 3.5rem;
+		display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 4rem; align-items: center;
+	}
+	.hero h1 {
+		font-size: clamp(2.1rem, 4.6vw, 3.4rem);
+		letter-spacing: -0.035em; line-height: 1.03; margin: 0 0 1.25rem;
+		max-width: 15ch;
+	}
+	.lede { font-size: 1.0625rem; color: #d6c8b6; margin: 0 0 1.75rem; max-width: 52ch; }
+
+	.actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+	.btn {
+		display: inline-block; padding: 0.6rem 1.25rem;
+		border: 1px solid var(--ink-3); border-radius: 2px;
+		color: var(--paper); text-decoration: none; font-size: 0.9375rem; font-weight: 500;
+		transition: background-color 0.12s ease, border-color 0.12s ease;
+	}
+	.btn:hover { background: var(--ink-2); border-color: var(--amber); color: var(--paper); }
+	.btn-primary { background: var(--amber-deep); border-color: var(--amber-deep); color: #1b1714; }
+	.btn-primary:hover { background: var(--amber-bright); border-color: var(--amber-bright); color: #1b1714; }
+
+	.run { position: relative; margin-top: 2rem; }
+	.run pre {
+		margin: 0; padding: 1rem 4.5rem 1rem 1rem;
+		background: var(--ink-2); border: 1px solid var(--line); border-radius: 2px;
+		overflow-x: auto; font-size: 0.8125rem; line-height: 1.7;
+	}
+	.run code { font-family: 'IBM Plex Mono', ui-monospace, monospace; color: #ecdcc6; }
+	.copy {
+		position: absolute; top: 0.6rem; right: 0.6rem;
+		background: var(--ink-3); color: var(--paper);
+		border: 1px solid var(--line); border-radius: 2px;
+		padding: 0.25rem 0.6rem; font: inherit; font-size: 0.75rem; cursor: pointer;
+	}
+	.copy:hover { background: var(--amber-deep); border-color: var(--amber-deep); color: #1b1714; }
+
+	/* ---------- URL anatomy ---------- */
+	.anatomy { margin: 0.5rem 0 0; }
+	.anatomy figcaption {
+		font-size: 0.75rem; color: var(--muted); margin-bottom: 0.75rem;
+		font-family: 'IBM Plex Mono', ui-monospace, monospace;
+	}
+	.url { display: flex; flex-wrap: wrap; gap: 3px; }
+	.part {
+		display: flex; flex-direction: column; gap: 0.4rem;
+		border: 1px solid var(--line); border-top: 3px solid var(--amber);
+		background: var(--ink-2); padding: 0.7rem 0.6rem; min-width: 0; flex: 1 1 auto;
+	}
+	.part code {
+		font-size: 0.8125rem; color: var(--paper); font-weight: 500; white-space: nowrap;
+	}
+	.part em {
+		font-style: normal; font-size: 0.6875rem; color: var(--muted); line-height: 1.3;
+	}
+	.part-route { border-top-color: var(--muted); }
+	.part-dir { border-top-color: var(--sand); }
+	.part-id { border-top-color: var(--amber-bright); }
+	.part-ext { border-top-color: var(--amber); }
+	.part-geom { border-top-color: #d4622f; }
+	.part-cosm { border-top-color: #8a9a5b; }
+	.part-sig { border-top-color: var(--amber-deeper); }
+
+	.anatomy-rule {
+		margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid var(--line);
+		font-family: 'IBM Plex Mono', ui-monospace, monospace;
+		font-size: 0.75rem; color: var(--muted);
+	}
+
+	/* ---------- facts ---------- */
+	.facts { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+	.facts dl {
+		max-width: 1140px; margin: 0 auto; padding: 1.75rem 1.5rem;
+		display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem;
+	}
+	.facts div { display: flex; flex-direction: column-reverse; gap: 0.2rem; }
+	.facts dt { font-size: 0.8125rem; color: var(--muted); }
+	.facts dd {
+		margin: 0; font-family: 'IBM Plex Mono', ui-monospace, monospace;
+		font-size: 1.5rem; color: var(--amber-bright); font-weight: 500; line-height: 1.1;
+	}
+
+	/* ---------- bands ---------- */
+	.band { max-width: 1140px; margin: 0 auto; padding: 4.5rem 1.5rem; }
+	.band + .band { border-top: 1px solid var(--line); }
+	.band h2 { font-size: clamp(1.6rem, 3vw, 2.25rem); margin: 0 0 1rem; max-width: 22ch; }
+	.band-lede { font-size: 1.0625rem; color: #d6c8b6; max-width: var(--measure); margin: 0 0 2.5rem; }
+	.band-foot { color: var(--muted); max-width: var(--measure); margin: 2rem 0 0; font-size: 0.9375rem; }
+	.band-foot strong { color: var(--sand); font-weight: 500; }
+
+	.split { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+	.split-half h3 { font-size: 1rem; margin: 0 0 0.75rem; color: var(--amber-bright); }
+	.split-half pre {
+		margin: 0 0 0.75rem; padding: 1rem; background: var(--ink-2);
+		border: 1px solid var(--line); border-radius: 2px;
+		overflow-x: auto; font-size: 0.8125rem; line-height: 1.65;
+	}
+	.split-half code { color: #ecdcc6; }
+	.split-half p { color: var(--muted); font-size: 0.9375rem; margin: 0; }
+	.split-half strong { color: var(--sand); font-weight: 500; }
+
+	.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+	.two-col h3 { font-size: 1rem; margin: 0 0 0.6rem; }
+	.two-col > div:first-child h3 { color: var(--amber-bright); }
+	.two-col > div:last-child h3 { color: #d4622f; }
+	.two-col p { margin: 0; color: #d6c8b6; font-size: 0.9375rem; }
+
+	/* ---------- backup modes table ---------- */
+	.modes { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+	.modes caption {
+		text-align: left; color: var(--muted); font-size: 0.8125rem; padding-bottom: 0.75rem;
+	}
+	.modes thead th {
+		text-align: left; font-weight: 500; font-size: 0.8125rem; color: var(--muted);
+		padding: 0 1rem 0.5rem 0; border-bottom: 1px solid var(--line);
+	}
+	.modes td, .modes tbody th {
+		padding: 0.6rem 1rem 0.6rem 0; border-bottom: 1px solid var(--ink-2);
+		vertical-align: top;
+	}
+	.modes tbody th { font-weight: 400; text-align: left; color: var(--amber-bright); }
+	.modes td { color: #d6c8b6; }
+
+	/* ---------- refusals ---------- */
+	.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; }
+	.steps li {
+		counter-increment: step; position: relative;
+		padding: 0 0 1.5rem 3.25rem; border-left: 1px solid var(--line); margin-left: 0.9rem;
+	}
+	.steps li:last-child { border-left-color: transparent; padding-bottom: 0; }
+	.steps li::before {
+		content: counter(step);
+		position: absolute; left: -0.9rem; top: 0;
+		width: 1.8rem; height: 1.8rem; display: grid; place-items: center;
+		background: var(--ink); border: 1px solid var(--amber); border-radius: 50%;
+		font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 0.8125rem; color: var(--amber-bright);
+	}
+	.steps h3 { font-size: 1rem; margin: 0.15rem 0 0.3rem; }
+	.steps p { margin: 0; color: var(--muted); font-size: 0.9375rem; max-width: 60ch; }
+	.steps strong { color: var(--sand); font-weight: 500; }
+
+	/* ---------- cta + footer ---------- */
+	.cta {
+		max-width: 1140px; margin: 0 auto; padding: 4.5rem 1.5rem;
+		border-top: 1px solid var(--line);
+	}
+	.cta h2 { font-size: clamp(1.6rem, 3vw, 2.25rem); margin: 0 0 1rem; }
+	.cta p { color: #d6c8b6; max-width: var(--measure); margin: 0 0 1.75rem; }
+
+	.foot {
+		border-top: 1px solid var(--line);
+		max-width: 1140px; margin: 0 auto; padding: 2rem 1.5rem 3rem;
+		display: flex; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap;
+		font-size: 0.875rem; color: var(--muted);
+	}
+	.foot p { margin: 0; }
+	.foot nav { display: flex; gap: 1.5rem; }
+
+	/* ---------- responsive ---------- */
+	@media (max-width: 900px) {
+		.hero { grid-template-columns: 1fr; gap: 3rem; padding-top: 2.5rem; }
+		.hero h1 { max-width: none; }
+		.split, .two-col { grid-template-columns: 1fr; }
+		.facts dl { grid-template-columns: repeat(2, 1fr); }
+	}
+
+	@media (max-width: 600px) {
+		.url { flex-direction: column; }
+		.part { border-top-width: 2px; }
+		.band, .cta { padding-top: 3rem; padding-bottom: 3rem; }
+		.topbar nav { gap: 1rem; font-size: 0.875rem; }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		* { transition: none !important; animation: none !important; }
+	}
+</style>
