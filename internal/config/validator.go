@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -154,10 +155,45 @@ func (v *validator) validateStorage(config *Config) error {
 		}
 	}
 
+	// Validate bucket aliases
+	if err := v.validateBucketAliases(config); err != nil {
+		return err
+	}
+
 	// Validate groups
 	for groupName, group := range config.Storage.Groups {
 		if err := v.validateGroup(config, groupName, group); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// validateBucketAliases checks storage.bucket_aliases against the declared
+// buckets.
+//
+// Every one of these is refused at startup rather than at request time, because
+// an alias only exists to keep a client working: discovering it is broken on
+// the first upload is discovering it in production.
+func (v *validator) validateBucketAliases(config *Config) error {
+	// Sorted so the same broken config always names the same entry first.
+	names := make([]string, 0, len(config.Storage.BucketAliases))
+	for alias := range config.Storage.BucketAliases {
+		names = append(names, alias)
+	}
+	sort.Strings(names)
+
+	for _, alias := range names {
+		target := config.Storage.BucketAliases[alias]
+		if target == "" {
+			return fmt.Errorf("storage.bucket_aliases: %q has no target bucket (expected alias=bucket)", alias)
+		}
+		if _, ok := config.Storage.Buckets[alias]; ok {
+			return fmt.Errorf("storage.bucket_aliases: alias %q shadows a bucket of the same name", alias)
+		}
+		if _, ok := config.Storage.Buckets[target]; !ok {
+			return fmt.Errorf("storage.bucket_aliases: alias %q points at %q, which is not in storage.buckets", alias, target)
 		}
 	}
 

@@ -399,10 +399,21 @@ func initializeStorage(cfg *config.Config) (*storage.Registry, error) {
 		return nil, fmt.Errorf("failed to set default bucket: %w", err)
 	}
 
+	// Aliases are declared equivalences between a name a client sends and a
+	// bucket that exists. Anything not declared here is refused at request
+	// time, so a typo has to stop the boot rather than quietly become a
+	// rejected upload later.
+	for alias, target := range cfg.Storage.BucketAliases {
+		if err := reg.RegisterAlias(alias, target); err != nil {
+			return nil, fmt.Errorf("failed to register bucket alias: %w", err)
+		}
+	}
+
 	logger.Info().
 		Int("bucket_count", reg.Len()).
 		Str("default", reg.DefaultName()).
 		Strs("buckets", reg.Names()).
+		Interface("aliases", reg.Aliases()).
 		Msg("Storage initialized")
 
 	return reg, nil
