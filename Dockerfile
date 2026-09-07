@@ -91,11 +91,10 @@ WORKDIR /app
 # Copia el binario desde la etapa 'builder'
 COPY --from=builder /app/falco-server .
 
-# Copia la documentación de la API
-COPY --from=builder /app/docs ./docs
-
-# Copia los archivos estáticos de la UI
-COPY --from=builder /app/web ./web
+# La documentación de la API (docs/openapi.yaml) y los assets del panel
+# (web/static) NO se copian: viajan DENTRO del binario por go:embed
+# (docs/embed.go, web/embed.go). Copiarlos aquí hacía creer que se sirven del
+# disco y que editarlos en el contenedor cambiaría algo.
 
 # Cambia la propiedad de todos los archivos copiados
 RUN chown -R appuser:appgroup /app

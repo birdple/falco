@@ -12,18 +12,27 @@ usa y que no se borra.
 - Config: defaults en código + viper sobre `config.yaml` + godotenv + env vars.
 - Cache de imágenes transformadas: LRU sharded en proceso; Redis opcional.
 - Storage: `github.com/ivangsm/jay/proto/client`.
-- Panel admin: templ, con los assets embebidos en `web/`.
+- Panel admin: templ + htmx + Alpine, con los assets embebidos en `web/`.
 - Prometheus (`/metrics`) + OTel (`internal/telemetry`); `gobreaker` envuelve el
   backend de storage.
 
 ## Arrancar, probar, revisar
 
 ```bash
-make check            # gate de commit: fmt + vet + lint + test + go build ./...
+make check            # gate de commit: fmt + vet + lint + test + ui-check + go build ./...
 make test             # go test ./...
 make lint             # golangci-lint, config en .golangci.yml
+make ui               # regenera el panel: templ + Tailwind
 go run ./cmd/server   # exige libvips en el host
 ```
+
+**El panel se compila.** Los `*_templ.go` salen de los `.templ` y `output.css`
+de `input.css`; ambos están versionados, así que editar una plantilla sin correr
+`make ui` no cambia nada de lo que sirve el binario. `make ui-check` lo detecta y
+está en `make check` y en el job de lint del CI. El compilador de Tailwind se
+descarga a `bin/` con la versión fijada en el Makefile (`bin/` está en
+`.gitignore`), y `templ` va como `tool` en `go.mod` para que no vuelva a
+divergir de la versión del módulo.
 
 libvips es un requisito del host, no algo opcional: sin él ni siquiera compila
 (`brew install vips` en macOS, `apt install libvips-dev` en Linux). El
@@ -79,6 +88,36 @@ Lo que hay que saber antes de tocarla:
   `HMAC_REQUIRED=false`. No las muevas al grupo autenticado.
 - `/metrics` y `/debug/pprof/*` sólo se montan con `ENABLE_METRICS` /
   `ENABLE_PPROF`, y detrás de la API key.
+
+## El panel
+
+Vive en `internal/api/handlers/ui/` (handlers) y `internal/api/views/templ/`
+(plantillas). Cinco pantallas: login, explorador de storage, detalle de objeto,
+playground de transformaciones, firmador de URLs y operaciones.
+
+**El panel no concede nada por su cuenta.** Resuelve la sesión, publica el scope
+en el contexto con `apimw.WithScope`, y delega las mutaciones en los handlers
+REALES de la API (`h.api.HandleUpload`, `HandleDelete`, `HandleSignURL`) con un
+`httptest.ResponseRecorder`. Así el ownership, los límites de tamaño, el rechazo
+de formatos y la invalidación de cache aplican igual que a cualquier cliente, y
+el panel no puede hacer nada que la API rechazaría.
+
+**La API key nunca llega al navegador.** El login la cambia por una cookie de
+sesión opaca y HttpOnly; la key queda en el `SessionStore` en memoria. Las
+mutaciones exigen el token CSRF de la sesión.
+
+**Las miniaturas se firman en el servidor** (`signPath`). Sin eso, con
+`HMAC_REQUIRED=true` —que es lo que corre el stack— cada miniatura es un 403.
+
+**Sin `API_KEY` ni claves scoped el panel se NIEGA a servir** (`enabled()`), en
+vez de inventarse un scope admin. `/` explica qué variable falta y `/dashboard`
+y `/ui/*` responden 403. La API sigue con la política que diga su propia config.
+
+**Cosas que el panel muestra y conviene no romper:** el conteo de un bucket es
+`nil` (un guion) cuando `GetStats` falla, nunca 0; el formato sale del
+content-type de la metadata, nunca de la extensión de la key (que no existe: las
+keys son hashes); y un backend que no implementa `PagedLister` se anuncia como
+tal en vez de fingir paginación.
 
 **El upload no guarda el original.** `prepareForStorage` corre `Process` sobre
 lo subido y almacena el resultado reencodado a `DEFAULT_FORMAT` (webp) salvo que
@@ -180,11 +219,19 @@ byte. Si falla, se ajusta el tag, nunca el test.
   no existen (`STORAGE_PRIMARY`) más `PORT=8080`. godotenv no
   pisa lo que ya está en el entorno, pero si dependes de él para arrancar vas a
   levantar un falco filesystem en 8080 creyendo que es el del stack.
-- **Sin `API_KEY_REQUIRED` ni `HMAC_REQUIRED`, falco arranca abierto.** Ninguna
+- **Sin `API_KEY_REQUIRED` ni `HMAC_REQUIRED`, la API arranca abierta.** Ninguna
   de las dos tiene default en viper, así que ausente vale `false` y la
   validación no las exige. Esto contradice la regla del raíz sobre features
   opcionales sin configurar; en el stack lo tapa el docker-compose, que pone
-  ambas en `"true"`.
+  ambas en `"true"`. **El panel ya no cae en esto**: sin ninguna key configurada
+  se niega a servir en vez de abrirse con scope admin.
+- **`?b=` sólo cambia de bucket si el backend es `BucketAware`, y sólo S3 lo
+  es.** Con jay o filesystem, un `?b=` que no coincida con un bucket del
+  registry se ignora y la operación va al bucket por defecto — respondiendo 201.
+  Hoy queda un `logger.Warn` («Bucket parameter could not be honoured») y NO un
+  error, porque birdple-api manda `?b=birdple-dev` mientras el único bucket del
+  registry se llama `jay`: rechazarlo tumbaría toda la subida en producción. Un
+  nombre que SÍ está en el registry se resuelve correctamente.
 - **`docs/` no es fuente de verdad; `site/` sí.** La documentación viva es el
   sitio Astro Starlight de `site/` (publicado en https://birdple.github.io/falco/
   por `.github/workflows/pages.yml`), escrito verificando contra el código. El
