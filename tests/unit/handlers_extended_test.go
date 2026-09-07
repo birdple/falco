@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/birdple/falco/internal/api/handlers"
 	"github.com/birdple/falco/internal/api/types"
@@ -346,6 +348,62 @@ func TestHandleList_StorageError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	mockStorage.AssertExpectations(t)
+}
+
+// A prefix past the safety cap is not a broken backend and not an empty
+// listing: the caller is told to page through it.
+func TestHandleList_ListingTooLarge(t *testing.T) {
+	mockStorage := new(mocks.MockStorageBackend)
+	mockProcessor := new(mocks.MockImageProcessor)
+
+	h := handlers.NewHandler(&config.Config{}, mockStorage, mockProcessor, time.Now())
+
+	req := httptest.NewRequest(http.MethodGet, "/list", nil)
+
+	mockStorage.On("List", mock.Anything, "").
+		Return([]storage.ListResult{}, fmt.Errorf("jay: %w", storage.ErrListingTooLarge))
+
+	w := httptest.NewRecorder()
+	h.HandleList(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "LISTING_TOO_LARGE")
+	assert.Contains(t, w.Body.String(), "cursor=", "the answer has to name the way out")
+
+	var response types.ListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.False(t, response.Success)
+	mockStorage.AssertExpectations(t)
+}
+
+// The same on delete, where a partial answer is worse: deleting the part that
+// fits and reporting success is the exact failure this endpoint exists to avoid.
+func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
+	mockStorage := new(mocks.MockStorageBackend)
+	mockProcessor := new(mocks.MockImageProcessor)
+
+	h := handlers.NewHandler(&config.Config{}, mockStorage, mockProcessor, time.Now())
+
+	reqBody, err := json.Marshal(types.DeleteRequest{Prefix: "images/"})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	mockStorage.On("List", mock.Anything, "images").
+		Return([]storage.ListResult{}, fmt.Errorf("jay: %w", storage.ErrListingTooLarge))
+
+	w := httptest.NewRecorder()
+	h.HandleDelete(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "LISTING_TOO_LARGE")
+
+	var response types.DeleteResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.False(t, response.Success, "a delete that deleted nothing is not a success")
+
+	mockStorage.AssertExpectations(t)
+	mockStorage.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything)
 }
 
 // Additional Health tests

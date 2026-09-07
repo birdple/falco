@@ -54,6 +54,16 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	results, err := storageBackend.List(ctx, prefix)
 	if err != nil {
+		if storage.IsListingTooLarge(err) {
+			// The prefix outgrew the whole-listing mode. Saying which knob
+			// answers it beats a 500 that reads like a broken backend — and
+			// beats the alternative this endpoint used to ship, a page of
+			// results wearing `success: true`.
+			logger.Warn().Err(err).Str("prefix", prefix).Msg("Prefix too large to list at once")
+			h.sendError(w, http.StatusBadRequest, "LISTING_TOO_LARGE",
+				fmt.Sprintf("More than %d objects under this prefix; page through it with ?limit= and ?cursor=", storage.MaxFullListingObjects))
+			return
+		}
 		logger.Error().Err(err).Msg("Failed to list files")
 		h.sendError(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list files")
 		return

@@ -17,9 +17,17 @@ import (
 const (
 	// deleteWorkers is the number of concurrent goroutines used for prefix deletes.
 	deleteWorkers = 10
-	// listCap is the MaxKeys value used by storage.List; when the result set
-	// equals this number the response is likely truncated.
-	listCap = 1000
+	// listCap is the point past which a listing stops being trustworthy: the
+	// safety cap storage.List enforces while walking a prefix.
+	//
+	// It used to be the 1000-key page size, back when List asked for one page
+	// and dropped the truncation flag. Now List walks every page, so a listing
+	// of 1000 is simply a listing of 1000 — comparing against the page size
+	// would flag every prefix over it as truncated and teach callers to ignore
+	// the field. A prefix bigger than the cap fails outright; a prefix that
+	// fills it exactly comes back without an error and is the one case left
+	// where "there may be more" cannot be ruled out, which is what this reports.
+	listCap = storage.MaxFullListingObjects
 )
 
 // HandleDelete handles deleting files or entire directories
@@ -43,12 +51,15 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Keys that were asked to be deleted and were not. These used to be counted
-	// only in the log while the response still said `success: true`: with jay
-	// pedía "borrar mis fotos", recibía `{"success":true,"count":0}`, y
-	// down, a user asking to "delete my photos" got `{"success":true,"count":0}`
-	// and birdple-api recorded it as deleted. The photos were still there and
-	// reintentaba.
+	// What the response has to carry, beyond the count: the keys that were asked
+	// for and are still there, and whether the listing this delete worked from
+	// could have left objects out.
+	//
+	// Both used to end up in the log alone while the response said
+	// `success: true`. With jay down, a user asking to "delete my photos" got
+	// back `{"success":true,"count":0}`, birdple-api recorded the photos as
+	// deleted, and they were still in the bucket with nothing left to retry
+	// from.
 	var tally deleteTally
 	var truncated bool
 
@@ -61,6 +72,14 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 		results, err := storageBackend.List(ctx, prefix)
 		if err != nil {
+			if storage.IsListingTooLarge(err) {
+				// Not a backend failure, and deleting the part that fits would
+				// be the silent half-delete this endpoint already learned about.
+				logger.Warn().Err(err).Str("prefix", prefix).Msg("Prefix too large to delete in one request")
+				h.sendError(w, http.StatusBadRequest, "LISTING_TOO_LARGE",
+					fmt.Sprintf("More than %d objects under this prefix; delete a narrower prefix", storage.MaxFullListingObjects))
+				return
+			}
 			logger.Error().Err(err).Msg("Failed to list files for deletion")
 			h.sendError(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list files for deletion")
 			return

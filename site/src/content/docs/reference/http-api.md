@@ -69,6 +69,8 @@ curl -H "X-API-Key: $KEY" "localhost:8080/api/v1/list?b=images&d=avatars"
 |---|---|---|
 | `b` | `bucket`, `storage` | Bucket to list |
 | `p` | `prefix`, `d`, `dir`, `directory` | Directory or prefix within it |
+| `limit` | — | Objects per page, 1–1000. Turns on paginated mode |
+| `cursor` | — | `next_cursor` from the previous page. Also turns on paginated mode |
 
 ```json
 {
@@ -76,9 +78,36 @@ curl -H "X-API-Key: $KEY" "localhost:8080/api/v1/list?b=images&d=avatars"
   "count": 1,
   "files": [
     { "key": "6d556268ff5afc0f", "size": 278, "modified": "2026-09-03T00:33:32Z" }
-  ]
+  ],
+  "truncated": false
 }
 ```
+
+### Whole prefix, or one page
+
+Without `limit` and `cursor` the answer is the **entire** prefix: Falco walks
+every page of the backend's listing and `truncated` is always `false`. It used
+to ask the backend for one page of 1000 keys and drop the "there is more" flag,
+so a large directory came back short with `success: true` and nothing said so.
+
+That walk is bounded at **100 000 objects**. A prefix bigger than that is
+answered with `LISTING_TOO_LARGE` rather than with the part that fit — a clipped
+listing is indistinguishable from a complete one, and a caller deleting from it
+would leave objects behind believing it was done.
+
+With `limit` or `cursor`, the answer is one page:
+
+```bash
+curl -H "X-API-Key: $KEY" "localhost:8080/api/v1/list?d=avatars&limit=200"
+# → { "truncated": true, "next_cursor": "avatars/f3a…", … }
+curl -H "X-API-Key: $KEY" "localhost:8080/api/v1/list?d=avatars&limit=200&cursor=avatars/f3a…"
+```
+
+`truncated` says whether more remains; `next_cursor` is opaque and is passed
+back verbatim. Directories in a paginated answer carry no `file_count` (it is
+`null`): counting would mean walking the whole prefix, which is what paging
+avoids. A backend that cannot page answers `PAGINATION_UNSUPPORTED` instead of
+quietly returning everything as if it were a page.
 
 ## Delete
 
@@ -131,6 +160,9 @@ change with them.
 | `WATERMARK_FETCH_FAILED` | 502 | The allowlisted host did not serve the overlay |
 | `INVALID_ID`, `INVALID_DIRECTORY`, `INVALID_PATH` | 400 | Malformed id, directory or signing path |
 | `INVALID_JSON`, `INVALID_REQUEST` | 400 | Bad body. Unknown fields are rejected, not ignored |
+| `INVALID_LIMIT` | 400 | `?limit=` is not a positive integer, or is over 1000 |
+| `LISTING_TOO_LARGE` | 400 | The prefix holds more than 100 000 objects: list it a page at a time, or delete a narrower one |
+| `PAGINATION_UNSUPPORTED` | 501 | `?limit=`/`?cursor=` on a backend that cannot page |
 | `UNSUPPORTED_CONTENT_TYPE` | 400 | Upload body is not something Falco takes |
 | `DANGEROUS_CONTENT_TYPE` | 415 | SVG, HTML or XML upload |
 | `PROCESSING_FAILED` | 422 | libvips could not decode or encode it |
