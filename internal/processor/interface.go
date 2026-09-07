@@ -145,6 +145,15 @@ type ImageProcessor interface {
 	// like it had never applied.
 	InvalidateCacheForKey(storageKey string) int
 
+	// PurgeCache drops every cached variant and returns how many entries were
+	// removed.
+	//
+	// Cache holds only transformed output; originals live in storage, so this
+	// costs CPU on the next requests and loses nothing. It returns the count
+	// because an operator needs to see that something actually happened —
+	// answering "purged" without a number is how a no-op passes for a purge.
+	PurgeCache() int
+
 	// GetMetadata extracts metadata from an image without processing
 	GetMetadata(ctx context.Context, input io.Reader) (*ImageMetadata, error)
 

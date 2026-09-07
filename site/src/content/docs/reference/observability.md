@@ -37,6 +37,51 @@ straight from storage and is never cached, so a deployment serving mostly
 originals will show a hit ratio near zero without anything being wrong. See
 [Caching](/falco/internals/caching/).
 
+## Readiness
+
+`GET /health` is the liveness probe: it answers whether the process is up and
+pings the **default** backend only.
+
+`GET /health/ready` is the diagnostic one. It checks every registered backend,
+reports each one's circuit-breaker state, and lists the features that are off
+because they were never configured:
+
+```bash
+curl -s localhost:4009/health/ready | jq
+```
+
+```json
+{
+  "status": "ready",
+  "version": "0.13.0",
+  "uptime": "3h21m4s",
+  "backends": [
+    { "name": "jay", "type": "jay", "ok": true, "breaker": "closed" }
+  ],
+  "cache": { "enabled": true, "item_count": 812 },
+  "disabled": [
+    "watermark_url: WATERMARK_ALLOWED_HOSTS is unset (?wm_url= answers 403)"
+  ]
+}
+```
+
+It answers `503` with `"status": "degraded"` when any backend fails its check.
+This is the endpoint to look at when uploads fail while delivery still works —
+they are two different paths with different configuration.
+
+## Without Prometheus
+
+Three JSON endpoints cover the same ground for a quick look, behind the API key:
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/v1/stats` | Objects and bytes per bucket. `free_space_bytes` is null unless the backend reports it |
+| `GET /api/v1/cache` | Hit ratio, item count, size against `CACHE_SIZE_MB`, TTL and sweep interval |
+| `DELETE /api/v1/cache` | Purges every variant, or one key's, and answers how many entries it dropped |
+
+The admin panel's operations screen renders all of it, alongside the effective
+configuration with secrets shown only as set or not set.
+
 ## Logs
 
 Structured JSON through zerolog, `LOG_LEVEL` and `LOG_FORMAT` (`text` is for a

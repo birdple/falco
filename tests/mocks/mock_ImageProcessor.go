@@ -8,7 +8,7 @@ import (
 	"context"
 	"io"
 
-	cache "github.com/birdple/falco/internal/cache"
+	"github.com/birdple/falco/internal/cache"
 	"github.com/birdple/falco/internal/processor"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -38,6 +38,63 @@ type MockImageProcessor_Expecter struct {
 
 func (_m *MockImageProcessor) EXPECT() *MockImageProcessor_Expecter {
 	return &MockImageProcessor_Expecter{mock: &_m.Mock}
+}
+
+// GenerateCacheKey provides a mock function for the type MockImageProcessor
+func (_mock *MockImageProcessor) GenerateCacheKey(storageKey string, params *processor.ProcessingParams) string {
+	ret := _mock.Called(storageKey, params)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GenerateCacheKey")
+	}
+
+	var r0 string
+	if returnFunc, ok := ret.Get(0).(func(string, *processor.ProcessingParams) string); ok {
+		r0 = returnFunc(storageKey, params)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	return r0
+}
+
+// MockImageProcessor_GenerateCacheKey_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GenerateCacheKey'
+type MockImageProcessor_GenerateCacheKey_Call struct {
+	*mock.Call
+}
+
+// GenerateCacheKey is a helper method to define mock.On call
+//   - storageKey string
+//   - params *processor.ProcessingParams
+func (_e *MockImageProcessor_Expecter) GenerateCacheKey(storageKey any, params any) *MockImageProcessor_GenerateCacheKey_Call {
+	return &MockImageProcessor_GenerateCacheKey_Call{Call: _e.mock.On("GenerateCacheKey", storageKey, params)}
+}
+
+func (_c *MockImageProcessor_GenerateCacheKey_Call) Run(run func(storageKey string, params *processor.ProcessingParams)) *MockImageProcessor_GenerateCacheKey_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 *processor.ProcessingParams
+		if args[1] != nil {
+			arg1 = args[1].(*processor.ProcessingParams)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockImageProcessor_GenerateCacheKey_Call) Return(s string) *MockImageProcessor_GenerateCacheKey_Call {
+	_c.Call.Return(s)
+	return _c
+}
+
+func (_c *MockImageProcessor_GenerateCacheKey_Call) RunAndReturn(run func(storageKey string, params *processor.ProcessingParams) string) *MockImageProcessor_GenerateCacheKey_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // GetCacheStats provides a mock function for the type MockImageProcessor
@@ -108,7 +165,7 @@ type MockImageProcessor_GetContentType_Call struct {
 
 // GetContentType is a helper method to define mock.On call
 //   - format string
-func (_e *MockImageProcessor_Expecter) GetContentType(format interface{}) *MockImageProcessor_GetContentType_Call {
+func (_e *MockImageProcessor_Expecter) GetContentType(format any) *MockImageProcessor_GetContentType_Call {
 	return &MockImageProcessor_GetContentType_Call{Call: _e.mock.On("GetContentType", format)}
 }
 
@@ -131,6 +188,68 @@ func (_c *MockImageProcessor_GetContentType_Call) Return(s string) *MockImagePro
 }
 
 func (_c *MockImageProcessor_GetContentType_Call) RunAndReturn(run func(format string) string) *MockImageProcessor_GetContentType_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// GetFromCache provides a mock function for the type MockImageProcessor
+func (_mock *MockImageProcessor) GetFromCache(key string) ([]byte, bool) {
+	ret := _mock.Called(key)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetFromCache")
+	}
+
+	var r0 []byte
+	var r1 bool
+	if returnFunc, ok := ret.Get(0).(func(string) ([]byte, bool)); ok {
+		return returnFunc(key)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string) []byte); ok {
+		r0 = returnFunc(key)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]byte)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(string) bool); ok {
+		r1 = returnFunc(key)
+	} else {
+		r1 = ret.Get(1).(bool)
+	}
+	return r0, r1
+}
+
+// MockImageProcessor_GetFromCache_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetFromCache'
+type MockImageProcessor_GetFromCache_Call struct {
+	*mock.Call
+}
+
+// GetFromCache is a helper method to define mock.On call
+//   - key string
+func (_e *MockImageProcessor_Expecter) GetFromCache(key any) *MockImageProcessor_GetFromCache_Call {
+	return &MockImageProcessor_GetFromCache_Call{Call: _e.mock.On("GetFromCache", key)}
+}
+
+func (_c *MockImageProcessor_GetFromCache_Call) Run(run func(key string)) *MockImageProcessor_GetFromCache_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockImageProcessor_GetFromCache_Call) Return(bytes []byte, b bool) *MockImageProcessor_GetFromCache_Call {
+	_c.Call.Return(bytes, b)
+	return _c
+}
+
+func (_c *MockImageProcessor_GetFromCache_Call) RunAndReturn(run func(key string) ([]byte, bool)) *MockImageProcessor_GetFromCache_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -171,7 +290,7 @@ type MockImageProcessor_GetMetadata_Call struct {
 // GetMetadata is a helper method to define mock.On call
 //   - ctx context.Context
 //   - input io.Reader
-func (_e *MockImageProcessor_Expecter) GetMetadata(ctx interface{}, input interface{}) *MockImageProcessor_GetMetadata_Call {
+func (_e *MockImageProcessor_Expecter) GetMetadata(ctx any, input any) *MockImageProcessor_GetMetadata_Call {
 	return &MockImageProcessor_GetMetadata_Call{Call: _e.mock.On("GetMetadata", ctx, input)}
 }
 
@@ -203,103 +322,6 @@ func (_c *MockImageProcessor_GetMetadata_Call) RunAndReturn(run func(ctx context
 	return _c
 }
 
-// GenerateCacheKey provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) GenerateCacheKey(storageKey string, params *processor.ProcessingParams) string {
-	ret := _mock.Called(storageKey, params)
-
-	if len(ret) == 0 {
-		panic("no return value specified for GenerateCacheKey")
-	}
-
-	var r0 string
-	if returnFunc, ok := ret.Get(0).(func(string, *processor.ProcessingParams) string); ok {
-		r0 = returnFunc(storageKey, params)
-	} else {
-		r0 = ret.Get(0).(string)
-	}
-	return r0
-}
-
-// MockImageProcessor_GenerateCacheKey_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GenerateCacheKey'
-type MockImageProcessor_GenerateCacheKey_Call struct {
-	*mock.Call
-}
-
-func (_e *MockImageProcessor_Expecter) GenerateCacheKey(storageKey interface{}, params interface{}) *MockImageProcessor_GenerateCacheKey_Call {
-	return &MockImageProcessor_GenerateCacheKey_Call{Call: _e.mock.On("GenerateCacheKey", storageKey, params)}
-}
-
-func (_c *MockImageProcessor_GenerateCacheKey_Call) Run(run func(storageKey string, params *processor.ProcessingParams)) *MockImageProcessor_GenerateCacheKey_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(string), args[1].(*processor.ProcessingParams))
-	})
-	return _c
-}
-
-func (_c *MockImageProcessor_GenerateCacheKey_Call) Return(s string) *MockImageProcessor_GenerateCacheKey_Call {
-	_c.Call.Return(s)
-	return _c
-}
-
-func (_c *MockImageProcessor_GenerateCacheKey_Call) RunAndReturn(run func(string, *processor.ProcessingParams) string) *MockImageProcessor_GenerateCacheKey_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// GetFromCache provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) GetFromCache(key string) ([]byte, bool) {
-	ret := _mock.Called(key)
-
-	if len(ret) == 0 {
-		panic("no return value specified for GetFromCache")
-	}
-
-	var r0 []byte
-	var r1 bool
-	if returnFunc, ok := ret.Get(0).(func(string) ([]byte, bool)); ok {
-		return returnFunc(key)
-	}
-	if returnFunc, ok := ret.Get(0).(func(string) []byte); ok {
-		r0 = returnFunc(key)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]byte)
-		}
-	}
-	if returnFunc, ok := ret.Get(1).(func(string) bool); ok {
-		r1 = returnFunc(key)
-	} else {
-		r1 = ret.Get(1).(bool)
-	}
-	return r0, r1
-}
-
-// MockImageProcessor_GetFromCache_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetFromCache'
-type MockImageProcessor_GetFromCache_Call struct {
-	*mock.Call
-}
-
-func (_e *MockImageProcessor_Expecter) GetFromCache(key interface{}) *MockImageProcessor_GetFromCache_Call {
-	return &MockImageProcessor_GetFromCache_Call{Call: _e.mock.On("GetFromCache", key)}
-}
-
-func (_c *MockImageProcessor_GetFromCache_Call) Run(run func(key string)) *MockImageProcessor_GetFromCache_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(string))
-	})
-	return _c
-}
-
-func (_c *MockImageProcessor_GetFromCache_Call) Return(data []byte, found bool) *MockImageProcessor_GetFromCache_Call {
-	_c.Call.Return(data, found)
-	return _c
-}
-
-func (_c *MockImageProcessor_GetFromCache_Call) RunAndReturn(run func(string) ([]byte, bool)) *MockImageProcessor_GetFromCache_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // InvalidateCacheForKey provides a mock function for the type MockImageProcessor
 func (_mock *MockImageProcessor) InvalidateCacheForKey(storageKey string) int {
 	ret := _mock.Called(storageKey)
@@ -322,13 +344,21 @@ type MockImageProcessor_InvalidateCacheForKey_Call struct {
 	*mock.Call
 }
 
-func (_e *MockImageProcessor_Expecter) InvalidateCacheForKey(storageKey interface{}) *MockImageProcessor_InvalidateCacheForKey_Call {
+// InvalidateCacheForKey is a helper method to define mock.On call
+//   - storageKey string
+func (_e *MockImageProcessor_Expecter) InvalidateCacheForKey(storageKey any) *MockImageProcessor_InvalidateCacheForKey_Call {
 	return &MockImageProcessor_InvalidateCacheForKey_Call{Call: _e.mock.On("InvalidateCacheForKey", storageKey)}
 }
 
 func (_c *MockImageProcessor_InvalidateCacheForKey_Call) Run(run func(storageKey string)) *MockImageProcessor_InvalidateCacheForKey_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(string))
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		run(
+			arg0,
+		)
 	})
 	return _c
 }
@@ -338,7 +368,7 @@ func (_c *MockImageProcessor_InvalidateCacheForKey_Call) Return(n int) *MockImag
 	return _c
 }
 
-func (_c *MockImageProcessor_InvalidateCacheForKey_Call) RunAndReturn(run func(string) int) *MockImageProcessor_InvalidateCacheForKey_Call {
+func (_c *MockImageProcessor_InvalidateCacheForKey_Call) RunAndReturn(run func(storageKey string) int) *MockImageProcessor_InvalidateCacheForKey_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -381,7 +411,7 @@ type MockImageProcessor_Process_Call struct {
 //   - input io.Reader
 //   - params *processor.ProcessingParams
 //   - cacheKey string
-func (_e *MockImageProcessor_Expecter) Process(ctx interface{}, input interface{}, params interface{}, cacheKey interface{}) *MockImageProcessor_Process_Call {
+func (_e *MockImageProcessor_Expecter) Process(ctx any, input any, params any, cacheKey any) *MockImageProcessor_Process_Call {
 	return &MockImageProcessor_Process_Call{Call: _e.mock.On("Process", ctx, input, params, cacheKey)}
 }
 
@@ -399,7 +429,10 @@ func (_c *MockImageProcessor_Process_Call) Run(run func(ctx context.Context, inp
 		if args[2] != nil {
 			arg2 = args[2].(*processor.ProcessingParams)
 		}
-		arg3 := args[3].(string)
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
 		run(
 			arg0,
 			arg1,
@@ -420,9 +453,53 @@ func (_c *MockImageProcessor_Process_Call) RunAndReturn(run func(ctx context.Con
 	return _c
 }
 
+// PurgeCache provides a mock function for the type MockImageProcessor
+func (_mock *MockImageProcessor) PurgeCache() int {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for PurgeCache")
+	}
+
+	var r0 int
+	if returnFunc, ok := ret.Get(0).(func() int); ok {
+		r0 = returnFunc()
+	} else {
+		r0 = ret.Get(0).(int)
+	}
+	return r0
+}
+
+// MockImageProcessor_PurgeCache_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PurgeCache'
+type MockImageProcessor_PurgeCache_Call struct {
+	*mock.Call
+}
+
+// PurgeCache is a helper method to define mock.On call
+func (_e *MockImageProcessor_Expecter) PurgeCache() *MockImageProcessor_PurgeCache_Call {
+	return &MockImageProcessor_PurgeCache_Call{Call: _e.mock.On("PurgeCache")}
+}
+
+func (_c *MockImageProcessor_PurgeCache_Call) Run(run func()) *MockImageProcessor_PurgeCache_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockImageProcessor_PurgeCache_Call) Return(n int) *MockImageProcessor_PurgeCache_Call {
+	_c.Call.Return(n)
+	return _c
+}
+
+func (_c *MockImageProcessor_PurgeCache_Call) RunAndReturn(run func() int) *MockImageProcessor_PurgeCache_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // SetCache provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) SetCache(cache processor.Cache) {
-	_mock.Called(cache)
+func (_mock *MockImageProcessor) SetCache(cache1 processor.Cache) {
+	_mock.Called(cache1)
 	return
 }
 
@@ -432,12 +509,12 @@ type MockImageProcessor_SetCache_Call struct {
 }
 
 // SetCache is a helper method to define mock.On call
-//   - cache processor.Cache
-func (_e *MockImageProcessor_Expecter) SetCache(cache interface{}) *MockImageProcessor_SetCache_Call {
-	return &MockImageProcessor_SetCache_Call{Call: _e.mock.On("SetCache", cache)}
+//   - cache1 processor.Cache
+func (_e *MockImageProcessor_Expecter) SetCache(cache1 any) *MockImageProcessor_SetCache_Call {
+	return &MockImageProcessor_SetCache_Call{Call: _e.mock.On("SetCache", cache1)}
 }
 
-func (_c *MockImageProcessor_SetCache_Call) Run(run func(cache processor.Cache)) *MockImageProcessor_SetCache_Call {
+func (_c *MockImageProcessor_SetCache_Call) Run(run func(cache1 processor.Cache)) *MockImageProcessor_SetCache_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 processor.Cache
 		if args[0] != nil {
@@ -455,7 +532,7 @@ func (_c *MockImageProcessor_SetCache_Call) Return() *MockImageProcessor_SetCach
 	return _c
 }
 
-func (_c *MockImageProcessor_SetCache_Call) RunAndReturn(run func(cache processor.Cache)) *MockImageProcessor_SetCache_Call {
+func (_c *MockImageProcessor_SetCache_Call) RunAndReturn(run func(cache1 processor.Cache)) *MockImageProcessor_SetCache_Call {
 	_c.Run(run)
 	return _c
 }
@@ -530,7 +607,7 @@ type MockImageProcessor_ValidateFormat_Call struct {
 
 // ValidateFormat is a helper method to define mock.On call
 //   - format string
-func (_e *MockImageProcessor_Expecter) ValidateFormat(format interface{}) *MockImageProcessor_ValidateFormat_Call {
+func (_e *MockImageProcessor_Expecter) ValidateFormat(format any) *MockImageProcessor_ValidateFormat_Call {
 	return &MockImageProcessor_ValidateFormat_Call{Call: _e.mock.On("ValidateFormat", format)}
 }
 
