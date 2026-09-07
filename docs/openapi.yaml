@@ -24,7 +24,7 @@ paths:
       parameters:
         - name: b
           in: query
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
           required: false
           schema:
             type: string
@@ -168,7 +168,7 @@ paths:
       parameters:
         - name: b
           in: query
-          description: "Bucket name override (optional, will use request body bucket if not specified)"
+          description: "Bucket name override (optional, will use request body bucket if not specified). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET."
           required: false
           schema:
             type: string
@@ -346,7 +346,7 @@ paths:
           description: Opaque cursor from a previous response's next_cursor.
         - name: b
           in: query
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
           required: false
           schema:
             type: string
@@ -417,13 +417,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
-                invalid-bucket:
-                  summary: Invalid bucket name
+                unknown-bucket:
+                  summary: Bucket is neither declared nor aliased
                   value:
                     success: false
                     error:
-                      code: "INVALID_BUCKET"
-                      message: "Bucket not found or access denied"
+                      code: "UNKNOWN_BUCKET"
+                      message: 'requested bucket cannot be served: "archive" is not a configured bucket or alias, and the backend cannot switch to it'
         '500':
           description: Internal server error (e.g., storage backend error).
           content:
@@ -445,7 +445,7 @@ paths:
       parameters:
         - name: b
           in: query
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
           required: false
           schema:
             type: string
@@ -736,7 +736,7 @@ paths:
           in: query
           required: false
           schema: { type: string }
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
         - name: d
           in: query
           required: false

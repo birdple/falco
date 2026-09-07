@@ -47,7 +47,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
 	if sbErr != nil {
-		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		h.sendStorageBackendError(w, sbErr)
 		return
 	}
 

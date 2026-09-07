@@ -12,6 +12,7 @@ import (
 type Registry struct {
 	mu          sync.RWMutex
 	backends    map[string]StorageBackend
+	aliases     map[string]string
 	defaultName string
 }
 
@@ -19,6 +20,7 @@ type Registry struct {
 func NewRegistry(defaultBackend StorageBackend) *Registry {
 	r := &Registry{
 		backends:    make(map[string]StorageBackend),
+		aliases:     make(map[string]string),
 		defaultName: "default",
 	}
 	r.backends["default"] = defaultBackend
@@ -43,18 +45,90 @@ func (r *Registry) SetDefault(name string) error {
 	return nil
 }
 
-// Get returns the backend registered under the given name.
+// RegisterAlias makes `alias` resolve to the backend registered as `target`.
+//
+// Aliases exist because the name a client asks for and the name an operator
+// declared are configured in two different places, and nothing keeps them in
+// step: falco's bucket names come from STORAGE_BUCKET_<NAME>_* (so they cannot
+// even contain a hyphen), while every consumer hardcodes or configures its own
+// string. Before aliases the mismatch was absorbed silently — an upload naming
+// an unknown bucket landed in the default one and still answered 201. An alias
+// turns that accident into a declaration: the operator states that "birdple-dev"
+// means "jay", and anything NOT declared is refused instead of redirected.
+//
+// Registering an alias over an existing backend name, or pointing one at a
+// backend that is not registered, is a configuration error and is refused here
+// rather than discovered on the first request.
+func (r *Registry) RegisterAlias(alias, target string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if alias == "" || target == "" {
+		return fmt.Errorf("%w: alias %q -> %q: both names are required", ErrInvalidConfiguration, alias, target)
+	}
+	if _, taken := r.backends[alias]; taken {
+		return fmt.Errorf("%w: alias %q shadows a registered bucket", ErrInvalidConfiguration, alias)
+	}
+	if _, ok := r.backends[target]; !ok {
+		return fmt.Errorf("%w: alias %q -> %q", ErrBackendNotFound, alias, target)
+	}
+	r.aliases[alias] = target
+	return nil
+}
+
+// Canonical returns the registry name that `name` stands for: the name itself
+// when it is a registered backend or is unknown, and the alias target when it
+// is a declared alias. An empty name canonicalises to the default backend's
+// name.
+//
+// Callers use this BEFORE authorization so that a scope is always evaluated
+// against one name per bucket. Checking the alias instead would let the same
+// bucket be allowed under one spelling and denied under another.
+func (r *Registry) Canonical(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.canonicalLocked(name)
+}
+
+// canonicalLocked is Canonical without taking the lock. Aliases are one hop
+// deep on purpose: RegisterAlias refuses a target that is not a backend, so an
+// alias can never point at another alias.
+func (r *Registry) canonicalLocked(name string) string {
+	if name == "" {
+		return r.defaultName
+	}
+	if target, ok := r.aliases[name]; ok {
+		return target
+	}
+	return name
+}
+
+// Aliases returns a copy of the declared alias -> bucket mapping.
+func (r *Registry) Aliases() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]string, len(r.aliases))
+	for alias, target := range r.aliases {
+		out[alias] = target
+	}
+	return out
+}
+
+// Get returns the backend registered under the given name, resolving a
+// declared alias first.
 // Returns the default backend if name is empty.
 func (r *Registry) Get(name string) (StorageBackend, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if name == "" {
-		name = r.defaultName
-	}
+	requested := name
+	name = r.canonicalLocked(name)
 	backend, ok := r.backends[name]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrBackendNotFound, name)
+		if requested == "" {
+			requested = name
+		}
+		return nil, fmt.Errorf("%w: %s", ErrBackendNotFound, requested)
 	}
 	return backend, nil
 }

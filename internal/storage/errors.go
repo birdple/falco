@@ -23,6 +23,17 @@ var (
 	ErrCorruptedData          = errors.New("corrupted data")
 	ErrBackendNotFound        = errors.New("storage backend not found")
 
+	// ErrBucketNotHonoured means the request named a bucket falco cannot serve:
+	// it is not a registered bucket, not a declared alias, and the backend it
+	// resolved to has no way to switch to it.
+	//
+	// It exists so that case stops being invisible. WithBucket returns a
+	// backend and not an error, and the circuit-breaker wrapper implements it
+	// for every backend by handing back itself — so a bucket the backend could
+	// not reach used to end up written into the default one, answered 201, and
+	// reported nowhere but a log line.
+	ErrBucketNotHonoured = errors.New("requested bucket cannot be served")
+
 	// ErrUnsupportedOperation means the backend cannot do this at all — not that
 	// it failed. Callers use it to degrade explicitly (say so in the UI) instead
 	// of pretending the operation happened.

@@ -33,7 +33,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	storageBackend, sbErr := h.getStorageBackendScoped(r, storageName, bucket)
 	if sbErr != nil {
-		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		h.sendStorageBackendError(w, sbErr)
 		return
 	}
 

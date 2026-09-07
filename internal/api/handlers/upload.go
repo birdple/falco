@@ -76,7 +76,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	storageKey := utils.BuildStorageKey(directory, imageID)
 	storageBackend, sbErr := h.getStorageBackendScoped(r, storageName, bucket)
 	if sbErr != nil {
-		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		h.sendStorageBackendError(w, sbErr)
 		return
 	}
 
