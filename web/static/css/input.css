@@ -1,3 +1,21 @@
-@import "tailwindcss";
+/* Tailwind's automatic source detection scans the WHOLE repository, and this
+   repository is mostly Go, Markdown and YAML. Every English word that happens
+   to be a utility name compiled itself into the panel's stylesheet: the word
+   "shadow" in a Go test comment added a `.shadow` rule, and `.table`,
+   `.container`, `.filter`, `.transform`, `.visible` and a dozen more came from
+   prose and from the minified vendor bundles. 167 lines of the committed CSS
+   were classes no template ever used.
+
+   That is not only dead weight. `make ui-check` compares the regenerated CSS
+   against the committed one, so it failed on changes that never touched the
+   panel — the author of an unrelated Go comment was told to run `make ui` and
+   commit a stylesheet they had no reason to alter.
+
+   So the sources are named explicitly. Adding a class in a new place means
+   adding it here; nothing else in the repository can reach the stylesheet. */
+@import "tailwindcss" source(none);
+
+@source "../../../internal/api/views/templ";
+@source "../../js/app.js";
 
 @custom-variant dark (&:is(.dark *));
