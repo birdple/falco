@@ -313,6 +313,10 @@ func TestIsBackendFailure(t *testing.T) {
 	assert.False(t, IsBackendFailure(nil))
 	assert.False(t, IsBackendFailure(storage.ErrImageNotFound))
 	assert.False(t, IsBackendFailure(fmt.Errorf("envuelto: %w", storage.ErrImageNotFound)))
+	// A prefix bigger than one listing is an answer, not an outage: five in a
+	// row must not open the breaker and take uploads down with them.
+	assert.False(t, IsBackendFailure(storage.ErrListingTooLarge))
+	assert.False(t, IsBackendFailure(fmt.Errorf("jay: %w", storage.ErrListingTooLarge)))
 	assert.True(t, IsBackendFailure(errors.New("connection refused")))
 	assert.True(t, IsBackendFailure(storage.ErrStorageUnavailable))
 }

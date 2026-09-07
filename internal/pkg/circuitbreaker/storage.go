@@ -48,11 +48,16 @@ type CircuitBreakerSettings struct {
 // a read problem taking writes down with it, and a self-sustaining one: failed
 // uploads leave more dangling URLs, which trip the breaker again.
 //
-// The breaker exists for a backend that is down or unreachable. `ErrImageNotFound`
-// is a normal answer and is reported to the caller either way; it just does not
+// `ErrListingTooLarge` is here for the same reason: the backend answered, and
+// the answer is "that prefix is bigger than one listing". Five of those in a row
+// — a dashboard reloading the same oversized prefix — would otherwise open the
+// breaker and take uploads down with them.
+//
+// The breaker exists for a backend that is down or unreachable. Both of these
+// are normal answers and are reported to the caller either way; they just do not
 // count here.
 func IsBackendFailure(err error) bool {
-	return err != nil && !storage.IsNotFound(err)
+	return err != nil && !storage.IsNotFound(err) && !storage.IsListingTooLarge(err)
 }
 
 // DefaultSettings returns default circuit breaker settings
