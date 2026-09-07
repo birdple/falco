@@ -1,0 +1,96 @@
+package views
+
+import "fmt"
+
+// SignerPage builds signed delivery URLs.
+templ SignerPage(data SignerData) {
+	@Shell(data.Page) {
+		<div class="flex-1 h-full overflow-y-auto">
+			<div class="p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
+				<div>
+					<h1 class="text-xl font-semibold tracking-tight">Sign a URL</h1>
+					<p class="text-sm text-neutral-500 dark:text-neutral-400 mt-1">
+						Produces a signed delivery URL. The HMAC key stays on the server.
+					</p>
+				</div>
+
+				if !data.Enabled {
+					@Notice("Signing is not available", data.DisabledReason)
+				} else {
+					<form
+						class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 space-y-4"
+						x-data={ fmt.Sprintf("signer(%d, %t)", data.DefaultTTL, data.RequireExpiry) }
+						@submit.prevent="sign()"
+					>
+						<div>
+							<label class="block text-sm font-medium mb-1.5" for="sg-path">Path</label>
+							<input
+								id="sg-path"
+								type="text"
+								x-model="path"
+								required
+								placeholder="/api/v1/images/abc123?w=400&f=webp"
+								class="w-full bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+							/>
+							<p class="mt-1 text-xs text-neutral-400 dark:text-neutral-600">
+								The delivery path with its query, exactly as the client will request it.
+							</p>
+						</div>
+
+						<div>
+							<label class="block text-sm font-medium mb-1.5" for="sg-ttl">Expires in (seconds)</label>
+							<input
+								id="sg-ttl"
+								type="number"
+								min="1"
+								x-model="ttl"
+								class="w-full bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+							/>
+							if data.RequireExpiry {
+								<p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+									HMAC_REQUIRE_EXPIRY is on: a URL signed without an expiry is refused at delivery.
+								</p>
+							}
+						</div>
+
+						<button
+							type="submit"
+							:disabled="busy || !path"
+							class="w-full bg-violet-600 hover:bg-violet-500 disabled:bg-neutral-300 dark:disabled:bg-neutral-800 disabled:cursor-not-allowed text-white py-2.5 rounded-lg text-sm font-semibold transition-colors"
+						>
+							<span x-text="busy ? 'Signing…' : 'Sign'"></span>
+						</button>
+
+						<template x-if="error">
+							<p class="text-sm text-red-600 dark:text-red-400" x-text="error"></p>
+						</template>
+
+						<template x-if="result">
+							<div class="pt-2 border-t border-neutral-200 dark:border-neutral-800">
+								<div class="flex items-center justify-between mb-2">
+									<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600">Signed URL</h3>
+									<span class="text-xs text-neutral-500 dark:text-neutral-500" x-text="expiryLabel"></span>
+								</div>
+								<div class="flex items-start gap-2">
+									<code class="flex-1 text-[11px] font-mono bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg p-2.5 break-all max-h-32 overflow-y-auto" x-text="result"></code>
+									<button
+										type="button"
+										@click="copy(result)"
+										class="p-2 rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors shrink-0"
+										title="Copy"
+										aria-label="Copy signed URL"
+									>
+										@iconCopy()
+									</button>
+								</div>
+								<p class="mt-2 text-xs text-neutral-400 dark:text-neutral-600">
+									Use this string verbatim. Its query is reordered as part of signing, so rebuilding it breaks the signature.
+								</p>
+							</div>
+						</template>
+					</form>
+				}
+			</div>
+		</div>
+	}
+}

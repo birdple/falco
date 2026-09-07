@@ -1,0 +1,230 @@
+package views
+
+import "fmt"
+
+// PlaygroundPage is the transformation workbench.
+//
+// The controls are generated from ParamGroup data rather than written by hand,
+// so the screen and the parser's contract stay in step: every parameter
+// delivery accepts appears exactly once, with its real default and its real
+// validation class.
+templ PlaygroundPage(data PlaygroundData) {
+	@Shell(data.Page) {
+		<div
+			class="flex-1 h-full overflow-hidden flex"
+			x-data={ fmt.Sprintf("playground('%s', '%s')", data.Bucket, data.Key) }
+		>
+			<!-- Controls -->
+			<aside class="w-80 shrink-0 border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 h-full overflow-y-auto">
+				<div class="p-4 space-y-5">
+					<div>
+						<label class="block text-sm font-medium mb-1.5" for="pg-key">Object</label>
+						<div class="flex gap-2">
+							<select
+								class="bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+								x-model="bucket"
+								@change="reload()"
+							>
+								for _, b := range data.Buckets {
+									<option value={ b } selected?={ b == data.Bucket }>{ b }</option>
+								}
+							</select>
+							<input
+								id="pg-key"
+								type="text"
+								x-model="key"
+								@keydown.enter="reload()"
+								placeholder="storage key"
+								class="flex-1 min-w-0 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+							/>
+						</div>
+					</div>
+
+					for _, group := range data.Groups {
+						<div>
+							<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">{ group.Title }</h3>
+							if group.Note != "" {
+								<p class="text-[11px] text-neutral-500 dark:text-neutral-500 mb-2">{ group.Note }</p>
+							}
+							<div class="space-y-2.5">
+								for _, f := range group.Fields {
+									@paramControl(f)
+								}
+							</div>
+						</div>
+					}
+
+					<button
+						@click="reset()"
+						class="w-full px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+					>
+						Reset all
+					</button>
+				</div>
+			</aside>
+
+			<!-- Preview -->
+			<div class="flex-1 h-full overflow-y-auto">
+				<div class="p-6 lg:p-8 space-y-5">
+					<div class="flex items-start justify-between gap-4 flex-wrap">
+						<div>
+							<h1 class="text-xl font-semibold tracking-tight">Playground</h1>
+							<p class="text-sm text-neutral-500 dark:text-neutral-400 mt-1">
+								Every parameter the delivery route accepts, against a real object.
+							</p>
+						</div>
+						<div class="flex items-center gap-2">
+							<button
+								@click="copy(signedURL)"
+								:disabled="!signedURL"
+								class="px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-40 transition-colors flex items-center gap-1.5"
+							>
+								@iconCopy()
+								Copy signed URL
+							</button>
+						</div>
+					</div>
+
+					if data.Error != "" {
+						@InlineError(data.Error)
+					}
+
+					<template x-if="error">
+						<div class="p-4 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/25 rounded-xl">
+							<h4 class="font-semibold text-red-700 dark:text-red-300 text-sm">Transformation rejected</h4>
+							<p class="text-red-600 dark:text-red-400/90 text-sm mt-0.5 break-words" x-text="error"></p>
+						</div>
+					</template>
+
+					<div class="grid lg:grid-cols-2 gap-5">
+						<figure class="space-y-2">
+							<figcaption class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+								<span class="font-semibold uppercase tracking-widest">Original</span>
+								<span>
+									if data.OriginalWidth > 0 {
+										{ fmt.Sprintf("%d × %d · ", data.OriginalWidth, data.OriginalHeight) }
+									}
+									{ data.OriginalSizeHuman }
+									if data.OriginalFormat != "" {
+										{ " · " + data.OriginalFormat }
+									}
+								</span>
+							</figcaption>
+							<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-950 overflow-hidden flex items-center justify-center min-h-64">
+								<img :src="originalURL" alt="Original" class="max-w-full max-h-[55vh] object-contain"/>
+							</div>
+						</figure>
+
+						<figure class="space-y-2">
+							<figcaption class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+								<span class="font-semibold uppercase tracking-widest">Transformed</span>
+								<!-- The served content type, not the requested one: AVIF falls
+								     back to WebP silently when the encoder fails, and the panel
+								     has to show what actually came back. -->
+								<span x-show="result.size">
+									<span x-text="result.dimensions"></span>
+									<span x-text="' · ' + result.size"></span>
+									<span x-text="' · ' + result.contentType"></span>
+									<template x-if="result.fellBack">
+										<span class="ml-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 text-[10px] font-bold uppercase tracking-wider">fallback</span>
+									</template>
+								</span>
+							</figcaption>
+							<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-950 overflow-hidden flex items-center justify-center min-h-64 relative">
+								<div class="absolute inset-0 flex items-center justify-center" x-show="busy" x-cloak>
+									<span class="text-sm text-neutral-500">Rendering…</span>
+								</div>
+								<img :src="previewURL" alt="Transformed" class="max-w-full max-h-[55vh] object-contain" :class="busy ? 'opacity-40' : ''"/>
+							</div>
+						</figure>
+					</div>
+
+					<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
+						<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Signed URL</h3>
+						<code class="block text-[11px] font-mono bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg p-2.5 break-all max-h-28 overflow-y-auto" x-text="signedURL || 'Adjust a parameter to generate a URL.'"></code>
+					</div>
+				</div>
+			</div>
+		</div>
+	}
+}
+
+// paramControl renders one control from its description.
+templ paramControl(f ParamField) {
+	<div>
+		<div class="flex items-center justify-between gap-2 mb-1">
+			<label class="text-xs font-medium text-neutral-600 dark:text-neutral-400" for={ "pg-" + f.Name }>
+				{ f.Label }
+				if f.Strict {
+					<span class="ml-1 text-[9px] uppercase tracking-wider text-amber-600 dark:text-amber-500" title="A malformed value is rejected with 400 rather than ignored">strict</span>
+				}
+			</label>
+			<code class="text-[10px] text-neutral-400 dark:text-neutral-600 font-mono">{ f.Name }</code>
+		</div>
+
+		if f.Disabled {
+			<div class="px-3 py-2 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 text-xs text-neutral-500 dark:text-neutral-500">
+				{ f.DisabledReason }
+			</div>
+		} else {
+			switch f.Kind {
+				case "select":
+					<select
+						id={ "pg-" + f.Name }
+						x-model={ "params['" + f.Name + "']" }
+						@change="schedule()"
+						class="w-full bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+					>
+						<option value="">default</option>
+						for _, opt := range f.Options {
+							<option value={ opt }>{ opt }</option>
+						}
+					</select>
+				case "toggle":
+					<label class="flex items-center gap-2 cursor-pointer">
+						<input
+							id={ "pg-" + f.Name }
+							type="checkbox"
+							class="w-4 h-4 rounded accent-violet-600"
+							x-model={ "params['" + f.Name + "']" }
+							@change="schedule()"
+						/>
+						<span class="text-xs text-neutral-500 dark:text-neutral-500">{ f.Help }</span>
+					</label>
+				case "color":
+					<input
+						id={ "pg-" + f.Name }
+						type="text"
+						x-model={ "params['" + f.Name + "']" }
+						@input.debounce.400ms="schedule()"
+						placeholder={ f.Default }
+						class="w-full bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+					/>
+				case "number":
+					<input
+						id={ "pg-" + f.Name }
+						type="number"
+						min={ f.Min }
+						max={ f.Max }
+						step={ f.Step }
+						x-model={ "params['" + f.Name + "']" }
+						@input.debounce.400ms="schedule()"
+						placeholder={ f.Default }
+						class="w-full bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+					/>
+				default:
+					<input
+						id={ "pg-" + f.Name }
+						type="text"
+						x-model={ "params['" + f.Name + "']" }
+						@input.debounce.400ms="schedule()"
+						placeholder={ f.Default }
+						class="w-full bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+					/>
+			}
+			if f.Help != "" && f.Kind != "toggle" {
+				<p class="mt-1 text-[10px] text-neutral-400 dark:text-neutral-600">{ f.Help }</p>
+			}
+		}
+	</div>
+}

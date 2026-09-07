@@ -1,0 +1,240 @@
+package views
+
+import "fmt"
+
+// ExplorerPage is the storage browser.
+templ ExplorerPage(data ExplorerData) {
+	@Shell(data.Page) {
+		@Sidebar(data)
+		<div class="flex-1 h-full overflow-y-auto" id="main">
+			@Explorer(data)
+		</div>
+		@UploadModal(data)
+	}
+}
+
+// Explorer is the swappable body. It carries its own id so HTMX can replace it
+// whole, and it re-renders the sidebar out of band — the old panel swapped only
+// the content, leaving the sidebar highlighting the bucket you had just left.
+templ Explorer(data ExplorerData) {
+	<div id="explorer" class="p-6 lg:p-8 space-y-6">
+		@SidebarOOB(data)
+
+		<div class="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+			<div class="min-w-0">
+				@Breadcrumbs(data)
+				<div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-neutral-500 dark:text-neutral-400">
+					<span class="inline-flex items-center gap-1.5">
+						@Chip(data.BucketType)
+						<span class="font-medium text-neutral-700 dark:text-neutral-300">{ data.Bucket }</span>
+					</span>
+					if data.Stats != nil {
+						if data.Stats.StatsError == "" {
+							<span class="text-neutral-300 dark:text-neutral-700">·</span>
+							<span>{ fmt.Sprintf("%d objects", data.Stats.Objects) }</span>
+							<span class="text-neutral-300 dark:text-neutral-700">·</span>
+							<span>{ data.Stats.SizeHuman }</span>
+							if data.Stats.HasFree {
+								<span class="text-neutral-300 dark:text-neutral-700">·</span>
+								<span>{ data.Stats.FreeHuman } free</span>
+							}
+						} else {
+							<span class="text-neutral-300 dark:text-neutral-700">·</span>
+							<span class="text-amber-600 dark:text-amber-400" title={ data.Stats.StatsError }>stats unavailable</span>
+						}
+						for _, b := range data.Stats.Backups {
+							@BackupChip(b)
+						}
+					}
+				</div>
+			</div>
+
+			<div class="flex items-center gap-2 shrink-0">
+				<button
+					@click="showUpload = true"
+					class="bg-violet-600 hover:bg-violet-500 text-white px-3.5 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-1.5"
+				>
+					@iconUpload(15)
+					Upload
+				</button>
+			</div>
+		</div>
+
+		if data.Error != "" {
+			@InlineError(data.Error)
+		}
+
+		<!-- Selection bar: only meaningful with something selected, so it stays
+		     out of the way until then. -->
+		<div
+			class="flex items-center justify-between gap-3 rounded-xl border border-violet-200 dark:border-violet-500/25 bg-violet-50 dark:bg-violet-500/10 px-4 py-2.5"
+			x-show="selected.length"
+			x-cloak
+		>
+			<span class="text-sm font-medium text-violet-800 dark:text-violet-200">
+				<span x-text="selected.length"></span> selected
+			</span>
+			<div class="flex items-center gap-2">
+				<button @click="clearSelection()" class="px-2.5 py-1.5 rounded-lg text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-500/15 transition-colors">
+					Clear
+				</button>
+				<button
+					@click={ fmt.Sprintf("deleteSelected('%s')", data.Bucket) }
+					class="px-2.5 py-1.5 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-500 text-white transition-colors flex items-center gap-1.5"
+				>
+					@iconTrash(13)
+					Delete
+				</button>
+			</div>
+		</div>
+
+		if len(data.Folders) > 0 {
+			<div>
+				<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Folders</h3>
+				<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+					for _, f := range data.Folders {
+						@FolderCard(data, f)
+					}
+				</div>
+			</div>
+		}
+
+		<div>
+			if len(data.Folders) > 0 {
+				<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Objects</h3>
+			}
+			<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-3">
+				if len(data.Objects) > 0 {
+					for _, obj := range data.Objects {
+						@ObjectCard(data.Bucket, obj)
+					}
+				} else if data.Error == "" && len(data.Folders) == 0 {
+					@EmptyState(true)
+				}
+			</div>
+		</div>
+
+		<div class="flex items-center justify-between gap-4 pt-2">
+			<p class="text-xs text-neutral-400 dark:text-neutral-600">
+				{ fmt.Sprintf("Showing %d objects", len(data.Objects)) }
+				if data.NextCursor != "" {
+					<span> · more available</span>
+				}
+			</p>
+			@Pagination(data)
+		</div>
+	</div>
+}
+
+templ Breadcrumbs(data ExplorerData) {
+	<nav class="flex items-center gap-1 text-lg font-semibold tracking-tight flex-wrap" aria-label="Breadcrumb">
+		<button
+			hx-get={ explorerURL(data.Bucket, "", "", "") }
+			hx-target="#explorer"
+			hx-swap="outerHTML"
+			hx-push-url="true"
+			class={ "hover:text-violet-600 dark:hover:text-violet-400 transition-colors",
+				templ.KV("text-neutral-400 dark:text-neutral-500", len(data.Crumbs) > 0) }
+		>
+			All objects
+		</button>
+		for _, c := range data.Crumbs {
+			<span class="text-neutral-300 dark:text-neutral-700 font-normal">/</span>
+			if c.IsLast {
+				<span>{ c.Name }</span>
+			} else {
+				<button
+					hx-get={ explorerURL(data.Bucket, c.Prefix, "", "") }
+					hx-target="#explorer"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+					class="text-neutral-400 dark:text-neutral-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+				>
+					{ c.Name }
+				</button>
+			}
+		}
+	</nav>
+}
+
+templ FolderCard(data ExplorerData, f FolderItem) {
+	<button
+		hx-get={ explorerURL(data.Bucket, f.Prefix, "", "") }
+		hx-target="#explorer"
+		hx-swap="outerHTML"
+		hx-push-url="true"
+		class="flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 hover:border-violet-300 dark:hover:border-violet-500/40 hover:bg-violet-50/50 dark:hover:bg-violet-500/5 transition-colors text-left min-w-0"
+	>
+		<span class="text-violet-500 shrink-0">@iconFolder()</span>
+		<span class="text-sm font-medium truncate flex-1">{ f.Name }</span>
+		if f.Objects != nil {
+			<span class="text-[10px] font-mono text-neutral-400 dark:text-neutral-600 shrink-0">{ fmt.Sprintf("%d", *f.Objects) }</span>
+		}
+	</button>
+}
+
+// ObjectCard is one object.
+//
+// The thumbnail URL arrives already signed from the server. Without a signature
+// every one of these is a 403 wherever HMAC_REQUIRED is on, which is how the
+// old panel looked in the only deployment that mattered.
+templ ObjectCard(bucket string, obj ObjectItem) {
+	<div
+		id={ "obj-" + obj.DOMID }
+		class="group relative rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 hover:border-violet-300 dark:hover:border-violet-500/40 transition-colors flex flex-col"
+		:class={ fmt.Sprintf("{ 'ring-2 ring-violet-500 border-violet-500': isSelected('%s') }", obj.Key) }
+	>
+		<div class="aspect-4/3 w-full relative overflow-hidden bg-neutral-100 dark:bg-neutral-950">
+			<a href={ templ.SafeURL(objectURL(bucket, obj.Key)) } class="block w-full h-full">
+				<img
+					src={ obj.ThumbURL }
+					alt={ obj.Name }
+					class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500"
+					loading="lazy"
+				/>
+			</a>
+
+			<div class="absolute top-2 left-2 z-10">
+				<span class="px-1.5 py-0.5 rounded bg-black/55 backdrop-blur-md text-white text-[9px] font-bold uppercase tracking-widest">
+					{ obj.Format }
+				</span>
+			</div>
+
+			<label class="absolute top-2 right-2 z-20 cursor-pointer">
+				<input
+					type="checkbox"
+					class="w-4 h-4 rounded accent-violet-600 cursor-pointer"
+					:checked={ fmt.Sprintf("isSelected('%s')", obj.Key) }
+					@change={ fmt.Sprintf("toggleSelection('%s')", obj.Key) }
+					aria-label={ "Select " + obj.Name }
+				/>
+			</label>
+
+			<div class="absolute bottom-2 right-2 z-20 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+				<a
+					href={ templ.SafeURL(playgroundURL(bucket, obj.Key)) }
+					class="w-7 h-7 rounded-lg bg-black/55 backdrop-blur-md flex items-center justify-center text-white/80 hover:text-white hover:bg-black/75 transition-colors"
+					title="Open in playground"
+				>
+					@iconSliders()
+				</a>
+				<button
+					class="w-7 h-7 rounded-lg bg-black/55 backdrop-blur-md flex items-center justify-center text-white/80 hover:text-white hover:bg-red-500/85 transition-colors"
+					@click={ fmt.Sprintf("deleteOne('%s', '%s')", bucket, obj.Key) }
+					title="Delete"
+					aria-label={ "Delete " + obj.Name }
+				>
+					@iconTrash(13)
+				</button>
+			</div>
+		</div>
+
+		<a href={ templ.SafeURL(objectURL(bucket, obj.Key)) } class="p-3 flex-1 flex flex-col border-t border-neutral-100 dark:border-neutral-800/60">
+			<h3 class="font-medium truncate text-sm mb-1.5" title={ obj.Name }>{ obj.Name }</h3>
+			<div class="mt-auto flex items-center justify-between text-[11px] text-neutral-400 dark:text-neutral-600">
+				<span>{ obj.SizeHuman }</span>
+				<span>{ obj.ModifiedHuman }</span>
+			</div>
+		</a>
+	</div>
+}

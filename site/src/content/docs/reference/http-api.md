@@ -5,25 +5,59 @@ description: Every route Falco mounts, what guards it, and what it answers.
 
 | Method | Path | Guard | Purpose |
 |---|---|---|---|
-| `GET` | `/` | — | Admin panel login |
-| `GET` | `/dashboard` | Session | Admin panel |
 | `GET` | `/health`, `HEAD /health` | — | Liveness, version, uptime |
+| `GET` | `/health/ready`, `HEAD` | — | Every backend, its breaker, cache, and what is switched off |
 | `GET` | `/robots.txt` | — | Disallows everything |
 | `GET` | `/docs` | — | OpenAPI viewer |
 | `GET` | `/docs/openapi.yaml` | — | The spec itself |
 | `GET` | `/metrics` | API key | Prometheus, when `ENABLE_METRICS` |
 | `GET` | `/debug/pprof/*` | API key | Profiles, when `ENABLE_PPROF` |
-| `GET` | `/api/v1/images/*` | Signature **or** key + scope | [Deliver and transform](/falco/guides/delivering/) |
+| `GET`, `HEAD` | `/api/v1/images/*` | Signature **or** key + scope | [Deliver and transform](/falco/guides/delivering/) |
 | `GET` | `/api/v1/proxy/*` | Allowlist | [Proxy an external image](/falco/guides/proxy/) |
 | `POST` | `/api/v1/upload` | Key + scope | [Upload](/falco/guides/uploading/) |
 | `POST` | `/api/v1/update` | Key + scope | Replace an object from a URL |
 | `GET` | `/api/v1/list` | Key + scope | List stored objects |
 | `DELETE` | `/api/v1/delete` | Key + scope | Delete an object or a directory |
 | `POST` | `/api/v1/sign` | Key + scope | [Mint a signed URL](/falco/guides/signed-urls/) |
+| `GET` | `/api/v1/meta/*` | Key + scope | An object's stored metadata, without transferring it |
+| `GET` | `/api/v1/stats` | Key + scope | Object counts and sizes per bucket |
+| `GET` | `/api/v1/cache` | Key + scope | Transform cache: hit ratio, size, TTL |
+| `DELETE` | `/api/v1/cache` | Admin key | Purge every variant, or one key's |
 
 Delivery and proxy sit **outside** the authenticated group on purpose: they
 authorise themselves, because a browser cannot attach an API key to an `<img>`
 URL. Everything else is inside it.
+
+## The admin panel
+
+| Method | Path | Guard | Purpose |
+|---|---|---|---|
+| `GET` | `/` | — | Sign in |
+| `POST` | `/ui/auth` | — | Exchange an API key for a session |
+| `POST` | `/ui/logout` | — | End the session server-side |
+| `POST` | `/ui/theme` | — | Remember light/dark |
+| `GET` | `/dashboard` | Session | Storage explorer |
+| `GET` | `/object` | Session | One object and its metadata |
+| `GET` | `/playground` | Session | Transformation workbench |
+| `GET` | `/signer` | Session | Build a signed URL |
+| `GET` | `/ops` | Session | Backends, cache, features, effective config |
+| `GET` | `/ui/explorer` | Session | The explorer body, for HTMX |
+| `POST` | `/ui/objects/upload` | Session + CSRF | Upload |
+| `POST` | `/ui/objects/delete` | Session + CSRF | Delete |
+| `POST` | `/ui/sign` | Session + CSRF | Sign a path |
+| `POST` | `/ui/cache/purge` | Session + CSRF | Purge the cache |
+| `GET` | `/static/*` | — | Panel assets, extension allowlist |
+
+Signing in exchanges the API key for an opaque, HttpOnly session cookie; the key
+itself stays on the server and never reaches the browser. Mutating routes also
+require the session's CSRF token in `X-CSRF-Token`.
+
+The panel grants nothing of its own: it resolves the session to a scope,
+publishes that scope into the request context, and hands mutations to the same
+API handlers listed above. Anything the API would refuse, the panel refuses too.
+
+**With no API key configured the panel refuses to serve** — `/` explains which
+variable is missing and the rest answers `403`. It does not fall open.
 
 ## List
 
