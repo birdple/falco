@@ -34,6 +34,12 @@ decode plus an encode for an image nobody can see. Above the configured ceiling
 is rejected too — the ceiling exists so a URL cannot ask for a 30000-pixel
 render.
 
+`gravity` covers two different mechanisms. The compass points (`north`,
+`southeast`, …) scale the image to cover the box and then take the crop from
+that position. `smart`/`attention` and `entropy` hand the choice to libvips,
+which picks the region by content. Both need a `w` or an `h` to have anything to
+crop to.
+
 `smart` and `entropy` are libvips' attention and entropy strategies: they pick
 the crop window by looking at the image rather than by a fixed anchor.
 
@@ -107,6 +113,10 @@ an error, it just leaves trimming off.
 Both of these opt *out* rather than in. The defaults are what you want almost
 always: photos come out the right way up, and location data does not leak with
 an avatar.
+
+`meta=1` keeps EXIF, XMP, IPTC and the ICC profile, so the response is larger
+than the stripped one. The two are cached separately: keeping metadata produces
+different bytes, so it is part of the cache key.
 
 ## Caching
 
