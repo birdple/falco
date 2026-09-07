@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/birdple/falco/internal/pkg/logger"
 	jayclient "github.com/ivangsm/jay/proto/client"
 )
 
@@ -177,18 +178,75 @@ func (s *JayStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// List paginates objects under prefix.
+// List returns every object under prefix, following jay's pagination.
+//
+// It used to ask for a single page of 1000 and throw IsTruncated away, so a
+// bucket with more than that listed short and said nothing. Callers that want
+// one page at a time use ListPage instead.
 func (s *JayStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
-	res, err := s.client.ListObjects(s.bucket, &jayclient.ListOptions{Prefix: prefix, MaxKeys: 1000})
-	if err != nil {
-		return nil, fmt.Errorf("jay: list %s: %w", prefix, err)
+	var out []ListResult
+	cursor := ""
+	for {
+		page, err := s.ListPage(ctx, ListOptions{Prefix: prefix, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Objects...)
+		if !page.IsTruncated || page.NextCursor == "" || page.NextCursor == cursor {
+			// The cursor-equality guard is not paranoia: a backend that
+			// answers IsTruncated without advancing would loop forever.
+			return out, nil
+		}
+		cursor = page.NextCursor
 	}
-	out := make([]ListResult, 0, len(res.Objects))
+}
+
+// ListPage returns one page of objects, honouring prefix, delimiter and cursor.
+func (s *JayStorage) ListPage(ctx context.Context, opts ListOptions) (*ListPage, error) {
+	res, err := s.client.ListObjects(s.bucket, &jayclient.ListOptions{
+		Prefix:     opts.Prefix,
+		Delimiter:  opts.Delimiter,
+		StartAfter: opts.Cursor,
+		MaxKeys:    NormalizeMaxKeys(opts.MaxKeys),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jay: list %s: %w", opts.Prefix, err)
+	}
+
+	out := &ListPage{
+		Objects:        make([]ListResult, 0, len(res.Objects)),
+		CommonPrefixes: res.CommonPrefixes,
+		NextCursor:     res.NextStartAfter,
+		IsTruncated:    res.IsTruncated,
+	}
 	for _, o := range res.Objects {
-		modified, _ := time.Parse(time.RFC3339, o.LastModified)
-		out = append(out, ListResult{Key: o.Key, Size: o.Size, Modified: modified})
+		out.Objects = append(out.Objects, ListResult{
+			Key:         o.Key,
+			Size:        o.Size,
+			Modified:    parseJayTime(o.LastModified, o.Key),
+			ContentType: o.ContentType,
+			ETag:        o.ETag,
+		})
 	}
 	return out, nil
+}
+
+// parseJayTime turns jay's timestamp into a time.Time.
+//
+// jay answers RFC3339 in Get/Head but "2006-01-02T15:04:05Z" in listings, and
+// both parse as RFC3339. The error used to be discarded, which turned an
+// unparseable date into a zero time that renders as year 1 — a wrong date is
+// worse than a missing one, so log it instead of swallowing it.
+func parseJayTime(v, key string) time.Time {
+	if v == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		logger.Warn().Str("value", v).Str("key", key).Msg("jay: unparseable LastModified in listing")
+		return time.Time{}
+	}
+	return t
 }
 
 // Health pings the bucket via HeadBucket.

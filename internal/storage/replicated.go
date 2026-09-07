@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 
@@ -184,6 +185,19 @@ func (rs *ReplicatedStorage) Exists(ctx context.Context, key string) (bool, erro
 // List returns results from the primary backend.
 func (rs *ReplicatedStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	return rs.primary.List(ctx, prefix)
+}
+
+// ListPage lists one page from the primary backend.
+//
+// Listing never consults the backups: a read-fallback target holds the same
+// objects the primary does, so paging across both would return duplicates and
+// a cursor that means two different positions.
+func (rs *ReplicatedStorage) ListPage(ctx context.Context, opts ListOptions) (*ListPage, error) {
+	pager, ok := rs.primary.(PagedLister)
+	if !ok {
+		return nil, fmt.Errorf("%w: primary %T cannot list by page", ErrUnsupportedOperation, rs.primary)
+	}
+	return pager.ListPage(ctx, opts)
 }
 
 // Health checks the primary and all backup backends.

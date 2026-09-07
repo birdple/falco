@@ -29,11 +29,73 @@ type ImageMetadata struct {
 	OwnerID string `json:"owner_id,omitempty"`
 }
 
-// ListResult holds information about a listed object
+// ListResult holds information about a listed object.
+//
+// ContentType and ETag are best-effort: a backend fills them only when its
+// listing carries them (jay's native protocol does; a filesystem walk does
+// not). Empty means "this backend did not say", never "empty value".
 type ListResult struct {
-	Key      string    `json:"key"`
-	Size     int64     `json:"size"`
-	Modified time.Time `json:"modified"`
+	Key         string    `json:"key"`
+	Size        int64     `json:"size"`
+	Modified    time.Time `json:"modified"`
+	ContentType string    `json:"content_type,omitempty"`
+	ETag        string    `json:"etag,omitempty"`
+}
+
+// Page sizes for ListPage. A backend clamps MaxKeys into this range.
+const (
+	DefaultListPageSize = 1000
+	MaxListPageSize     = 1000
+)
+
+// ListOptions controls one page of a paginated listing.
+type ListOptions struct {
+	// Prefix filters keys. It is matched verbatim: a caller that wants
+	// directory semantics passes the trailing slash itself. Backends must not
+	// add one — s3 used to and jay did not, so the same prefix listed
+	// differently depending on the backend.
+	Prefix string
+	// Delimiter rolls up every key that shares a prefix up to the next
+	// occurrence of it into CommonPrefixes, instead of returning them one by
+	// one. "/" gives the usual folder view, at any depth.
+	Delimiter string
+	// Cursor resumes a previous page. It is opaque: it is whatever the
+	// previous page's NextCursor held, and its shape is the backend's
+	// business.
+	Cursor string
+	// MaxKeys caps the objects in one page. Zero means DefaultListPageSize.
+	MaxKeys int
+}
+
+// ListPage is one page of a paginated listing.
+type ListPage struct {
+	Objects        []ListResult `json:"objects"`
+	CommonPrefixes []string     `json:"common_prefixes,omitempty"`
+	NextCursor     string       `json:"next_cursor,omitempty"`
+	IsTruncated    bool         `json:"is_truncated"`
+}
+
+// PagedLister lists one page at a time.
+//
+// It is separate from Lister because Lister's signature has nowhere to say
+// "there is more": jay answered with at most 1000 keys and dropped the
+// truncation flag, so a bucket with more than that listed short and silently.
+// Every backend falco ships implements this. The interface stays optional so
+// that a backend which genuinely cannot paginate is detected with a type
+// assertion and reported, rather than faking pagination.
+type PagedLister interface {
+	ListPage(ctx context.Context, opts ListOptions) (*ListPage, error)
+}
+
+// NormalizeMaxKeys clamps a requested page size into the supported range.
+func NormalizeMaxKeys(n int) int {
+	if n <= 0 {
+		return DefaultListPageSize
+	}
+	if n > MaxListPageSize {
+		return MaxListPageSize
+	}
+	return n
 }
 
 // Lister defines the interface for listing operations

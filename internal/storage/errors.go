@@ -22,6 +22,11 @@ var (
 	ErrInvalidKey             = errors.New("invalid storage key")
 	ErrCorruptedData          = errors.New("corrupted data")
 	ErrBackendNotFound        = errors.New("storage backend not found")
+
+	// ErrUnsupportedOperation means the backend cannot do this at all — not that
+	// it failed. Callers use it to degrade explicitly (say so in the UI) instead
+	// of pretending the operation happened.
+	ErrUnsupportedOperation = errors.New("operation not supported by this storage backend")
 )
 
 // IsNotFound returns true if the error indicates that an image was not found

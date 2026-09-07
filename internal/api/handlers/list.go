@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/birdple/falco/internal/api/types"
@@ -35,6 +37,21 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Paginated mode is opt-in: a request with neither limit nor cursor keeps
+	// the original behaviour of returning the whole prefix, so existing
+	// consumers see no change.
+	limit, limErr := parseListLimit(query.Get("limit"))
+	if limErr != nil {
+		h.sendError(w, http.StatusBadRequest, "INVALID_LIMIT", limErr.Error())
+		return
+	}
+	cursor := query.Get("cursor")
+
+	if limit > 0 || cursor != "" {
+		h.listPage(w, r, storageBackend, prefix, cursor, limit)
+		return
+	}
+
 	results, err := storageBackend.List(ctx, prefix)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to list files")
@@ -44,15 +61,99 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	files, directories := groupListing(results, prefix)
 
-	response := types.ListResponse{
+	writeJSON(w, http.StatusOK, types.ListResponse{
 		Success:     true,
 		Prefix:      prefix,
 		Count:       len(results),
 		Files:       files,
 		Directories: directories,
+		// The full listing walked every page, so there is nothing left over.
+		Truncated: false,
+	})
+}
+
+// parseListLimit validates ?limit=. Zero means "not requested".
+func parseListLimit(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, errors.New("limit must be a positive integer")
+	}
+	if n > storage.MaxListPageSize {
+		return 0, fmt.Errorf("limit must not exceed %d", storage.MaxListPageSize)
+	}
+	return n, nil
+}
+
+// listPage answers one page, using the backend's own pagination.
+//
+// Directories here come from the backend's delimiter roll-up rather than from
+// walking every key, so they carry no file count: counting would mean listing
+// the whole prefix, which is the exact thing pagination exists to avoid.
+func (h *Handler) listPage(w http.ResponseWriter, r *http.Request, backend storage.StorageBackend, prefix, cursor string, limit int) {
+	pager, ok := backend.(storage.PagedLister)
+	if !ok {
+		// Said out loud rather than quietly falling back to a full listing:
+		// the caller asked for a page and would otherwise be handed the whole
+		// bucket believing it was one.
+		h.sendError(w, http.StatusNotImplemented, "PAGINATION_UNSUPPORTED",
+			"This storage backend cannot list by page")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	// The prefix is matched verbatim by the backends, so directory semantics
+	// are asked for explicitly here.
+	listPrefix := prefix
+	if listPrefix != "" && !strings.HasSuffix(listPrefix, "/") {
+		listPrefix += "/"
+	}
+
+	page, err := pager.ListPage(r.Context(), storage.ListOptions{
+		Prefix:    listPrefix,
+		Delimiter: "/",
+		Cursor:    cursor,
+		MaxKeys:   limit,
+	})
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to list files")
+		h.sendError(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list files")
+		return
+	}
+
+	files := make([]types.ListItem, 0, len(page.Objects))
+	for _, obj := range page.Objects {
+		files = append(files, types.ListItem{
+			Key:         strings.TrimPrefix(obj.Key, listPrefix),
+			Size:        obj.Size,
+			Modified:    obj.Modified,
+			ContentType: obj.ContentType,
+			ETag:        obj.ETag,
+		})
+	}
+
+	directories := make([]types.DirectoryInfo, 0, len(page.CommonPrefixes))
+	for _, cp := range page.CommonPrefixes {
+		name := strings.TrimSuffix(strings.TrimPrefix(cp, listPrefix), "/")
+		if name == "" {
+			continue
+		}
+		directories = append(directories, types.DirectoryInfo{
+			Name: name,
+			Path: strings.TrimSuffix(cp, "/"),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, types.ListResponse{
+		Success:     true,
+		Prefix:      prefix,
+		Count:       len(files),
+		Files:       files,
+		Directories: directories,
+		Truncated:   page.IsTruncated,
+		NextCursor:  page.NextCursor,
+	})
 }
 
 // groupListing turns a flat key listing into the one level of files and
@@ -89,12 +190,14 @@ func groupListing(results []storage.ListResult, prefix string) ([]types.ListItem
 		}
 
 		if _, exists := directoryMap[dirName]; !exists {
+			count := 0
 			directoryMap[dirName] = &types.DirectoryInfo{
-				Name: dirName,
-				Path: strings.TrimSuffix(prefixPath+dirName, "/"),
+				Name:      dirName,
+				Path:      strings.TrimSuffix(prefixPath+dirName, "/"),
+				FileCount: &count,
 			}
 		}
-		directoryMap[dirName].FileCount++
+		*directoryMap[dirName].FileCount++
 	}
 
 	directories := make([]types.DirectoryInfo, 0, len(directoryMap))
