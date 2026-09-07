@@ -407,10 +407,46 @@ func (h *Handler) getStorageBackendWithScope(scope *apimw.APIScope, storageName,
 		backend = h.storage
 	}
 
-	// Apply bucket override if provided
+	// Apply the bucket override, if one was asked for.
+	//
+	// A name that exists in the registry selects THAT backend. Without this
+	// step, `?b=` only ever meant "switch the remote bucket of the current
+	// backend", which just one backend type implements (S3, and R2 through it).
+	// On filesystem or jay the parameter was silently ignored: an upload asking
+	// for bucket "beta" was written into the default bucket and answered 201,
+	// with nothing anywhere saying it had landed elsewhere.
+	if bucket != "" && storageName == "" && h.storageRegistry != nil {
+		if b, err := h.storageRegistry.Get(bucket); err == nil {
+			return b, nil
+		}
+	}
+
 	if bucket != "" {
 		if bucketAware, ok := backend.(storage.BucketAware); ok {
-			backend = bucketAware.WithBucket(bucket)
+			switched := bucketAware.WithBucket(bucket)
+
+			// WithBucket cannot report failure — it returns a backend, not an
+			// error — and the circuit-breaker wrapper implements it for EVERY
+			// backend, handing back itself unchanged when the one underneath
+			// cannot switch. So the type assertion above always succeeds, and
+			// a request naming a bucket the backend cannot reach silently
+			// lands in the default one.
+			//
+			// This is logged rather than refused, and that is a compatibility
+			// decision, not the right answer: birdple-api sends
+			// `?b=${IMAGE_DEFAULT_BUCKET}` ("birdple-dev") while the only
+			// bucket in the registry is named "jay", and jay cannot switch
+			// buckets — so refusing here would break every image upload in
+			// production. The bucket names that DO resolve are the ones in the
+			// registry, handled above.
+			if current, ok := switched.(storage.BucketAware); ok && current.GetCurrentBucket() == bucket {
+				return switched, nil
+			}
+			logger.Warn().
+				Str("requested_bucket", bucket).
+				Str("backend", h.defaultStorageType()).
+				Msg("Bucket parameter could not be honoured; falling back to the default bucket")
+			backend = switched
 		}
 	}
 
