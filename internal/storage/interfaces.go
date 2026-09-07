@@ -48,6 +48,21 @@ const (
 	MaxListPageSize     = 1000
 )
 
+// MaxFullListingObjects bounds Lister.List, which walks every page of a prefix
+// and accumulates the result in memory.
+//
+// Without a bound, one request could pull an entire bucket into RAM, and the
+// only thing standing between that and the process dying would be how many
+// objects somebody happened to upload. The value is 100 pages of
+// DefaultListPageSize: a ListResult costs roughly 150 bytes once its key and
+// content type are counted, so a listing sitting at the cap is on the order of
+// 15 MB — far more than any prefix falco serves today, and far less than what
+// would take the container down.
+//
+// A listing that reaches it fails with ErrListingTooLarge instead of coming
+// back short: the caller is told to page through it with ListPage.
+const MaxFullListingObjects = 100 * DefaultListPageSize
+
 // ListOptions controls one page of a paginated listing.
 type ListOptions struct {
 	// Prefix filters keys. It is matched verbatim: a caller that wants
@@ -98,7 +113,16 @@ func NormalizeMaxKeys(n int) int {
 	return n
 }
 
-// Lister defines the interface for listing operations
+// Lister lists every object under a prefix.
+//
+// The contract is all-or-nothing: what comes back is the whole prefix, or an
+// error. A backend that cannot finish — because the prefix is past
+// MaxFullListingObjects, or because its own pagination misbehaved — says so
+// with an error rather than returning what it managed to collect.
+//
+// The cap is enforced where a listing is assembled page by page, which today
+// means jay; S3 leans on its own paginator and the filesystem walk is bounded
+// by what fits on the disk.
 type Lister interface {
 	List(ctx context.Context, prefix string) ([]ListResult, error)
 }

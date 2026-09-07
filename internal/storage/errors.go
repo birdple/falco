@@ -27,6 +27,16 @@ var (
 	// it failed. Callers use it to degrade explicitly (say so in the UI) instead
 	// of pretending the operation happened.
 	ErrUnsupportedOperation = errors.New("operation not supported by this storage backend")
+
+	// ErrListingTooLarge means a whole-prefix listing hit MaxFullListingObjects
+	// before the prefix ran out. Nothing is broken and nothing is missing: the
+	// prefix simply has to be read one page at a time.
+	//
+	// It is an error and not a short slice on purpose. A caller holding a
+	// listing cannot tell a complete one from a clipped one, which is exactly
+	// how "delete this prefix" leaves objects behind and still answers
+	// success.
+	ErrListingTooLarge = errors.New("listing exceeds the safety cap")
 )
 
 // IsNotFound returns true if the error indicates that an image was not found
@@ -37,6 +47,13 @@ func IsNotFound(err error) bool {
 // IsAlreadyExists returns true if the error indicates that an image already exists
 func IsAlreadyExists(err error) bool {
 	return errors.Is(err, ErrImageAlreadyExists)
+}
+
+// IsListingTooLarge returns true if the error indicates a whole-prefix listing
+// hit the safety cap. Callers use it to answer "ask for it a page at a time"
+// instead of reporting a backend failure, which is not what happened.
+func IsListingTooLarge(err error) bool {
+	return errors.Is(err, ErrListingTooLarge)
 }
 
 // IsUnavailable returns true if the error indicates that storage is unavailable

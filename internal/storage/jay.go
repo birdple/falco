@@ -183,6 +183,12 @@ func (s *JayStorage) Delete(ctx context.Context, key string) error {
 // It used to ask for a single page of 1000 and throw IsTruncated away, so a
 // bucket with more than that listed short and said nothing. Callers that want
 // one page at a time use ListPage instead.
+//
+// Two things stop the walk before the prefix runs out, and both return an
+// error rather than the keys gathered so far: MaxFullListingObjects, and a
+// cursor that stops advancing. Returning a short slice would put the caller
+// back exactly where the original bug left it — holding an incomplete listing
+// that looks complete.
 func (s *JayStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var out []ListResult
 	cursor := ""
@@ -192,10 +198,20 @@ func (s *JayStorage) List(ctx context.Context, prefix string) ([]ListResult, err
 			return nil, err
 		}
 		out = append(out, page.Objects...)
-		if !page.IsTruncated || page.NextCursor == "" || page.NextCursor == cursor {
-			// The cursor-equality guard is not paranoia: a backend that
-			// answers IsTruncated without advancing would loop forever.
+		if !page.IsTruncated {
 			return out, nil
+		}
+		if len(out) >= MaxFullListingObjects {
+			return nil, fmt.Errorf("%w: jay: %q holds more than %d objects; list it a page at a time",
+				ErrListingTooLarge, prefix, MaxFullListingObjects)
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			// jay says there is more and hands back no way to reach it. Looping
+			// on the same cursor would hang the request forever, and stopping
+			// quietly would hide that the listing is incomplete — which jay just
+			// said it is.
+			return nil, fmt.Errorf("jay: listing %q stalled at cursor %q after %d objects: the backend reports more but does not advance",
+				prefix, cursor, len(out))
 		}
 		cursor = page.NextCursor
 	}
@@ -286,9 +302,9 @@ func (s *JayStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 		ObjectCount    int64  `json:"object_count"`
 		TotalSizeBytes int64  `json:"total_size_bytes"`
 	}
-	// Defaults de v2 a propósito, NO jsonx.Strict: jay se versiona aparte de
-	// falco, and a new field in its stats response is an additive change. With
-	// RejectUnknownMembers that change would break GetStats and, with it,
+	// Plain v2 defaults on purpose, NOT jsonx.Strict: jay is versioned apart
+	// from falco, and a new field in its stats response is an additive change.
+	// With RejectUnknownMembers that change would break GetStats and, with it,
 	// /health.
 	if err := jsonv2.UnmarshalRead(resp.Body, &body); err != nil {
 		return nil, fmt.Errorf("jay: stats decode: %w", err)

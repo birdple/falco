@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -213,8 +214,11 @@ func TestJayStorage_List_FollowsPaginationBeyondOnePage(t *testing.T) {
 	}
 }
 
-func TestJayStorage_List_StopsOnStalledCursor(t *testing.T) {
-	// A backend that claims truncation without advancing must not loop forever.
+func TestJayStorage_List_FailsOnStalledCursor(t *testing.T) {
+	// A backend that claims truncation without advancing must not loop forever —
+	// and must not hand back the keys it did collect either: it just said the
+	// listing is incomplete, so a caller deleting that prefix would leave the
+	// rest behind and never know.
 	calls := 0
 	fc := &fakeJayClient{
 		listFn: func(_ string, _ *jayclient.ListOptions) (*jayclient.ListResult, error) {
@@ -231,10 +235,54 @@ func TestJayStorage_List_StopsOnStalledCursor(t *testing.T) {
 	}
 
 	out, err := newJayStorageWithClient(fc, "bk").List(context.Background(), "")
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	if err == nil {
+		t.Fatalf("a stalled cursor must be an error, got %d keys and no error", len(out))
 	}
-	if len(out) != 2 {
-		t.Fatalf("expected the stalled cursor to stop after the repeat, got %d", len(out))
+	if out != nil {
+		t.Fatalf("a failed listing must not return partial results, got %d keys", len(out))
+	}
+	if !strings.Contains(err.Error(), "stalled") {
+		t.Fatalf("error should name what happened, got %v", err)
+	}
+}
+
+func TestJayStorage_List_FailsAtSafetyCap(t *testing.T) {
+	// The bound that keeps one request from pulling a whole bucket into RAM.
+	// What matters is that reaching it is an ERROR: a listing clipped at the cap
+	// is indistinguishable from a complete one, which is the original bug.
+	pages := 0
+	fc := &fakeJayClient{
+		listFn: func(_ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+			// Never runs out, and always advances the cursor, so the only thing
+			// that can stop the walk is the cap.
+			res := &jayclient.ListResult{IsTruncated: true}
+			for i := range opts.MaxKeys {
+				res.Objects = append(res.Objects, jayclient.ListEntry{
+					Key:          fmt.Sprintf("k%09d", pages*opts.MaxKeys+i),
+					Size:         1,
+					LastModified: "2026-01-02T03:04:05Z",
+				})
+			}
+			pages++
+			res.NextStartAfter = res.Objects[len(res.Objects)-1].Key
+			return res, nil
+		},
+	}
+
+	out, err := newJayStorageWithClient(fc, "bk").List(context.Background(), "avatars/")
+	if err == nil {
+		t.Fatalf("List must fail at the cap, got %d keys and no error", len(out))
+	}
+	if !errors.Is(err, ErrListingTooLarge) {
+		t.Fatalf("error must be ErrListingTooLarge so callers can answer 'paginate', got %v", err)
+	}
+	if out != nil {
+		t.Fatalf("a capped listing must not come back as results, got %d keys", len(out))
+	}
+	if want := MaxFullListingObjects / DefaultListPageSize; pages != want {
+		t.Fatalf("stopped after %d pages, want %d: the cap is not where it says it is", pages, want)
+	}
+	if !IsListingTooLarge(err) {
+		t.Fatal("IsListingTooLarge must recognise the error the handlers branch on")
 	}
 }
