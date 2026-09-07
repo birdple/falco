@@ -200,7 +200,9 @@ func (h *Handler) watermarkFromURL(ctx context.Context, raw string) ([]byte, *fe
 		return nil, &fetchError{http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED", "host is not allowed"}
 	}
 
-	fetchCtx, cancel := context.WithTimeout(ctx, watermarkFetchTimeout)
+	// Same reason as the proxy: without carrying the allowlist into the
+	// fetch, the host check above would only cover the first hop.
+	fetchCtx, cancel := context.WithTimeout(httputil.WithHostAllowlist(ctx, allowed), watermarkFetchTimeout)
 	defer cancel()
 
 	data, contentType, dlErr := httputil.DownloadURL(fetchCtx, h.httpClient, raw, maxWatermarkBytes)

@@ -267,7 +267,13 @@ func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (up
 		}
 	}
 
-	data, _, err := httputil.DownloadURL(ctx, h.httpClient, req.URL, h.config.GetMaxFileSizeBytes())
+	// This endpoint is authenticated and exists to fetch a URL the operator
+	// chose, so there is no host allowlist to preserve across a redirect —
+	// but the policy has to be stated: a fetch that declares none follows no
+	// redirect at all. The dial-time guard still blocks private addresses.
+	data, _, err := httputil.DownloadURL(
+		httputil.WithAnyPublicHost(ctx), h.httpClient, req.URL, h.config.GetMaxFileSizeBytes(),
+	)
 	if err != nil {
 		return uploadPayload{}, &proxyError{
 			http.StatusBadRequest, "DOWNLOAD_FAILED",

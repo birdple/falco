@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/birdple/falco/internal/api/utils"
+	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
@@ -411,7 +412,15 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 
 	m := metrics.Default()
 
-	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The allowlist travels with the context so that it survives a redirect:
+	// the check in resolveProxyTarget only ever sees the first hop, and an
+	// allowed host answering with a Location elsewhere would otherwise turn
+	// the proxy into an open image relay (and poison the LRU under a cache
+	// key derived from the allowed URL).
+	fetchCtx, fetchCancel := context.WithTimeout(
+		httputil.WithHostAllowlist(context.Background(), cachedProxyAllowedHosts()),
+		10*time.Second,
+	)
 	defer fetchCancel()
 	fetchReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
