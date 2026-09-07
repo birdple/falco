@@ -62,6 +62,11 @@ El inventario de variables está en `getEnvMappings()` de
 `STORAGE_BUCKET_<NAME>_<SUFIJO>` (`_TYPE`, `_ADDR`, `_ADMIN_ADDR`, `_TOKEN_ID`,
 `_TOKEN_SECRET`, `_BUCKET`, `_POOL_SIZE`, …). Léelo de ahí; no lo copies aquí.
 
+`STORAGE_BUCKET_ALIASES` es la excepción a ese patrón — una sola variable con
+pares `alias=bucket` — y tiene que serlo: el patrón deriva el nombre del bucket
+del sufijo de la variable, donde un guion no cabe, y `birdple-dev` lo lleva. Ver
+«Trampas conocidas».
+
 Las que **no** pasan por ese mapa y se leen con `os.Getenv`:
 
 | Variable | Dónde se lee | Si falta |
@@ -225,13 +230,25 @@ byte. Si falla, se ajusta el tag, nunca el test.
   opcionales sin configurar; en el stack lo tapa el docker-compose, que pone
   ambas en `"true"`. **El panel ya no cae en esto**: sin ninguna key configurada
   se niega a servir en vez de abrirse con scope admin.
-- **`?b=` sólo cambia de bucket si el backend es `BucketAware`, y sólo S3 lo
-  es.** Con jay o filesystem, un `?b=` que no coincida con un bucket del
-  registry se ignora y la operación va al bucket por defecto — respondiendo 201.
-  Hoy queda un `logger.Warn` («Bucket parameter could not be honoured») y NO un
-  error, porque birdple-api manda `?b=birdple-dev` mientras el único bucket del
-  registry se llama `jay`: rechazarlo tumbaría toda la subida en producción. Un
-  nombre que SÍ está en el registry se resuelve correctamente.
+- **Un `?b=` que no se puede honrar ahora es un `400 UNKNOWN_BUCKET`, y el
+  puente son los alias.** El orden de resolución es: nombre del registry (o
+  alias declarado) → cambio real de bucket remoto (sólo S3/R2, que son los
+  únicos `BucketAware`) → rechazo. Ya NO hay caída al bucket por defecto: eso
+  respondía 201 con el objeto en otro lado (PND-0196).
+
+  El nombre del bucket sale del sufijo de `STORAGE_BUCKET_<NAME>_*`, así que no
+  puede llevar guion y nunca va a coincidir con lo que mandan los clientes.
+  Por eso existe `STORAGE_BUCKET_ALIASES` (`alias=bucket`, separados por coma):
+  el `docker-compose.yml` de la raíz declara `birdple-dev=jay,birdple=jay`
+  porque birdple-api manda `?b=birdple-dev` (`IMAGE_DEFAULT_BUCKET`) y la web
+  manda `?b=birdple` (`VITE_IMAGE_API_DEFAULT_BUCKET` y `ICON_UPLOAD_BUCKET`).
+  **Un falco de prod sin esa variable rechaza todas las imágenes**: un alias
+  que apunta a nada, que pisa un bucket, o sin `=` no arranca el servicio.
+
+  El envoltorio del circuit breaker implementa `WithBucket` para TODOS los
+  backends devolviéndose a sí mismo, así que `backend.(storage.BucketAware)`
+  siempre da `ok == true`: el cambio se comprueba contra `GetCurrentBucket()`,
+  nunca contra el type assertion.
 - **`docs/` no es fuente de verdad; `site/` sí.** La documentación viva es el
   sitio Astro Starlight de `site/` (publicado en https://birdple.github.io/falco/
   por `.github/workflows/pages.yml`), escrito verificando contra el código. El

@@ -55,7 +55,10 @@ If you uploaded with `?d=avatars`, the object is at `avatars/a1b2c3d4`:
 curl "localhost:8080/api/v1/images/avatars/a1b2c3d4?w=96&h=96"
 ```
 
-Add `?b=` (or `?storage=`) when the image is not in the default bucket.
+Add `?b=` (or `?storage=`) when the image is not in the default bucket. It
+has to name a bucket that exists, or an alias declared for one — anything else
+is `400 UNKNOWN_BUCKET`, never a quiet read from the default bucket. See
+[Buckets and groups](/falco/guides/buckets/).
 
 ## The extension is the format
 
@@ -116,6 +119,7 @@ useful response is still the image.
 | 400 | `INVALID_WIDTH`, `INVALID_HEIGHT`, `INVALID_QUALITY`, `INVALID_FORMAT`, `INVALID_FIT`, `INVALID_CROP`, `INVALID_ROTATE`, `INVALID_FLIP` | A parameter that changes geometry or encoding was malformed. Falco fails rather than serve a different image than the one asked for |
 | 403/404/422/502 | `WATERMARK_*` | A watermark was asked for and could not be loaded |
 | 400 | `INVALID_ID` | The id, directory or extension does not parse |
+| 400 | `UNKNOWN_BUCKET` | `?b=` names neither a bucket nor a declared alias |
 | 401 | `UNAUTHORIZED` | `HMAC_REQUIRED=false` and `API_KEY_REQUIRED=true`, and no key was sent |
 | 403 | `INVALID_SIGNATURE` | `HMAC_REQUIRED=true` and the `sig` is missing, wrong, or expired |
 | 404 | — | No such object in that bucket |

@@ -149,6 +149,7 @@ change with them.
 |---|---|---|
 | `UNAUTHORIZED` | 401 | Missing or wrong API key |
 | `ACCESS_DENIED` | 403 | Valid key, wrong bucket for its scope |
+| `UNKNOWN_BUCKET` | 400 | `?b=`/`?storage=` names something that is neither a [bucket nor a declared alias](/falco/guides/buckets/), and the backend cannot switch to it |
 | `INVALID_SIGNATURE` | 403 | Missing, wrong or expired `sig` |
 | `HOST_NOT_ALLOWED` | 403 | Proxy target not in the allowlist, or private |
 | `INVALID_WIDTH`, `INVALID_HEIGHT`, `INVALID_QUALITY`, `INVALID_FORMAT`, `INVALID_FIT` | 400 | Malformed geometry or encoding parameter |

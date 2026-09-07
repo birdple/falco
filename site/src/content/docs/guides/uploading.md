@@ -49,6 +49,12 @@ usually more convenient than the query string.
 Without `b`, the write goes to `storage.default`. A key scoped to one bucket
 cannot write to another — the attempt comes back `403 ACCESS_DENIED`.
 
+With a `b` that names neither a bucket nor a [declared
+alias](/falco/guides/buckets/), the upload is refused with
+`400 UNKNOWN_BUCKET` and **nothing is written**. Falco does not fall back to
+the default bucket: it used to, answering `201` with the object somewhere the
+caller never named.
+
 ## What happens to the bytes
 
 **The original is not kept.** An image is decoded, re-encoded to
