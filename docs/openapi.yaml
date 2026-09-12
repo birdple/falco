@@ -1,18 +1,21 @@
 openapi: 3.1.0
 info:
-  title: Imagine API
-  description: A high-performance image processing and storage API with advanced transformations, multi-backend storage support, and comprehensive documentation.
+  title: falco
+  description: |
+    Image processing and delivery. falco re-encodes uploads with libvips and
+    serves them transformed on the fly; the bytes themselves live in a storage
+    backend (jay, S3, R2 or a local filesystem).
+
+    Two routes authorise themselves rather than sitting behind the API key,
+    because a browser cannot attach a header to an `<img>` URL: `/images/*` and
+    `/proxy/*` are gated by HMAC signature, or by API key when
+    `HMAC_REQUIRED=false`.
   version: "1.0.0"
-  contact:
-    name: API Support
-    email: support@falco-api.com
   license:
     name: MIT
 servers:
-  - url: http://localhost:8080/api/v1
-    description: Local development server
-  - url: https://api.falco.dev/v1
-    description: Production server
+  - url: http://localhost:4009/api/v1
+    description: Local development (the port the stack runs on)
 paths:
   /upload:
     post:
@@ -21,7 +24,7 @@ paths:
       parameters:
         - name: b
           in: query
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
           required: false
           schema:
             type: string
@@ -165,7 +168,7 @@ paths:
       parameters:
         - name: b
           in: query
-          description: "Bucket name override (optional, will use request body bucket if not specified)"
+          description: "Bucket name override (optional, will use request body bucket if not specified). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET."
           required: false
           schema:
             type: string
@@ -316,11 +319,34 @@ paths:
   /list:
     get:
       summary: List files and directories
-      description: Lists files and directories within a specified bucket and prefix. Supports hierarchical browsing with file metadata including size and modification dates.
+      description: |
+        Lists files and directories under a prefix.
+
+        Pagination is opt-in: without `limit` or `cursor` the whole prefix is
+        returned, as before. With either of them the backend's own pagination is
+        used and the response carries `truncated` and `next_cursor`.
+
+        `truncated` is always present. It used to be absent while the jay
+        backend answered at most 1000 keys and dropped the truncation flag, so a
+        large prefix came back short and silent.
+
+        In a paginated response `file_count` is null on each directory: those
+        come from the backend's delimiter roll-up, which carries no count, and a
+        zero would read as "empty folder".
       parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+          description: Objects per page. Turns on paginated mode.
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: Opaque cursor from a previous response's next_cursor.
         - name: b
           in: query
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
           required: false
           schema:
             type: string
@@ -391,13 +417,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
-                invalid-bucket:
-                  summary: Invalid bucket name
+                unknown-bucket:
+                  summary: Bucket is neither declared nor aliased
                   value:
                     success: false
                     error:
-                      code: "INVALID_BUCKET"
-                      message: "Bucket not found or access denied"
+                      code: "UNKNOWN_BUCKET"
+                      message: 'requested bucket cannot be served: "archive" is not a configured bucket or alias, and the backend cannot switch to it'
         '500':
           description: Internal server error (e.g., storage backend error).
           content:
@@ -419,7 +445,7 @@ paths:
       parameters:
         - name: b
           in: query
-          description: "Bucket name (alias: bucket)"
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
           required: false
           schema:
             type: string
@@ -534,6 +560,211 @@ paths:
                     error:
                       code: "STORAGE_ERROR"
                       message: "Failed to delete files"
+  /sign:
+    post:
+      summary: Sign a delivery URL
+      description: |
+        Produces a signed delivery URL for a path.
+
+        Use the returned `signed_url` verbatim. Signing merges the expiry into
+        the query and re-encodes the parameters in sorted order, so rebuilding
+        the URL from its parts breaks the signature.
+
+        Answers `501 SIGNING_DISABLED` when `HMAC_KEY` is not configured.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: The delivery path with its query, exactly as the client will request it.
+                  example: "/api/v1/images/abc123?w=400&f=webp"
+                expires_in:
+                  type: integer
+                  description: Seconds from now. Mutually exclusive with expires_at.
+                  example: 3600
+                expires_at:
+                  type: integer
+                  description: Unix timestamp. Wins if both are given.
+      responses:
+        "200":
+          description: Signed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signed_url:
+                    type: string
+                    example: "/api/v1/images/abc123?exp=1788690464&f=webp&w=400&sig=mp1dme-Py2gcXc"
+                  signature:
+                    type: string
+                  expires_at:
+                    type: integer
+        "400": { description: Invalid JSON, empty path, or an invalid path }
+        "403": { description: The key's scope does not cover the path's bucket }
+        "501": { description: HMAC_KEY is not configured }
+
+  /stats:
+    get:
+      summary: Per-bucket storage statistics
+      description: |
+        Object counts and sizes for every bucket the key can reach. Buckets are
+        queried concurrently and each one is capped, so an unreachable backend
+        cannot hold the response.
+
+        `free_space_bytes` is null unless the backend reports it — only a
+        filesystem backend does. A zero would be indistinguishable from a full
+        disk, which is a different fact.
+
+        A bucket that could not be asked carries `error` and its numbers are
+        meaningless; they must not be rendered as zeros.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string, example: "jay" }
+                        type: { type: string, example: "jay" }
+                        is_default: { type: boolean }
+                        total_images: { type: integer, example: 15432 }
+                        total_size_bytes: { type: integer, example: 2147483648 }
+                        free_space_bytes:
+                          type: [integer, "null"]
+                          description: Null when the backend does not report free space.
+                        error:
+                          type: string
+                          description: Present when the backend could not be reached.
+
+  /cache:
+    get:
+      summary: Transform cache statistics
+      description: |
+        The cache holds transformed variants and proxy fetches only. Delivery
+        with no transformations streams straight from storage and is never
+        cached, so it never appears in these counters.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Cache state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  enabled:
+                    type: boolean
+                    description: False when CACHE_SIZE_MB is 0, in which case every transform is recomputed.
+                  backend: { type: string, example: "sharded-lru" }
+                  hits: { type: integer }
+                  misses: { type: integer }
+                  hit_ratio: { type: number, format: float }
+                  item_count: { type: integer }
+                  size_bytes: { type: integer }
+                  max_size_bytes: { type: integer }
+                  ttl_hours: { type: integer }
+                  cleanup_interval: { type: string, example: "10m0s" }
+                  note: { type: string }
+    delete:
+      summary: Purge cached variants
+      description: |
+        Drops every cached variant, or every variant of one storage key when
+        `key` is given. Requires an admin key: cache keys are hashes of storage
+        keys, so a per-bucket scope cannot be checked against them.
+
+        The response carries how many entries were actually dropped — answering
+        "purged" without a count cannot be told apart from a no-op.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: key
+          in: query
+          required: false
+          schema: { type: string }
+          description: Purge only this storage key's variants.
+      responses:
+        "200":
+          description: Purged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  purged: { type: integer, example: 42 }
+                  scope: { type: string, enum: [all, key] }
+                  key: { type: string }
+        "403": { description: Not an admin key }
+
+  /meta/{key}:
+    get:
+      summary: Object metadata
+      description: |
+        Stored metadata for one object, without transferring it.
+
+        It lives here rather than under `/images/` because delivery owns that
+        subtree with a wildcard, and it sits behind the API key: dimensions and
+        owner are not part of what a signed delivery URL grants.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+          description: The storage key, read exactly like a delivery path.
+        - name: b
+          in: query
+          required: false
+          schema: { type: string }
+          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
+        - name: d
+          in: query
+          required: false
+          schema: { type: string }
+          description: "Directory prefix (alias: dir, directory)"
+      responses:
+        "200":
+          description: Metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  id: { type: string }
+                  storage_key: { type: string }
+                  bucket: { type: string }
+                  format: { type: string, example: "webp" }
+                  content_type: { type: string, example: "image/webp" }
+                  size_bytes: { type: integer }
+                  width: { type: integer }
+                  height: { type: integer }
+                  original_name: { type: string }
+                  owner_id: { type: string }
+                  etag: { type: string }
+                  created_at: { type: string, format: date-time }
+        "404": { description: No such object }
+
   /images/{id}:
     get:
       summary: Retrieve and transform an image
@@ -973,6 +1204,10 @@ components:
           example: "images/"
         count:
           type: integer
+          description: |
+            Number of entries in `files`. In a full listing that is every object
+            under the prefix, at any depth; in a paginated one it is the files on
+            this page only, and directories are counted separately.
           example: 25
         files:
           type: array
@@ -982,6 +1217,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DirectoryInfo'
+        truncated:
+          type: boolean
+          description: There is more beyond what `files` holds.
+          example: false
+        next_cursor:
+          type: string
+          description: Pass back as ?cursor= to continue. Absent on the last page.
     ListItem:
       type: object
       properties:
@@ -995,6 +1237,13 @@ components:
           type: string
           format: date-time
           example: "2024-01-15T10:30:00Z"
+        content_type:
+          type: string
+          description: Only when the backend's listing carries it. Absent means "not reported", not "empty".
+          example: "image/webp"
+        etag:
+          type: string
+          description: Only when the backend's listing carries it.
     DirectoryInfo:
       type: object
       properties:
@@ -1005,7 +1254,10 @@ components:
           type: string
           example: "images/thumbnails"
         file_count:
-          type: integer
+          type: [integer, "null"]
+          description: |
+            Null in a paginated response: the count is only knowable when the
+            whole prefix was walked.
           example: 12
     DeleteResponse:
       type: object

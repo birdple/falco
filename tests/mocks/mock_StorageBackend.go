@@ -64,7 +64,7 @@ type MockStorageBackend_Delete_Call struct {
 // Delete is a helper method to define mock.On call
 //   - ctx context.Context
 //   - key string
-func (_e *MockStorageBackend_Expecter) Delete(ctx interface{}, key interface{}) *MockStorageBackend_Delete_Call {
+func (_e *MockStorageBackend_Expecter) Delete(ctx any, key any) *MockStorageBackend_Delete_Call {
 	return &MockStorageBackend_Delete_Call{Call: _e.mock.On("Delete", ctx, key)}
 }
 
@@ -130,7 +130,7 @@ type MockStorageBackend_Exists_Call struct {
 // Exists is a helper method to define mock.On call
 //   - ctx context.Context
 //   - key string
-func (_e *MockStorageBackend_Expecter) Exists(ctx interface{}, key interface{}) *MockStorageBackend_Exists_Call {
+func (_e *MockStorageBackend_Expecter) Exists(ctx any, key any) *MockStorageBackend_Exists_Call {
 	return &MockStorageBackend_Exists_Call{Call: _e.mock.On("Exists", ctx, key)}
 }
 
@@ -197,7 +197,7 @@ type MockStorageBackend_GetStats_Call struct {
 
 // GetStats is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockStorageBackend_Expecter) GetStats(ctx interface{}) *MockStorageBackend_GetStats_Call {
+func (_e *MockStorageBackend_Expecter) GetStats(ctx any) *MockStorageBackend_GetStats_Call {
 	return &MockStorageBackend_GetStats_Call{Call: _e.mock.On("GetStats", ctx)}
 }
 
@@ -248,7 +248,7 @@ type MockStorageBackend_Health_Call struct {
 
 // Health is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockStorageBackend_Expecter) Health(ctx interface{}) *MockStorageBackend_Health_Call {
+func (_e *MockStorageBackend_Expecter) Health(ctx any) *MockStorageBackend_Health_Call {
 	return &MockStorageBackend_Health_Call{Call: _e.mock.On("Health", ctx)}
 }
 
@@ -311,7 +311,7 @@ type MockStorageBackend_List_Call struct {
 // List is a helper method to define mock.On call
 //   - ctx context.Context
 //   - prefix string
-func (_e *MockStorageBackend_Expecter) List(ctx interface{}, prefix interface{}) *MockStorageBackend_List_Call {
+func (_e *MockStorageBackend_Expecter) List(ctx any, prefix any) *MockStorageBackend_List_Call {
 	return &MockStorageBackend_List_Call{Call: _e.mock.On("List", ctx, prefix)}
 }
 
@@ -387,7 +387,7 @@ type MockStorageBackend_Retrieve_Call struct {
 // Retrieve is a helper method to define mock.On call
 //   - ctx context.Context
 //   - key string
-func (_e *MockStorageBackend_Expecter) Retrieve(ctx interface{}, key interface{}) *MockStorageBackend_Retrieve_Call {
+func (_e *MockStorageBackend_Expecter) Retrieve(ctx any, key any) *MockStorageBackend_Retrieve_Call {
 	return &MockStorageBackend_Retrieve_Call{Call: _e.mock.On("Retrieve", ctx, key)}
 }
 
@@ -446,7 +446,7 @@ type MockStorageBackend_Store_Call struct {
 //   - key string
 //   - data io.Reader
 //   - metadata *storage.ImageMetadata
-func (_e *MockStorageBackend_Expecter) Store(ctx interface{}, key interface{}, data interface{}, metadata interface{}) *MockStorageBackend_Store_Call {
+func (_e *MockStorageBackend_Expecter) Store(ctx any, key any, data any, metadata any) *MockStorageBackend_Store_Call {
 	return &MockStorageBackend_Store_Call{Call: _e.mock.On("Store", ctx, key, data, metadata)}
 }
 

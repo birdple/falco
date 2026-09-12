@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/birdple/falco/internal/pkg/logger"
 	jayclient "github.com/ivangsm/jay/proto/client"
 )
 
@@ -28,13 +29,13 @@ type JayConfig struct {
 // jayClientIface is the minimal surface of jayclient.Client that JayStorage uses.
 // It exists solely so tests can swap in a fake.
 type jayClientIface interface {
-	PutObject(bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error)
-	GetObject(bucket, key string) (*jayclient.GetResult, error)
-	HeadObject(bucket, key string) (*jayclient.ObjectInfo, error)
-	DeleteObject(bucket, key string) error
-	ListObjects(bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error)
-	HeadBucket(name string) (*jayclient.BucketInfo, error)
-	CreateBucket(name string) (*jayclient.BucketInfo, error)
+	PutObject(ctx context.Context, bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error)
+	GetObject(ctx context.Context, bucket, key string) (*jayclient.GetResult, error)
+	HeadObject(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error)
+	DeleteObject(ctx context.Context, bucket, key string) error
+	ListObjects(ctx context.Context, bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error)
+	HeadBucket(ctx context.Context, name string) (*jayclient.BucketInfo, error)
+	CreateBucket(ctx context.Context, name string) (*jayclient.BucketInfo, error)
 	Close() error
 }
 
@@ -48,6 +49,10 @@ type JayStorage struct {
 }
 
 // NewJayStorage dials Jay, ensures the bucket exists, and returns a backend.
+//
+// Startup is bounded like the S3 and R2 constructors: a jay that accepts the
+// TCP connection but never answers the handshake must fail the boot, not hang
+// it.
 func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 	if cfg == nil || cfg.Addr == "" || cfg.TokenID == "" || cfg.Secret == "" || cfg.Bucket == "" {
 		return nil, fmt.Errorf("%w: jay: addr/token_id/secret/bucket are required", ErrInvalidConfiguration)
@@ -56,7 +61,10 @@ func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 	if pool <= 0 {
 		pool = 4
 	}
-	c, err := jayclient.Dial(cfg.Addr, cfg.TokenID, cfg.Secret, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := jayclient.Dial(ctx, cfg.Addr, cfg.TokenID, cfg.Secret, jayclient.WithPoolSize(pool))
 	if err != nil {
 		return nil, fmt.Errorf("jay: dial %s: %w", cfg.Addr, err)
 	}
@@ -76,9 +84,9 @@ func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 	}
 
 	// Ensure the bucket exists (idempotent).
-	if _, err := c.CreateBucket(cfg.Bucket); err != nil && !isBucketAlreadyExists(err) {
+	if _, err := c.CreateBucket(ctx, cfg.Bucket); err != nil && !isBucketAlreadyExists(err) {
 		// HeadBucket fallback — if CreateBucket says it exists we're fine.
-		if _, headErr := c.HeadBucket(cfg.Bucket); headErr != nil {
+		if _, headErr := c.HeadBucket(ctx, cfg.Bucket); headErr != nil {
 			_ = c.Close()
 			return nil, fmt.Errorf("jay: ensure bucket %q: create: %w; head: %w", cfg.Bucket, err, headErr)
 		}
@@ -129,7 +137,7 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 		// twice the CPU of the SHA-256 checksum jay always computes anyway.
 		SkipETag: true,
 	}
-	res, err := s.client.PutObject(s.bucket, key, data, metadata.Size, opts)
+	res, err := s.client.PutObject(ctx, s.bucket, key, data, metadata.Size, opts)
 	if err != nil {
 		return fmt.Errorf("jay: put %s: %w", key, err)
 	}
@@ -139,7 +147,7 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 
 // Retrieve downloads an object and reconstructs metadata from Jay headers.
 func (s *JayStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
-	res, err := s.client.GetObject(s.bucket, key)
+	res, err := s.client.GetObject(ctx, s.bucket, key)
 	if err != nil {
 		if isJayNotFound(err) {
 			return nil, nil, ErrImageNotFound
@@ -156,7 +164,7 @@ func (s *JayStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *
 
 // Exists checks for presence via HeadObject.
 func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := s.client.HeadObject(s.bucket, key)
+	_, err := s.client.HeadObject(ctx, s.bucket, key)
 	if err == nil {
 		return true, nil
 	}
@@ -168,7 +176,7 @@ func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
 
 // Delete removes an object.
 func (s *JayStorage) Delete(ctx context.Context, key string) error {
-	if err := s.client.DeleteObject(s.bucket, key); err != nil {
+	if err := s.client.DeleteObject(ctx, s.bucket, key); err != nil {
 		if isJayNotFound(err) {
 			return ErrImageNotFound
 		}
@@ -177,23 +185,96 @@ func (s *JayStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// List paginates objects under prefix.
+// List returns every object under prefix, following jay's pagination.
+//
+// It used to ask for a single page of 1000 and throw IsTruncated away, so a
+// bucket with more than that listed short and said nothing. Callers that want
+// one page at a time use ListPage instead.
+//
+// Two things stop the walk before the prefix runs out, and both return an
+// error rather than the keys gathered so far: MaxFullListingObjects, and a
+// cursor that stops advancing. Returning a short slice would put the caller
+// back exactly where the original bug left it — holding an incomplete listing
+// that looks complete.
 func (s *JayStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
-	res, err := s.client.ListObjects(s.bucket, &jayclient.ListOptions{Prefix: prefix, MaxKeys: 1000})
-	if err != nil {
-		return nil, fmt.Errorf("jay: list %s: %w", prefix, err)
+	var out []ListResult
+	cursor := ""
+	for {
+		page, err := s.ListPage(ctx, ListOptions{Prefix: prefix, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Objects...)
+		if !page.IsTruncated {
+			return out, nil
+		}
+		if len(out) >= MaxFullListingObjects {
+			return nil, fmt.Errorf("%w: jay: %q holds more than %d objects; list it a page at a time",
+				ErrListingTooLarge, prefix, MaxFullListingObjects)
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			// jay says there is more and hands back no way to reach it. Looping
+			// on the same cursor would hang the request forever, and stopping
+			// quietly would hide that the listing is incomplete — which jay just
+			// said it is.
+			return nil, fmt.Errorf("jay: listing %q stalled at cursor %q after %d objects: the backend reports more but does not advance",
+				prefix, cursor, len(out))
+		}
+		cursor = page.NextCursor
 	}
-	out := make([]ListResult, 0, len(res.Objects))
+}
+
+// ListPage returns one page of objects, honouring prefix, delimiter and cursor.
+func (s *JayStorage) ListPage(ctx context.Context, opts ListOptions) (*ListPage, error) {
+	res, err := s.client.ListObjects(ctx, s.bucket, &jayclient.ListOptions{
+		Prefix:     opts.Prefix,
+		Delimiter:  opts.Delimiter,
+		StartAfter: opts.Cursor,
+		MaxKeys:    NormalizeMaxKeys(opts.MaxKeys),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jay: list %s: %w", opts.Prefix, err)
+	}
+
+	out := &ListPage{
+		Objects:        make([]ListResult, 0, len(res.Objects)),
+		CommonPrefixes: res.CommonPrefixes,
+		NextCursor:     res.NextStartAfter,
+		IsTruncated:    res.IsTruncated,
+	}
 	for _, o := range res.Objects {
-		modified, _ := time.Parse(time.RFC3339, o.LastModified)
-		out = append(out, ListResult{Key: o.Key, Size: o.Size, Modified: modified})
+		out.Objects = append(out.Objects, ListResult{
+			Key:         o.Key,
+			Size:        o.Size,
+			Modified:    parseJayTime(o.LastModified, o.Key),
+			ContentType: o.ContentType,
+			ETag:        o.ETag,
+		})
 	}
 	return out, nil
 }
 
+// parseJayTime turns jay's timestamp into a time.Time.
+//
+// jay answers RFC3339 in Get/Head but "2006-01-02T15:04:05Z" in listings, and
+// both parse as RFC3339. The error used to be discarded, which turned an
+// unparseable date into a zero time that renders as year 1 — a wrong date is
+// worse than a missing one, so log it instead of swallowing it.
+func parseJayTime(v, key string) time.Time {
+	if v == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		logger.Warn().Str("value", v).Str("key", key).Msg("jay: unparseable LastModified in listing")
+		return time.Time{}
+	}
+	return t
+}
+
 // Health pings the bucket via HeadBucket.
 func (s *JayStorage) Health(ctx context.Context) error {
-	_, err := s.client.HeadBucket(s.bucket)
+	_, err := s.client.HeadBucket(ctx, s.bucket)
 	if err != nil {
 		return fmt.Errorf("jay: unhealthy: %w", err)
 	}
@@ -228,9 +309,9 @@ func (s *JayStorage) GetStats(ctx context.Context) (*StorageStats, error) {
 		ObjectCount    int64  `json:"object_count"`
 		TotalSizeBytes int64  `json:"total_size_bytes"`
 	}
-	// Defaults de v2 a propósito, NO jsonx.Strict: jay se versiona aparte de
-	// falco, and a new field in its stats response is an additive change. With
-	// RejectUnknownMembers that change would break GetStats and, with it,
+	// Plain v2 defaults on purpose, NOT jsonx.Strict: jay is versioned apart
+	// from falco, and a new field in its stats response is an additive change.
+	// With RejectUnknownMembers that change would break GetStats and, with it,
 	// /health.
 	if err := jsonv2.UnmarshalRead(resp.Body, &body); err != nil {
 		return nil, fmt.Errorf("jay: stats decode: %w", err)

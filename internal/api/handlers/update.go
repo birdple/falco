@@ -33,7 +33,9 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxSize := h.config.GetMaxFileSizeBytes()
-	imageData, _, err := httputil.DownloadURL(ctx, h.httpClient, req.URL, maxSize)
+	// Authenticated, operator-chosen URL: no allowlist to preserve across a
+	// redirect, but the policy is stated explicitly — see downloadFromJSONBody.
+	imageData, _, err := httputil.DownloadURL(httputil.WithAnyPublicHost(ctx), h.httpClient, req.URL, maxSize)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to download image from URL")
 		h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
@@ -44,7 +46,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
 	if sbErr != nil {
-		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", sbErr.Error())
+		h.sendStorageBackendError(w, sbErr)
 		return
 	}
 

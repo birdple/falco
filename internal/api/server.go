@@ -62,7 +62,7 @@ func NewServer(cfg *ServerConfig) *Server {
 	s := &Server{
 		config:    cfg.Config,
 		handler:   h,
-		uiHandler: ui.NewHandler(cfg.Config, cfg.StorageRegistry),
+		uiHandler: ui.NewHandler(cfg.Config, cfg.StorageRegistry, h, cfg.ImageProcessor),
 		metrics:   m,
 		registry:  cfg.StorageRegistry,
 	}
@@ -155,14 +155,35 @@ func (s *Server) useMiddleware(r chi.Router) {
 	}))
 }
 
-// mountUIRoutes mounts the admin panel and its static assets. These are public
-// at the router level; the handlers authenticate internally via cookie or key.
+// mountUIRoutes mounts the admin panel and its static assets.
+//
+// The routes are public at the router level and the panel authenticates itself:
+// a browser cannot attach an API key header to a navigation. Everything past
+// the login goes through ui.RequireSession, which resolves the session, checks
+// CSRF on mutations, and publishes the caller's scope into the request context
+// — so the panel's own actions are authorised by the same code the API uses.
 func (s *Server) mountUIRoutes(r chi.Router) {
+	guard := s.uiHandler.RequireSession
+
+	// Unauthenticated: the sign-in screen and the two calls it needs.
 	r.Get("/", s.uiHandler.Login)
-	r.Get("/dashboard", s.uiHandler.Dashboard)
 	r.Post("/ui/auth", s.uiHandler.AuthPost)
 	r.Post("/ui/logout", s.uiHandler.LogoutPost)
-	r.Get("/ui/content", s.uiHandler.Content)
+	r.Post("/ui/theme", s.uiHandler.ThemePost)
+
+	// Pages.
+	r.Get("/dashboard", guard(s.uiHandler.Dashboard))
+	r.Get("/object", guard(s.uiHandler.Object))
+	r.Get("/playground", guard(s.uiHandler.Playground))
+	r.Get("/signer", guard(s.uiHandler.Signer))
+	r.Get("/ops", guard(s.uiHandler.Ops))
+
+	// Fragments and actions.
+	r.Get("/ui/explorer", guard(s.uiHandler.Explorer))
+	r.Post("/ui/objects/upload", guard(s.uiHandler.Upload))
+	r.Post("/ui/objects/delete", guard(s.uiHandler.DeleteObjects))
+	r.Post("/ui/sign", guard(s.uiHandler.SignURL))
+	r.Post("/ui/cache/purge", guard(s.uiHandler.Purge))
 
 	staticFS, _ := fs.Sub(web.StaticFS, "static")
 	r.Handle("/static/*", http.StripPrefix("/static/", apimw.RestrictedFileServer(http.FS(staticFS))))
@@ -173,6 +194,14 @@ func (s *Server) mountOperationalRoutes(r chi.Router) {
 	// Health needs no auth: it is what the orchestrator polls.
 	r.Get("/health", s.handler.HandleHealth)
 	r.Head("/health", s.handler.HandleHealth)
+
+	// /health answers "is the process up" and only pings the default backend.
+	// /health/ready answers "what exactly is wrong": every registered backend,
+	// its circuit breaker, the cache, and which features are off for lack of
+	// configuration. That is the question actually asked when uploads fail
+	// while delivery still works.
+	r.Get("/health/ready", s.handler.HandleReady)
+	r.Head("/health/ready", s.handler.HandleReady)
 
 	// Disallow all crawlers. Falco is a CDN origin for images, not indexable
 	// content.
@@ -240,6 +269,11 @@ func (s *Server) mountPprof(r chi.Router) {
 func (s *Server) mountAPIRoutes(r chi.Router) {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/images/*", s.handler.HandleDelivery)
+		// HEAD must answer the same headers as GET — content type, length,
+		// ETag and cache policy — so it runs the same handler and lets
+		// net/http drop the body. It costs the same work as a GET; it exists
+		// for correctness (405 was the old answer), not as a cheap probe.
+		r.Head("/images/*", s.handler.HandleDelivery)
 		r.Get("/proxy/*", s.handler.HandleProxy)
 
 		r.Group(func(r chi.Router) {
@@ -249,6 +283,15 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 			r.Get("/list", s.handler.HandleList)
 			r.Delete("/delete", s.handler.HandleDelete)
 			r.Post("/sign", s.handler.HandleSignURL)
+
+			// Metadata, statistics and cache control. These read state that
+			// was already computed in Go and had no route out: GetStats and
+			// GetCacheStats were reachable from nowhere, and a cache entry
+			// could only be dropped as a side effect of deleting its image.
+			r.Get("/meta/*", s.handler.HandleObjectMeta)
+			r.Get("/stats", s.handler.HandleStats)
+			r.Get("/cache", s.handler.HandleCacheStats)
+			r.Delete("/cache", s.handler.HandleCachePurge)
 		})
 	})
 }

@@ -297,8 +297,17 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 }
 
 // getStorageBackendScoped resolves a storage backend and enforces scope from the request.
+//
+// Names are canonicalised through the registry's aliases BEFORE the scope
+// check, so one bucket is always authorized under one name. Checking the alias
+// instead would let the same bucket be reachable under one spelling and refused
+// under another, and a scope is configured in registry names — that is what the
+// panel and /stats enumerate.
 func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket string) (storage.StorageBackend, error) {
 	scope := apimw.GetScope(r.Context())
+
+	storageName = h.canonicalBucket(storageName)
+	bucket = h.canonicalBucket(bucket)
 
 	// Enforce bucket access (storageName is now the bucket name in the registry)
 	effectiveBucket := storageName
@@ -315,6 +324,36 @@ func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket s
 	}
 
 	return h.getStorageBackendWithScope(scope, storageName, bucket)
+}
+
+// canonicalBucket maps a caller-supplied bucket name onto the registry name it
+// stands for. Names that are neither a bucket nor a declared alias come back
+// unchanged, for getStorageBackendWithScope to accept or refuse.
+//
+// An empty name stays empty: it means "whatever the default is", and resolving
+// it to the default's name here would make the scope check treat an unnamed
+// request as an explicit one.
+func (h *Handler) canonicalBucket(name string) string {
+	if name == "" || h.storageRegistry == nil {
+		return name
+	}
+	return h.storageRegistry.Canonical(name)
+}
+
+// sendStorageBackendError maps a getStorageBackendScoped failure onto the right
+// response.
+//
+// The two failures are genuinely different and used to collapse into the same
+// 403: a bucket the key may not touch is an authorization answer, while a
+// bucket that does not exist is a bad request. Reporting the second as
+// ACCESS_DENIED sent an operator looking at API-key scopes for a name that was
+// simply misspelt.
+func (h *Handler) sendStorageBackendError(w http.ResponseWriter, err error) {
+	if errors.Is(err, storage.ErrBucketNotHonoured) || errors.Is(err, storage.ErrBackendNotFound) {
+		h.sendError(w, http.StatusBadRequest, "UNKNOWN_BUCKET", err.Error())
+		return
+	}
+	h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", err.Error())
 }
 
 // checkOwnership verifies that the authenticated caller is allowed to mutate
@@ -392,6 +431,29 @@ func (h *Handler) defaultStorageType() string {
 }
 
 // getStorageBackendWithScope is the internal resolver.
+//
+// It answers one question — which backend do the bytes of THIS request go to —
+// and it answers it in three steps, in this order:
+//
+//  1. The name is a registered bucket (or a declared alias for one): use that
+//     backend. This is what `?b=` means to a caller, and it is exact.
+//  2. The resolved backend can genuinely switch to a remote bucket of that
+//     name (S3, and R2 through it): use the switched backend, after checking
+//     the switch actually happened.
+//  3. Neither: refuse with storage.ErrBucketNotHonoured.
+//
+// Step 3 is the whole point. WithBucket returns a backend rather than an error,
+// and the circuit-breaker wrapper implements it for EVERY backend by handing
+// back itself when the one underneath cannot switch — so the type assertion in
+// step 2 always succeeds and used to hide the failure. An upload naming a
+// bucket falco cannot reach was written into the default bucket, answered 201,
+// and even reported a URL carrying the bucket it never went to.
+//
+// Falling back to the default bucket is not an option that can be made safe:
+// the caller named a destination, and answering success from another one is a
+// lie whether or not the reader happens to land in the same place. A name that
+// has to keep working without being a bucket is declared as an alias — see
+// Registry.RegisterAlias.
 func (h *Handler) getStorageBackendWithScope(scope *apimw.APIScope, storageName, bucket string) (storage.StorageBackend, error) {
 	var backend storage.StorageBackend
 
@@ -407,12 +469,41 @@ func (h *Handler) getStorageBackendWithScope(scope *apimw.APIScope, storageName,
 		backend = h.storage
 	}
 
-	// Apply bucket override if provided
-	if bucket != "" {
-		if bucketAware, ok := backend.(storage.BucketAware); ok {
-			backend = bucketAware.WithBucket(bucket)
+	if bucket == "" {
+		return backend, nil
+	}
+
+	// Step 1. Only when no explicit `?storage=` was given: `?storage=X&b=Y`
+	// means "backend X, remote bucket Y", and honouring Y as a backend name
+	// would silently discard X.
+	if storageName == "" && h.storageRegistry != nil {
+		if b, err := h.storageRegistry.Get(bucket); err == nil {
+			return b, nil
 		}
 	}
 
-	return backend, nil
+	// Step 2.
+	if bucketAware, ok := backend.(storage.BucketAware); ok {
+		switched := bucketAware.WithBucket(bucket)
+		if current, ok := switched.(storage.BucketAware); ok && current.GetCurrentBucket() == bucket {
+			return switched, nil
+		}
+	}
+
+	// Step 3.
+	keyName := ""
+	if scope != nil {
+		keyName = scope.KeyName
+	}
+	logger.Warn().
+		Str("requested_bucket", bucket).
+		Str("storage", storageName).
+		Str("key_name", keyName).
+		Str("backend", h.defaultStorageType()).
+		Msg("Refused a request naming a bucket that is neither registered nor reachable")
+
+	return nil, fmt.Errorf(
+		"%w: %q is not a configured bucket or alias, and the backend cannot switch to it",
+		storage.ErrBucketNotHonoured, bucket,
+	)
 }

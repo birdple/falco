@@ -29,14 +29,100 @@ type ImageMetadata struct {
 	OwnerID string `json:"owner_id,omitempty"`
 }
 
-// ListResult holds information about a listed object
+// ListResult holds information about a listed object.
+//
+// ContentType and ETag are best-effort: a backend fills them only when its
+// listing carries them (jay's native protocol does; a filesystem walk does
+// not). Empty means "this backend did not say", never "empty value".
 type ListResult struct {
-	Key      string    `json:"key"`
-	Size     int64     `json:"size"`
-	Modified time.Time `json:"modified"`
+	Key         string    `json:"key"`
+	Size        int64     `json:"size"`
+	Modified    time.Time `json:"modified"`
+	ContentType string    `json:"content_type,omitempty"`
+	ETag        string    `json:"etag,omitempty"`
 }
 
-// Lister defines the interface for listing operations
+// Page sizes for ListPage. A backend clamps MaxKeys into this range.
+const (
+	DefaultListPageSize = 1000
+	MaxListPageSize     = 1000
+)
+
+// MaxFullListingObjects bounds Lister.List, which walks every page of a prefix
+// and accumulates the result in memory.
+//
+// Without a bound, one request could pull an entire bucket into RAM, and the
+// only thing standing between that and the process dying would be how many
+// objects somebody happened to upload. The value is 100 pages of
+// DefaultListPageSize: a ListResult costs roughly 150 bytes once its key and
+// content type are counted, so a listing sitting at the cap is on the order of
+// 15 MB — far more than any prefix falco serves today, and far less than what
+// would take the container down.
+//
+// A listing that reaches it fails with ErrListingTooLarge instead of coming
+// back short: the caller is told to page through it with ListPage.
+const MaxFullListingObjects = 100 * DefaultListPageSize
+
+// ListOptions controls one page of a paginated listing.
+type ListOptions struct {
+	// Prefix filters keys. It is matched verbatim: a caller that wants
+	// directory semantics passes the trailing slash itself. Backends must not
+	// add one — s3 used to and jay did not, so the same prefix listed
+	// differently depending on the backend.
+	Prefix string
+	// Delimiter rolls up every key that shares a prefix up to the next
+	// occurrence of it into CommonPrefixes, instead of returning them one by
+	// one. "/" gives the usual folder view, at any depth.
+	Delimiter string
+	// Cursor resumes a previous page. It is opaque: it is whatever the
+	// previous page's NextCursor held, and its shape is the backend's
+	// business.
+	Cursor string
+	// MaxKeys caps the objects in one page. Zero means DefaultListPageSize.
+	MaxKeys int
+}
+
+// ListPage is one page of a paginated listing.
+type ListPage struct {
+	Objects        []ListResult `json:"objects"`
+	CommonPrefixes []string     `json:"common_prefixes,omitempty"`
+	NextCursor     string       `json:"next_cursor,omitempty"`
+	IsTruncated    bool         `json:"is_truncated"`
+}
+
+// PagedLister lists one page at a time.
+//
+// It is separate from Lister because Lister's signature has nowhere to say
+// "there is more": jay answered with at most 1000 keys and dropped the
+// truncation flag, so a bucket with more than that listed short and silently.
+// Every backend falco ships implements this. The interface stays optional so
+// that a backend which genuinely cannot paginate is detected with a type
+// assertion and reported, rather than faking pagination.
+type PagedLister interface {
+	ListPage(ctx context.Context, opts ListOptions) (*ListPage, error)
+}
+
+// NormalizeMaxKeys clamps a requested page size into the supported range.
+func NormalizeMaxKeys(n int) int {
+	if n <= 0 {
+		return DefaultListPageSize
+	}
+	if n > MaxListPageSize {
+		return MaxListPageSize
+	}
+	return n
+}
+
+// Lister lists every object under a prefix.
+//
+// The contract is all-or-nothing: what comes back is the whole prefix, or an
+// error. A backend that cannot finish — because the prefix is past
+// MaxFullListingObjects, or because its own pagination misbehaved — says so
+// with an error rather than returning what it managed to collect.
+//
+// The cap is enforced where a listing is assembled page by page, which today
+// means jay; S3 leans on its own paginator and the filesystem walk is bounded
+// by what fits on the disk.
 type Lister interface {
 	List(ctx context.Context, prefix string) ([]ListResult, error)
 }

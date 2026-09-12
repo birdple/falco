@@ -89,6 +89,13 @@ jobs:
         with:
           version: latest
 
+      # El panel se COMPILA: los *_templ.go salen de los .templ y output.css de
+      # input.css. Sin esta compuerta el drift es invisible — así fue como los
+      # generados quedaron en templ v0.3.1001 mientras go.mod exigía v0.3.1020,
+      # y output.css vino de un tailwind distinto al de bin/.
+      - name: Panel regenerado
+        run: make ui-check
+
   # Compila y ARRANCA el binario en las dos libc que publica el release. Un
   # binario CGO puede compilar y no enlazar en runtime, así que el gate es que
   # /health conteste, no que `go build` termine.

@@ -85,6 +85,55 @@ curl "localhost:8080/api/v1/images/a1b2c3d4?b=archive&w=400"
 `?b=` and `?bucket=` are the same parameter; `?storage=` also works. Omit it and
 `storage.default` is used.
 
+A name that is not a bucket — and not an alias for one, see below — is answered
+`400 UNKNOWN_BUCKET`. Nothing is written and nothing is read. This matters more
+than it sounds: `?b=` used to be applied as a *remote bucket switch* on top of
+the default backend, which only S3 and R2 implement, so on Jay or the filesystem
+the parameter fell on the floor. An upload asking for `archive` was written into
+the default bucket, answered `201`, and reported
+`"url": "/api/v1/images/<id>?b=archive"` — a URL for a bucket the object was
+never in.
+
+Falling back to the default is not a behaviour that can be made safe. The caller
+named a destination; answering success from a different one is a lie whether or
+not the reader happens to land in the same place.
+
+## Aliases: a name that is not a bucket
+
+An alias declares that a name clients already send stands for a bucket that
+exists:
+
+```yaml
+storage:
+  default: images
+  bucket_aliases:
+    prod-images: images
+    legacy: archive
+```
+
+```bash
+STORAGE_BUCKET_ALIASES="prod-images=images,legacy=archive"
+```
+
+The environment form is one variable rather than the `STORAGE_BUCKET_<NAME>_*`
+pattern, because the whole point is to name something that pattern cannot
+express: bucket names come from an environment variable suffix, so they cannot
+contain a hyphen, while a client's configured value very often does.
+
+An alias resolves to its target everywhere — upload, delivery, list, delete,
+metadata — and to the target's name in scope checks, so a key is authorised for
+one bucket under one name however many aliases point at it. `?b=prod-images` and
+`?b=images` reach the same objects, and the alias is never a second bucket:
+`/api/v1/stats` and the panel keep listing `images` once.
+
+Three things are refused at **startup**, not on the first request:
+
+| Configuration | Why it stops the boot |
+|---|---|
+| Alias pointing at a bucket that is not declared | It would answer `400` on every request, with nothing pointing at the config |
+| Alias with the same name as a bucket | Two meanings for one name |
+| An entry that is not `alias=bucket` | A typo would silently drop the alias the operator believes is configured |
+
 ## Groups and subgroups
 
 Groups exist for one reason: to hand a key access to several buckets at once.

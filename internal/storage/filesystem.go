@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -226,7 +227,7 @@ func (fs *FilesystemStorage) GetStats(ctx context.Context) (*StorageStats, error
 	return stats, nil
 }
 
-// List lists objects with the given prefix.
+// List lists every object with the given prefix.
 // It reads each .meta.json to recover the original storage key,
 // since file paths on disk are MD5-hashed and not human-readable.
 func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
@@ -269,6 +270,11 @@ func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListRes
 				Key:      key,
 				Size:     size,
 				Modified: modified,
+				// The metadata file was read anyway to recover the key, so the
+				// content type comes for free. Without it the UI can only show
+				// "unknown" for every object on this backend.
+				ContentType: meta.ContentType,
+				ETag:        meta.ETag,
 			})
 		}
 
@@ -280,6 +286,73 @@ func (fs *FilesystemStorage) List(ctx context.Context, prefix string) ([]ListRes
 	}
 
 	return results, nil
+}
+
+// ListPage returns one page of objects, honouring prefix, delimiter and cursor.
+//
+// Unlike S3 and jay, there is no server to page against: keys live in a
+// hash-sharded tree, so key order cannot be walked directly and the whole
+// listing is built and then sliced. The cost is the same walk List already
+// does; what this buys is a bounded response and an honest IsTruncated.
+func (fs *FilesystemStorage) ListPage(ctx context.Context, opts ListOptions) (*ListPage, error) {
+	all, err := fs.List(ctx, opts.Prefix)
+	if err != nil {
+		return nil, err
+	}
+	return pageFromListing(all, opts), nil
+}
+
+// pageFromListing slices a complete listing into one page, applying the
+// delimiter roll-up. Shared by every backend that can only list in full.
+func pageFromListing(all []ListResult, opts ListOptions) *ListPage {
+	sort.Slice(all, func(i, j int) bool { return all[i].Key < all[j].Key })
+
+	limit := NormalizeMaxKeys(opts.MaxKeys)
+	out := &ListPage{}
+	seenPrefix := make(map[string]bool)
+
+	for _, item := range all {
+		// Filter by prefix here too. The caller usually did it already, but a
+		// helper that silently ignores a field of its own options is a trap:
+		// pass a full listing and it would answer with keys outside the prefix.
+		if opts.Prefix != "" && !strings.HasPrefix(item.Key, opts.Prefix) {
+			continue
+		}
+
+		// Resume: the cursor is the last key of the previous page.
+		if opts.Cursor != "" && item.Key <= opts.Cursor {
+			continue
+		}
+
+		if opts.Delimiter != "" {
+			rest := strings.TrimPrefix(item.Key, opts.Prefix)
+			if idx := strings.Index(rest, opts.Delimiter); idx >= 0 {
+				group := opts.Prefix + rest[:idx+len(opts.Delimiter)]
+				if seenPrefix[group] {
+					continue
+				}
+				if len(out.Objects)+len(out.CommonPrefixes) >= limit {
+					out.IsTruncated = true
+					return out
+				}
+				seenPrefix[group] = true
+				out.CommonPrefixes = append(out.CommonPrefixes, group)
+				out.NextCursor = item.Key
+				continue
+			}
+		}
+
+		if len(out.Objects)+len(out.CommonPrefixes) >= limit {
+			out.IsTruncated = true
+			return out
+		}
+		out.Objects = append(out.Objects, item)
+		out.NextCursor = item.Key
+	}
+
+	// Everything fit: there is no next page to point at.
+	out.NextCursor = ""
+	return out
 }
 
 // getFilePath returns the file path for a given key.

@@ -36,6 +36,15 @@ type StorageConfig struct {
 	Default string                  `mapstructure:"default"`
 	Buckets map[string]BucketConfig `mapstructure:"buckets"`
 	Groups  map[string]GroupConfig  `mapstructure:"groups"`
+	// BucketAliases maps a name clients ask for onto a declared bucket.
+	//
+	// Bucket names come from STORAGE_BUCKET_<NAME>_*, so they cannot contain a
+	// hyphen and rarely match what a consumer was configured to send. An alias
+	// states the equivalence explicitly ("birdple-dev is jay") instead of
+	// leaving falco to absorb the mismatch by writing into the default bucket
+	// and answering 201. A name that is neither a bucket nor an alias is
+	// refused — see storage.ErrBucketNotHonoured.
+	BucketAliases map[string]string `mapstructure:"bucket_aliases"`
 }
 
 // BucketConfig holds configuration for a named storage bucket.

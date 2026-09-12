@@ -1,459 +1,191 @@
 // Package ui serves falco's admin panel.
 //
-// It authenticates on its own, by cookie or API key, rather than sitting behind
-// the API-key middleware: a browser cannot attach a header to a navigation.
+// The panel authenticates on its own rather than sitting behind the API-key
+// middleware, because a browser cannot attach a header to a navigation. What it
+// does NOT do is grant anything of its own: a request is resolved to a scope,
+// the scope is published into the request context, and mutating actions are
+// then executed by the real API handlers. The panel can never do something the
+// API would refuse.
 package ui
 
 import (
-	"context"
 	"crypto/subtle"
-	jsonv2 "encoding/json/v2"
-	"fmt"
 	"net/http"
 	"sort"
-	"strings"
+	"time"
 
+	"github.com/a-h/templ"
+	"github.com/birdple/falco/internal/api/handlers"
 	views "github.com/birdple/falco/internal/api/views/templ"
 	"github.com/birdple/falco/internal/config"
-	"github.com/birdple/falco/internal/jsonx"
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/internal/version"
 )
 
-// Handler serves the UI pages and HTMX partials.
+// Handler serves the panel.
 type Handler struct {
-	cfg        *config.Config
-	registry   *storage.Registry
-	cachedKeys map[string]config.KeyScope // computed once at startup
+	cfg      *config.Config
+	registry *storage.Registry
+	// api is the real API handler. Panel actions are delegated to it with the
+	// session's scope injected, so upload/delete go through exactly the same
+	// validation, ownership checks and cache invalidation as any API client.
+	api       *handlers.Handler
+	processor processor.ImageProcessor
+	sessions  *SessionStore
+	started   time.Time
+
+	// keys is the flattened scoped-key table, computed once at startup.
+	keys map[string]config.KeyScope
 }
 
-// NewHandler creates a new UI handler.
-func NewHandler(cfg *config.Config, registry *storage.Registry) *Handler {
+// NewHandler builds the panel handler.
+func NewHandler(
+	cfg *config.Config,
+	registry *storage.Registry,
+	api *handlers.Handler,
+	imageProcessor processor.ImageProcessor,
+) *Handler {
 	return &Handler{
-		cfg:        cfg,
-		registry:   registry,
-		cachedKeys: cfg.CollectAllKeys(),
+		cfg:       cfg,
+		registry:  registry,
+		api:       api,
+		processor: imageProcessor,
+		sessions:  NewSessionStore(sessionTTL),
+		started:   time.Now(),
+		keys:      cfg.CollectAllKeys(),
 	}
 }
 
-// uiScope holds the resolved access scope for a UI request.
-type uiScope struct {
-	IsAdmin bool
-	KeyName string
-	Buckets map[string]bool
+// Close releases the panel's background work.
+func (h *Handler) Close() {
+	h.sessions.Close()
 }
 
-// resolveKey validates the provided key and returns the scope.
-func (h *Handler) resolveKey(key string) *uiScope {
+// enabled reports whether the panel can be served at all.
+//
+// The panel is an authenticated surface over every bucket. With no key
+// configured there is nothing to authenticate against, and the old code
+// responded to that by inventing an admin scope on the spot — so an operator
+// who simply had not set API_KEY got a wide-open panel. A feature that is not
+// configured refuses to run; it does not open.
+func (h *Handler) enabled() bool {
+	return h.cfg.Security.APIKey != "" || len(h.keys) > 0
+}
+
+// disabledReason explains, in the UI, why the panel is not serving.
+func (h *Handler) disabledReason() string {
+	return "The admin panel is disabled because no API key is configured. " +
+		"Set API_KEY (or define scoped keys) and restart falco."
+}
+
+// resolveKey validates a key and returns the scope it grants.
+func (h *Handler) resolveKey(key string) *Scope {
 	if key == "" {
 		return nil
 	}
 
-	// Check admin key
-	if h.cfg.Security.APIKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(h.cfg.Security.APIKey)) == 1 {
-		return &uiScope{IsAdmin: true, KeyName: "admin"}
+	if h.cfg.Security.APIKey != "" &&
+		subtle.ConstantTimeCompare([]byte(key), []byte(h.cfg.Security.APIKey)) == 1 {
+		return &Scope{IsAdmin: true, KeyName: "admin"}
 	}
 
-	// Check scoped keys (cached at startup)
-	var matched *uiScope
-	for keyVal, scope := range h.cachedKeys {
+	var matched *Scope
+	for keyVal, scope := range h.keys {
+		// Every entry is compared even after a match: bailing out early would
+		// make the loop's duration depend on where the key sits in the table.
 		if subtle.ConstantTimeCompare([]byte(key), []byte(keyVal)) == 1 {
-			matched = &uiScope{
-				KeyName: scope.Name,
-				Buckets: scope.Buckets,
-			}
+			matched = &Scope{KeyName: scope.Name, Buckets: scope.Buckets}
 		}
 	}
 	return matched
 }
 
-// getKeyFromRequest extracts the API key from cookie or header.
-func getKeyFromRequest(r *http.Request) string {
-	// Check cookie first (UI sessions)
-	if c, err := r.Cookie("falco_key"); err == nil && c.Value != "" {
-		return c.Value
-	}
-	// Check header (HTMX requests)
-	if k := r.Header.Get("X-API-Key"); k != "" {
-		return k
-	}
-	return ""
-}
-
-// accessibleBuckets returns the list of bucket names the scope can access.
-// Filters out the internal "default" alias to avoid duplicates.
-func (h *Handler) accessibleBuckets(scope *uiScope) []string {
-	allNames := h.registry.Names()
-	var filtered []string
-	for _, name := range allNames {
-		// Skip the internal "default" alias — it duplicates an actual bucket
-		if name == "default" {
+// accessibleBuckets lists the buckets a scope may see, sorted, with the
+// internal "default" alias filtered out — it duplicates a bucket that is
+// already listed under its real name.
+func (h *Handler) accessibleBuckets(scope *Scope) []string {
+	var out []string
+	for _, name := range h.registry.Names() {
+		if name == registryDefaultAlias {
 			continue
 		}
-		if scope == nil || scope.IsAdmin || scope.Buckets[name] {
-			filtered = append(filtered, name)
+		if scope.CanAccessBucket(name) {
+			out = append(out, name)
 		}
 	}
-	return filtered
+	sort.Strings(out)
+	return out
 }
 
-// buildBucketItems builds the sidebar bucket list with backup info.
-func (h *Handler) buildBucketItems(ctx context.Context, names []string) []views.BucketItem {
-	items := make([]views.BucketItem, 0, len(names))
-	defaultName := h.cfg.GetDefaultBucketName()
-
-	for _, name := range names {
-		bucketCfg, err := h.cfg.GetBucketConfig(name)
-		if err != nil {
-			continue
-		}
-
-		item := views.BucketItem{
-			Name:      name,
-			Type:      bucketCfg.Type,
-			IsDefault: name == defaultName,
-		}
-
-		// Count images via GetStats (avoids loading all objects)
-		if backend, err := h.registry.Get(name); err == nil {
-			if stats, err := backend.GetStats(ctx); err == nil {
-				item.ImageCount = int(stats.TotalImages)
-			}
-		}
-
-		// Add backup info
-		for _, bk := range bucketCfg.Backups {
-			item.Backups = append(item.Backups, views.BackupItem{
-				Target: bk.Target,
-				Mode:   bk.Mode,
-			})
-		}
-
-		items = append(items, item)
-	}
-
-	// Sort: default first, then alphabetically
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].IsDefault != items[j].IsDefault {
-			return items[i].IsDefault
-		}
-		return items[i].Name < items[j].Name
-	})
-
-	return items
-}
-
-// Login renders the login page.
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	// If auth is not required, redirect straight to dashboard
-	if !h.cfg.Security.APIKeyRequired {
-		http.Redirect(w, r, "/dashboard", http.StatusFound)
-		return
-	}
-
-	// If already authenticated, redirect to dashboard
-	key := getKeyFromRequest(r)
-	if scope := h.resolveKey(key); scope != nil {
-		http.Redirect(w, r, "/dashboard", http.StatusFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = views.LoginPage(views.LoginData{}).Render(r.Context(), w)
-}
-
-// AuthPost validates the key and sets a cookie.
-func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Key string `json:"key"`
-	}
-	if err := jsonv2.UnmarshalRead(r.Body, &body, jsonx.Strict); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Invalid request"})
-		return
-	}
-
-	scope := h.resolveKey(body.Key)
-	if scope == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid API key"})
-		return
-	}
-
-	// Set cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "falco_key",
-		Value:    body.Key,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400 * 7, // 7 days
-	})
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"name":  scope.KeyName,
-		"admin": scope.IsAdmin,
-	})
-}
-
-// LogoutPost clears the session cookie. Needed because the cookie is HttpOnly
-// and cannot be cleared from JavaScript.
-func (h *Handler) LogoutPost(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "falco_key",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// Dashboard renders the main dashboard page.
-func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-
-	key := getKeyFromRequest(r)
-	scope := h.resolveKey(key)
-
-	// If auth required and no valid key, redirect to login
-	if h.cfg.Security.APIKeyRequired && scope == nil {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-
-	// If no auth required, create an admin scope
-	if scope == nil {
-		scope = &uiScope{IsAdmin: true, KeyName: "local"}
-	}
-
-	ctx := r.Context()
-	bucketNames := h.accessibleBuckets(scope)
-	bucketItems := h.buildBucketItems(ctx, bucketNames)
-
-	// Determine current bucket
-	currentBucket := query.Get("bucket")
-	if currentBucket == "" {
-		currentBucket = h.cfg.GetDefaultBucketName()
-	}
-	// Verify access
-	if !scope.IsAdmin && !scope.Buckets[currentBucket] {
-		if len(bucketNames) > 0 {
-			currentBucket = bucketNames[0]
-		}
-	}
-
-	currentPrefix := query.Get("prefix")
-
-	data := h.buildDashboardData(ctx, scope, bucketItems, currentBucket, currentPrefix)
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = views.DashboardPage(data).Render(ctx, w)
-}
-
-// Content returns the main content area as an HTMX partial.
-func (h *Handler) Content(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-
-	key := getKeyFromRequest(r)
-	scope := h.resolveKey(key)
-
-	if h.cfg.Security.APIKeyRequired && scope == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if scope == nil {
-		scope = &uiScope{IsAdmin: true, KeyName: "local"}
-	}
-
-	ctx := r.Context()
-	bucketNames := h.accessibleBuckets(scope)
-	bucketItems := h.buildBucketItems(ctx, bucketNames)
-
-	currentBucket := query.Get("bucket")
-	if currentBucket == "" {
-		currentBucket = h.cfg.GetDefaultBucketName()
-	}
-	currentPrefix := query.Get("prefix")
-
-	data := h.buildDashboardData(ctx, scope, bucketItems, currentBucket, currentPrefix)
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = views.MainContent(data).Render(ctx, w)
-}
-
-// buildDashboardData constructs the full DashboardData for a given scope + bucket.
-func (h *Handler) buildDashboardData(ctx context.Context, scope *uiScope, bucketItems []views.BucketItem, currentBucket, currentPrefix string) views.DashboardData {
-	page := views.PageData{
-		Title:       "Dashboard",
-		KeyName:     scope.KeyName,
-		IsAdmin:     scope.IsAdmin,
-		Buckets:     bucketItems,
-		CurrentPage: "dashboard",
-	}
-
-	data := views.DashboardData{
-		Page:          page,
-		CurrentBucket: currentBucket,
-		CurrentPrefix: currentPrefix,
-	}
-
-	// Get storage backend
-	backend, err := h.registry.Get(currentBucket)
-	if err != nil {
-		data.Error = "Bucket not found: " + currentBucket
-		return data
-	}
-
-	// List all files to build folder tree + image list
-	results, err := backend.List(ctx, "")
-	if err != nil {
-		data.Error = err.Error()
-		return data
-	}
-
-	matchPrefix := currentPrefix
-	if matchPrefix != "" && matchPrefix[len(matchPrefix)-1] != '/' {
-		matchPrefix += "/"
-	}
-
-	directoryMap := make(map[string]*views.DirectoryInfo)
-
-	for _, res := range results {
-		// Extract top-level directories
-		if strings.Contains(res.Key, "/") {
-			parts := strings.SplitN(res.Key, "/", 2)
-			dirName := parts[0]
-			if _, exists := directoryMap[dirName]; !exists {
-				directoryMap[dirName] = &views.DirectoryInfo{
-					Name:      dirName,
-					Path:      dirName,
-					FileCount: 0,
-				}
-			}
-			directoryMap[dirName].FileCount++
-		}
-
-		// Filter images for current prefix
-		if matchPrefix == "" || strings.HasPrefix(res.Key, matchPrefix) {
-			if matchPrefix == "" && strings.Contains(res.Key, "/") {
-				continue
-			}
-
-			relKey := res.Key
-			if matchPrefix != "" {
-				relKey = strings.TrimPrefix(res.Key, matchPrefix)
-			}
-
-			if strings.Contains(relKey, "/") {
-				continue
-			}
-
-			data.Images = append(data.Images, views.ImageInfo{
-				ID:          res.Key,
-				Filename:    relKey,
-				ContentType: inferFormat(relKey),
-				Size:        res.Size,
-				SizeHuman:   humanizeBytes(res.Size),
-				CreatedAt:   res.Modified,
-				Bucket:      currentBucket,
-			})
-		}
-	}
-
-	// Build directories
-	for _, dir := range directoryMap {
-		data.Directories = append(data.Directories, *dir)
-	}
-	sort.Slice(data.Directories, func(i, j int) bool {
-		return strings.ToLower(data.Directories[i].Name) < strings.ToLower(data.Directories[j].Name)
-	})
-
-	// Bucket detail
-	if bucketCfg, err := h.cfg.GetBucketConfig(currentBucket); err == nil {
-		detail := &views.BucketDetail{
-			Name: currentBucket,
-			Type: bucketCfg.Type,
-		}
-		for _, bk := range bucketCfg.Backups {
-			detail.Backups = append(detail.Backups, views.BackupItem{
-				Target: bk.Target,
-				Mode:   bk.Mode,
-			})
-		}
-
-		// Stats via GetStats (avoids recomputing from full list)
-		if stats, err := backend.GetStats(ctx); err == nil {
-			detail.Stats = &views.BucketStats{
-				TotalImages: stats.TotalImages,
-				TotalSize:   stats.TotalSize,
-				TotalHuman:  humanizeBytes(stats.TotalSize),
-			}
-		} else {
-			logger.Warn().Err(err).Str("bucket", currentBucket).Msg("GetStats failed, showing zeroed stats")
-			detail.Stats = &views.BucketStats{}
-		}
-		data.BucketInfo = detail
-	}
-
-	return data
-}
-
-// writeJSON writes a JSON response.
+// resolveBucket picks the bucket to operate on and enforces the scope.
 //
-// Marshals before touching the ResponseWriter: if the marshal fails there is
-// still time to answer a 500, rather than a 200 with a truncated body.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	data, err := jsonv2.Marshal(v)
+// It returns an error rather than silently substituting an allowed bucket. The
+// old dashboard swapped in the first accessible bucket, and the HTMX partial
+// did not check at all — so a key scoped to one bucket could read another
+// bucket's full listing just by changing the query string.
+func (h *Handler) resolveBucket(scope *Scope, requested string) (string, error) {
+	name := requested
+	if name == "" {
+		name = h.cfg.GetDefaultBucketName()
+	}
+	if !scope.CanAccessBucket(name) {
+		return "", errForbiddenBucket
+	}
+	if _, err := h.registry.Get(name); err != nil {
+		return "", errUnknownBucket
+	}
+	return name, nil
+}
+
+// bucketType reports a bucket's backend type ("jay", "s3", "r2",
+// "filesystem"), or "" when it is not configured.
+func (h *Handler) bucketType(name string) string {
+	cfg, err := h.cfg.GetBucketConfig(name)
 	if err != nil {
-		logger.Error().Err(err).Int("status_code", status).Msg("Failed to marshal JSON response")
-		http.Error(w, `{"ok":false,"error":"Failed to encode response"}`, http.StatusInternalServerError)
-		return
+		return ""
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if _, err := w.Write(data); err != nil {
-		logger.Error().Err(err).Msg("Failed to write JSON response")
+	return cfg.Type
+}
+
+// render writes a templ component.
+//
+// A failed render is logged rather than discarded: the four call sites in the
+// old panel wrote `_ = ...Render(...)`, so a render that died halfway left a
+// 200 with a truncated body and no trace anywhere.
+func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, c templ.Component) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := c.Render(r.Context(), w); err != nil {
+		logger.Error().Err(err).Str("view", name).Msg("Failed to render panel view")
 	}
 }
 
-// inferFormat guesses the format from the filename.
-func inferFormat(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.HasSuffix(lower, ".webp"):
-		return "WEBP"
-	case strings.HasSuffix(lower, ".png"):
-		return "PNG"
-	case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"):
-		return "JPEG"
-	case strings.HasSuffix(lower, ".gif"):
-		return "GIF"
-	case strings.HasSuffix(lower, ".svg"):
-		return "SVG"
-	case strings.HasSuffix(lower, ".avif"):
-		return "AVIF"
-	default:
-		return "IMG"
+// pageData fills in the shell every page shares.
+//
+// The theme is resolved here, server-side, so it is already correct in the
+// first byte of HTML.
+func (h *Handler) pageData(r *http.Request, sess *Session, title, current string, buckets []views.BucketItem) views.PageData {
+	page := views.PageData{
+		Title:       title,
+		Theme:       themeFrom(r),
+		CurrentPage: current,
+		Buckets:     buckets,
+		Version:     version.Version,
 	}
+	if sess != nil {
+		page.CSRFToken = sess.CSRFToken
+		page.KeyName = sess.Scope.KeyName
+		page.IsAdmin = sess.Scope.IsAdmin
+	}
+	return page
 }
 
-// humanizeBytes formats bytes into a human-readable string.
-func humanizeBytes(s int64) string {
-	sizes := []string{"B", "KB", "MB", "GB", "TB"}
-	if s < 10 {
-		return fmt.Sprintf("%d B", s)
-	}
+// registryDefaultAlias is the extra key the registry files its default backend
+// under, alongside the backend's real name.
+const registryDefaultAlias = "default"
 
-	base := float64(1024)
-	e := 0
-	f := float64(s)
-	for f >= base && e < len(sizes)-1 {
-		f /= base
-		e++
-	}
-
-	return fmt.Sprintf("%.1f %s", f, sizes[e])
+// panelUptime is used by the ops screen.
+func (h *Handler) panelUptime(start time.Time) string {
+	return time.Since(start).Round(time.Second).String()
 }

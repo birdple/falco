@@ -141,7 +141,85 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// redirectPolicyKey is the context key under which an outbound fetch declares
+// where a redirect coming out of it is allowed to land.
+type redirectPolicyKey struct{}
+
+// redirectPolicy says which hosts a redirect may point at. The zero value
+// allows nothing, which is what a request that never declared a policy gets.
+type redirectPolicy struct {
+	// allowedHosts is the exact set of lowercase hostnames a redirect may
+	// land on. Ignored when anyPublicHost is set.
+	allowedHosts map[string]struct{}
+	// anyPublicHost lets a redirect land on any host that the dial-time
+	// guard would accept — i.e. anything that does not resolve to a
+	// private or reserved address.
+	anyPublicHost bool
+}
+
+// WithHostAllowlist declares that redirects from fetches made with this context
+// may only land on hosts in the allowlist — the same set the caller checked the
+// original URL against.
+//
+// Without this (or WithAnyPublicHost), the allowlist would only ever cover the
+// first hop: Go follows a redirect on its own, and an allowed host that
+// answers with a Location pointing elsewhere would turn the fetch into an open
+// proxy. The dial-time guard still runs on every hop; this is about *which
+// public host*, not about reaching the private network.
+func WithHostAllowlist(ctx context.Context, hosts map[string]struct{}) context.Context {
+	return context.WithValue(ctx, redirectPolicyKey{}, redirectPolicy{allowedHosts: hosts})
+}
+
+// WithAnyPublicHost declares that redirects from fetches made with this context
+// may land on any host the dial-time guard accepts.
+//
+// For callers that fetch a URL chosen by an authenticated operator and have no
+// host allowlist of their own to preserve. It is a deliberate statement, not a
+// default: a fetch whose context carries no policy at all refuses to follow any
+// redirect.
+func WithAnyPublicHost(ctx context.Context) context.Context {
+	return context.WithValue(ctx, redirectPolicyKey{}, redirectPolicy{anyPublicHost: true})
+}
+
+// checkRedirect decides whether a redirect may be followed. Fail-closed on
+// every axis: an undeclared policy, an unknown scheme or a host outside the
+// allowlist all stop the chain.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("too many redirects")
+	}
+
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+	}
+
+	policy, ok := req.Context().Value(redirectPolicyKey{}).(redirectPolicy)
+	if !ok {
+		return errors.New("redirect refused: no redirect policy declared for this fetch")
+	}
+	if policy.anyPublicHost {
+		return nil
+	}
+
+	host := strings.ToLower(req.URL.Hostname())
+	if _, allowed := policy.allowedHosts[host]; !allowed {
+		return fmt.Errorf("redirect to host outside the allowlist: %s", host)
+	}
+	return nil
+}
+
+// maxRedirects caps how many hops a single fetch may follow.
+const maxRedirects = 5
+
 // NewSafeHTTPClient creates an HTTP client that blocks requests to private/reserved IPs (SSRF protection).
+//
+// Two independent guards, both mandatory:
+//
+//   - the dialer refuses to connect to a private or reserved address, on every
+//     hop, having resolved the name itself and dialled the resolved IP (so
+//     nothing can change under it between the check and the connection);
+//   - CheckRedirect keeps a redirect inside the host policy the caller declared
+//     on the context (WithHostAllowlist / WithAnyPublicHost).
 func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
@@ -162,6 +240,10 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 					return nil, fmt.Errorf("DNS lookup failed: %w", err)
 				}
 
+				if len(ips) == 0 {
+					return nil, fmt.Errorf("DNS lookup returned no addresses for %s", host)
+				}
+
 				for _, ip := range ips {
 					if isPrivateOrReservedIP(ip.IP) {
 						return nil, fmt.Errorf("resolved to private/reserved IP: %s", ip.IP)
@@ -178,37 +260,46 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 			MaxIdleConnsPerHost:   10,
 			IdleConnTimeout:       90 * time.Second,
 		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			return nil
-		},
+		CheckRedirect: checkRedirect,
 	}
 }
 
-// isPrivateOrReservedIP checks if an IP is in a private or reserved range
-func isPrivateOrReservedIP(ip net.IP) bool {
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16", // Link-local / AWS metadata
-		"0.0.0.0/8",
-		"100.64.0.0/10", // Carrier-grade NAT
-		"192.0.0.0/24",
-		"198.18.0.0/15", // Benchmarking
-		"fc00::/7",      // IPv6 unique local
-		"fe80::/10",     // IPv6 link-local
-		"::1/128",       // IPv6 loopback
-	}
+// privateOrReservedRanges are the networks no outbound fetch may reach.
+//
+// Parsed once: this list is walked on every dial, and re-parsing twenty CIDRs
+// per connection buys nothing.
+//
+// Documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) are
+// deliberately absent — they route nowhere internal and blocking them would
+// only break test fixtures.
+var privateOrReservedRanges = parseCIDRs([]string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"127.0.0.0/8",
+	"169.254.0.0/16", // Link-local / AWS metadata
+	"0.0.0.0/8",
+	"100.64.0.0/10", // Carrier-grade NAT
+	"192.0.0.0/24",
+	"198.18.0.0/15", // Benchmarking
+	"224.0.0.0/4",   // Multicast
+	"240.0.0.0/4",   // Reserved (includes 255.255.255.255)
+	"fc00::/7",      // IPv6 unique local
+	"fe80::/10",     // IPv6 link-local
+	"fec0::/10",     // IPv6 site-local (deprecated, still routable inward)
+	"::1/128",       // IPv6 loopback
+	"::/128",        // IPv6 unspecified
+	"ff00::/8",      // IPv6 multicast
+	"64:ff9b::/96",  // NAT64 — embeds an IPv4 address the checks above cannot see
+	"2002::/16",     // 6to4 — same, embeds IPv4 (2002:7f00:1:: is 127.0.0.1)
+})
 
-	for _, cidr := range privateRanges {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
+// isPrivateOrReservedIP checks if an IP is in a private or reserved range.
+//
+// IPv4-mapped IPv6 (::ffff:127.0.0.1) is covered without a rule of its own:
+// net.IPNet.Contains normalises both sides to 4 bytes when the network is IPv4.
+func isPrivateOrReservedIP(ip net.IP) bool {
+	for _, network := range privateOrReservedRanges {
 		if network.Contains(ip) {
 			return true
 		}

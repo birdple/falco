@@ -79,8 +79,15 @@ requests for the same one share a single decode and encode.
 
 ## Look at what you have
 
-Falco ships a server-rendered admin panel at `/` — log in with the API key and
-browse the buckets. The same listing is available as JSON:
+Falco ships a server-rendered admin panel at `/` — sign in with the API key and
+browse the buckets. It also has a transformation playground, a URL signer, and an
+operations screen showing every backend, the cache, and which features are off
+for lack of configuration.
+
+The key is exchanged for a session cookie and never stored in the browser. With
+no key configured at all, the panel refuses to serve rather than opening.
+
+The same listing is available as JSON:
 
 ```bash
 curl "localhost:8080/api/v1/list?d=avatars"

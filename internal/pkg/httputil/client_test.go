@@ -1,9 +1,13 @@
 package httputil
 
 import (
+	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,7 +178,16 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"8.8.8.8", false},
 		{"203.0.113.50", false},
 		{"1.1.1.1", false},
-		{"::1", true}, // IPv6 loopback
+		{"::1", true},                   // IPv6 loopback
+		{"::", true},                    // IPv6 unspecified
+		{"::ffff:127.0.0.1", true},      // IPv4-mapped loopback
+		{"64:ff9b::7f00:1", true},       // NAT64-embedded 127.0.0.1
+		{"2002:7f00:1::", true},         // 6to4-embedded 127.0.0.1
+		{"224.0.0.1", true},             // Multicast
+		{"255.255.255.255", true},       // Reserved
+		{"ff02::1", true},               // IPv6 multicast
+		{"fec0::1", true},               // IPv6 site-local
+		{"2001:4860:4860::8888", false}, // Public IPv6 (Google DNS)
 	}
 
 	for _, tt := range tests {
@@ -213,6 +226,117 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+// redirectRequest builds the request Go would hand to CheckRedirect for a hop
+// to target, carrying ctx the way a real redirect inherits it.
+func redirectRequest(t *testing.T, ctx context.Context, target string) *http.Request {
+	t.Helper()
+	u, err := url.Parse(target)
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	require.NoError(t, err)
+	return req
+}
+
+func TestCheckRedirect_NoPolicyRefuses(t *testing.T) {
+	// A fetch that never declared a policy follows nothing: fail-closed is
+	// the default, not "unrestricted".
+	req := redirectRequest(t, context.Background(), "https://example.com/img.png")
+	assert.Error(t, checkRedirect(req, nil))
+}
+
+func TestCheckRedirect_HostAllowlist(t *testing.T) {
+	allowed := map[string]struct{}{"cf.geekdo-images.com": {}}
+	ctx := WithHostAllowlist(context.Background(), allowed)
+
+	assert.NoError(t, checkRedirect(redirectRequest(t, ctx, "https://cf.geekdo-images.com/a.png"), nil))
+	// Case is normalised on both sides.
+	assert.NoError(t, checkRedirect(redirectRequest(t, ctx, "https://CF.Geekdo-Images.com/a.png"), nil))
+	// The whole point: an allowed host cannot bounce the fetch elsewhere.
+	assert.Error(t, checkRedirect(redirectRequest(t, ctx, "https://evil.example/a.png"), nil))
+	// Nor onto a subdomain that is not itself listed.
+	assert.Error(t, checkRedirect(redirectRequest(t, ctx, "https://x.cf.geekdo-images.com/a.png"), nil))
+}
+
+func TestCheckRedirect_AnyPublicHost(t *testing.T) {
+	ctx := WithAnyPublicHost(context.Background())
+	assert.NoError(t, checkRedirect(redirectRequest(t, ctx, "https://anything.example/a.png"), nil))
+}
+
+func TestCheckRedirect_UnsupportedScheme(t *testing.T) {
+	ctx := WithAnyPublicHost(context.Background())
+	req := redirectRequest(t, ctx, "https://example.com/a.png")
+	req.URL.Scheme = "file"
+	assert.Error(t, checkRedirect(req, nil))
+}
+
+func TestCheckRedirect_TooManyHops(t *testing.T) {
+	ctx := WithAnyPublicHost(context.Background())
+	req := redirectRequest(t, ctx, "https://example.com/a.png")
+	assert.NoError(t, checkRedirect(req, make([]*http.Request, maxRedirects-1)))
+	assert.Error(t, checkRedirect(req, make([]*http.Request, maxRedirects)))
+}
+
+// TestCheckRedirect_EndToEnd asserts the network effect, not the predicate:
+// that Go carries the request context across a redirect, so the policy set on
+// the original fetch still governs the hop. The dialer is the stock one because
+// httptest listens on loopback, which the safe client refuses by design — the
+// piece under test here is CheckRedirect.
+func TestCheckRedirect_EndToEnd(t *testing.T) {
+	var upstreamHit bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit = true
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer upstream.Close()
+
+	// Same listener, different hostname: the hop is only ever stopped by the
+	// policy, never by the connection failing, so a pass really means the
+	// redirect was refused.
+	upstreamAlias := strings.Replace(upstream.URL, "127.0.0.1", "localhost", 1)
+	require.NotEqual(t, upstream.URL, upstreamAlias)
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, upstreamAlias, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	client := &http.Client{CheckRedirect: checkRedirect, Timeout: 5 * time.Second}
+	redirectorHost, _, err := net.SplitHostPort(mustURL(t, redirector.URL).Host)
+	require.NoError(t, err)
+
+	// Only the redirector is allowed, so the hop to upstream must not happen.
+	ctx := WithHostAllowlist(context.Background(), map[string]struct{}{redirectorHost: {}})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, redirector.URL, nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.Error(t, err)
+	if resp != nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	assert.False(t, upstreamHit, "redirect target was fetched despite being outside the allowlist")
+
+	// With the target allowed, the same chain completes.
+	ctx = WithAnyPublicHost(context.Background())
+	req, err = http.NewRequestWithContext(ctx, http.MethodGet, redirector.URL, nil)
+	require.NoError(t, err)
+	resp, err = client.Do(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, "payload", string(body))
+	assert.True(t, upstreamHit)
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return u
 }
 
 func BenchmarkGetClientIP_RemoteAddr(b *testing.B) {

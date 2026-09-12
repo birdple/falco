@@ -48,11 +48,16 @@ type CircuitBreakerSettings struct {
 // a read problem taking writes down with it, and a self-sustaining one: failed
 // uploads leave more dangling URLs, which trip the breaker again.
 //
-// The breaker exists for a backend that is down or unreachable. `ErrImageNotFound`
-// is a normal answer and is reported to the caller either way; it just does not
+// `ErrListingTooLarge` is here for the same reason: the backend answered, and
+// the answer is "that prefix is bigger than one listing". Five of those in a row
+// — a dashboard reloading the same oversized prefix — would otherwise open the
+// breaker and take uploads down with them.
+//
+// The breaker exists for a backend that is down or unreachable. Both of these
+// are normal answers and are reported to the caller either way; they just do not
 // count here.
 func IsBackendFailure(err error) bool {
-	return err != nil && !storage.IsNotFound(err)
+	return err != nil && !storage.IsNotFound(err) && !storage.IsListingTooLarge(err)
 }
 
 // DefaultSettings returns default circuit breaker settings
@@ -189,6 +194,20 @@ func (s *StorageBackend) List(ctx context.Context, prefix string) ([]storage.Lis
 	return s.execute(func() ([]storage.ListResult, error) { return s.backend.List(ctx, prefix) })
 }
 
+// ListPage lists one page of objects with circuit breaker protection.
+//
+// The wrapper sits between the registry and the real backend, so if it did not
+// forward this the capability would be invisible to every caller: a type
+// assertion for storage.PagedLister would fail even when the backend
+// underneath implements it.
+func (s *StorageBackend) ListPage(ctx context.Context, opts storage.ListOptions) (*storage.ListPage, error) {
+	pager, ok := s.backend.(storage.PagedLister)
+	if !ok {
+		return nil, fmt.Errorf("%w: %T cannot list by page", storage.ErrUnsupportedOperation, s.backend)
+	}
+	return s.execute(func() (*storage.ListPage, error) { return pager.ListPage(ctx, opts) })
+}
+
 // WithBucket returns a new storage backend with a different bucket
 // Note: The circuit breaker state is shared across all bucket instances
 // Only works if the underlying backend implements BucketAware interface
@@ -225,4 +244,18 @@ func (s *StorageBackend) Counts() gobreaker.Counts {
 // IsOpen returns true if the circuit breaker is open
 func (s *StorageBackend) IsOpen() bool {
 	return s.cb.State() == gobreaker.StateOpen
+}
+
+// Compile-time proof that the wrapper forwards the paged listing capability.
+// Losing it here would make every backend look unable to paginate, since the
+// registry hands out this wrapper and not the backend itself.
+var _ storage.PagedLister = (*StorageBackend)(nil)
+
+// StateName returns the breaker state as a word: "closed", "open" or
+// "half-open".
+//
+// It exists so that callers can report the state without importing gobreaker
+// just to name an enum — the ops screen needs the word, not the type.
+func (s *StorageBackend) StateName() string {
+	return s.cb.State().String()
 }

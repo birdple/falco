@@ -7,7 +7,7 @@ package mocks
 import (
 	"time"
 
-	cache "github.com/birdple/falco/internal/cache"
+	"github.com/birdple/falco/internal/cache"
 	mock "github.com/stretchr/testify/mock"
 )
 
@@ -95,7 +95,7 @@ type MockCache_Contains_Call struct {
 
 // Contains is a helper method to define mock.On call
 //   - key string
-func (_e *MockCache_Expecter) Contains(key interface{}) *MockCache_Contains_Call {
+func (_e *MockCache_Expecter) Contains(key any) *MockCache_Contains_Call {
 	return &MockCache_Contains_Call{Call: _e.mock.On("Contains", key)}
 }
 
@@ -135,7 +135,7 @@ type MockCache_Delete_Call struct {
 
 // Delete is a helper method to define mock.On call
 //   - key string
-func (_e *MockCache_Expecter) Delete(key interface{}) *MockCache_Delete_Call {
+func (_e *MockCache_Expecter) Delete(key any) *MockCache_Delete_Call {
 	return &MockCache_Delete_Call{Call: _e.mock.On("Delete", key)}
 }
 
@@ -197,7 +197,7 @@ type MockCache_Get_Call struct {
 
 // Get is a helper method to define mock.On call
 //   - key string
-func (_e *MockCache_Expecter) Get(key interface{}) *MockCache_Get_Call {
+func (_e *MockCache_Expecter) Get(key any) *MockCache_Get_Call {
 	return &MockCache_Get_Call{Call: _e.mock.On("Get", key)}
 }
 
@@ -384,7 +384,7 @@ type MockCache_Set_Call struct {
 //   - key string
 //   - value []byte
 //   - ttl time.Duration
-func (_e *MockCache_Expecter) Set(key interface{}, value interface{}, ttl interface{}) *MockCache_Set_Call {
+func (_e *MockCache_Expecter) Set(key any, value any, ttl any) *MockCache_Set_Call {
 	return &MockCache_Set_Call{Call: _e.mock.On("Set", key, value, ttl)}
 }
 

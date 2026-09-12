@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -151,7 +152,7 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	outputFormat := p.determineOutputFormat(params, format)
 
 	// Encode image (actualFormat may differ from outputFormat on fallback, e.g. AVIF→WebP)
-	processedData, actualFormat, err := p.encodeImage(img, outputFormat, params.Quality)
+	processedData, actualFormat, err := p.encodeImage(img, outputFormat, params.Quality, keepMode(params))
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode image: %w", err)
 	}
@@ -326,17 +327,20 @@ func (p *VipsProcessor) applyResize(img *vips.Image, params *ProcessingParams) e
 	return p.enforceMaxDimensions(img)
 }
 
-// smartResize crops to the requested box using libvips' content-aware
-// strategies, so the interesting part of the image survives the crop.
+// smartResize crops to the requested box according to the requested gravity.
+//
+// There are two families here and they need different machinery:
+//
+//   - content-aware ("smart"/"attention", "entropy") is libvips' own job:
+//     ThumbnailImage picks the region.
+//   - a compass point ("north", "southeast", …) is a fixed position, which
+//     libvips' Crop enum cannot express — it only offers low/centre/high on
+//     both axes at once. So the image is scaled to cover the box and then the
+//     region is extracted by hand.
+//
+// The compass points used to fall through to InterestingCentre: the parser
+// accepted `gravity=north` and the caller got a centre crop, with nothing said.
 func smartResize(img *vips.Image, params *ProcessingParams) error {
-	interesting := vips.InterestingCentre
-	switch params.Gravity {
-	case "smart", "attention":
-		interesting = vips.InterestingAttention
-	case "entropy":
-		interesting = vips.InterestingEntropy
-	}
-
 	width, height := params.Width, params.Height
 	if width == 0 {
 		width = img.Width()
@@ -345,12 +349,85 @@ func smartResize(img *vips.Image, params *ProcessingParams) error {
 		height = img.Height()
 	}
 
+	if anchor, ok := gravityAnchor(params.Gravity); ok {
+		return positionalCrop(img, width, height, anchor)
+	}
+
+	interesting := vips.InterestingCentre
+	switch params.Gravity {
+	case "smart", "attention":
+		interesting = vips.InterestingAttention
+	case "entropy":
+		interesting = vips.InterestingEntropy
+	}
+
 	if err := img.ThumbnailImage(width, &vips.ThumbnailImageOptions{
 		Height: height,
 		Crop:   interesting,
 		Size:   vips.SizeBoth,
 	}); err != nil {
 		return fmt.Errorf("smart resize failed: %w", err)
+	}
+	return nil
+}
+
+// anchor is a gravity expressed as the fraction of the leftover pixels that
+// goes above and to the left of the crop: 0 keeps the near edge, 0.5 centres,
+// 1 keeps the far edge.
+type anchor struct{ x, y float64 }
+
+// gravityAnchor maps a compass point to its anchor. The second return says
+// whether the value was a compass point at all — "smart" and "entropy" are
+// not, and are handled by libvips instead.
+func gravityAnchor(gravity string) (anchor, bool) {
+	switch gravity {
+	case "center", "centre":
+		return anchor{0.5, 0.5}, true
+	case "north":
+		return anchor{0.5, 0}, true
+	case "south":
+		return anchor{0.5, 1}, true
+	case "east":
+		return anchor{1, 0.5}, true
+	case "west":
+		return anchor{0, 0.5}, true
+	case "northeast":
+		return anchor{1, 0}, true
+	case "northwest":
+		return anchor{0, 0}, true
+	case "southeast":
+		return anchor{1, 1}, true
+	case "southwest":
+		return anchor{0, 1}, true
+	}
+	return anchor{}, false
+}
+
+// positionalCrop scales the image to cover width×height and extracts that box
+// at the given anchor.
+func positionalCrop(img *vips.Image, width, height int, at anchor) error {
+	srcW, srcH := img.Width(), img.Height()
+	if srcW <= 0 || srcH <= 0 {
+		return errors.New("positional crop: source has no dimensions")
+	}
+
+	// Cover: the larger of the two ratios, so neither axis falls short of the
+	// box and there is something to crop away on the other one.
+	scale := max(float64(width)/float64(srcW), float64(height)/float64(srcH))
+	if err := img.Resize(scale, &vips.ResizeOptions{Kernel: vips.KernelLanczos3}); err != nil {
+		return fmt.Errorf("positional crop: resize failed: %w", err)
+	}
+
+	// Rounding can leave the scaled image a pixel short of the box; extracting
+	// past the edge is an error in libvips, so the box is clamped instead.
+	cropW := min(width, img.Width())
+	cropH := min(height, img.Height())
+
+	left := int(float64(img.Width()-cropW) * at.x)
+	top := int(float64(img.Height()-cropH) * at.y)
+
+	if err := img.ExtractArea(left, top, cropW, cropH); err != nil {
+		return fmt.Errorf("positional crop: extract failed: %w", err)
 	}
 	return nil
 }
@@ -672,7 +749,7 @@ func coverSize(explicitBox bool) vips.Size {
 
 // encodeImage encodes the image to the specified format.
 // Returns the encoded bytes and the actual format used (may differ from requested if fallback occurred).
-func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality int) ([]byte, ImageFormat, error) {
+func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality int, keep vips.Keep) ([]byte, ImageFormat, error) {
 	if quality <= 0 {
 		quality = GetDefaultQuality(format)
 	}
@@ -704,6 +781,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			TrellisQuant:       quality >= 80, // Better compression for high quality
 			OvershootDeringing: quality >= 80, // Reduce compression artifacts
 			OptimizeScans:      true,          // Optimize progressive scan order
+			Keep:               keep,
 		})
 	case FormatPNG:
 		// PNG compression level (0-9)
@@ -714,6 +792,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		}
 		err = img.PngsaveTarget(target, &vips.PngsaveTargetOptions{
 			Compression: compression,
+			Keep:        keep,
 			Interlace:   true, // Interlaced PNG for progressive loading
 			// Filter option to try all PNG filters for best compression
 			// Note: Using default filter (adaptive) which works well for most cases
@@ -731,6 +810,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			Effort:         p.webpEffort,
 			SmartSubsample: quality >= 80, // Better chroma subsampling for high quality
 			Mixed:          quality >= 80, // Allow mixed lossy/lossless encoding
+			Keep:           keep,
 		})
 	case FormatHEIC:
 		// HEIC with optimization
@@ -738,6 +818,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			Q:        quality,
 			Lossless: quality == 100, // Lossless if quality is 100
 			Effort:   8,              // Encoding effort (0-9, higher=slower but better)
+			Keep:     keep,
 			// Note: Chroma subsampling is handled automatically by libvips
 		})
 	case FormatAVIF:
@@ -747,6 +828,7 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			Lossless:    quality == 100,
 			Effort:      6,
 			Compression: vips.HeifCompressionAv1,
+			Keep:        keep,
 		})
 		if err != nil {
 			// Log the fallback so clients can detect AV1 support issues
@@ -754,7 +836,8 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			buf.Reset()
 			format = FormatWebP // Update format so Content-Type is correct
 			err = img.WebpsaveTarget(target, &vips.WebpsaveTargetOptions{
-				Q: quality,
+				Q:    quality,
+				Keep: keep,
 			})
 		}
 	default:
@@ -767,6 +850,20 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 
 	// Copy buffer data before returning to pool
 	return bytes.Clone(buf.Bytes()), format, nil
+}
+
+// keepMode says which metadata survives the re-encode.
+//
+// The encoder used to leave this at vips' zero value, an empty bitfield that
+// keeps nothing — so `?meta=1` was parsed in delivery, travelled all the way
+// into ProcessingParams and changed absolutely nothing. Stripping stays the
+// default: a CDN origin should not hand out the camera GPS coordinates baked
+// into an upload.
+func keepMode(params *ProcessingParams) vips.Keep {
+	if params.StripMetadata {
+		return vips.KeepNone
+	}
+	return vips.KeepAll
 }
 
 // GetMetadata extracts metadata from an image
@@ -923,6 +1020,23 @@ func (p *VipsProcessor) InvalidateCacheForKey(storageKey string) int {
 	return removed
 }
 
+// PurgeCache drops every cached variant and returns how many entries were
+// removed.
+//
+// The count comes from walking the keys rather than from the cache's own
+// Clear(), which reports nothing: an operator pressing "purge" has to be able
+// to tell an empty cache from a purge that did not run.
+func (p *VipsProcessor) PurgeCache() int {
+	if p.cache == nil {
+		return 0
+	}
+	keys := p.cache.Keys()
+	for _, key := range keys {
+		p.cache.Delete(key)
+	}
+	return len(keys)
+}
+
 // GetFromCache returns cached processed image bytes for the given key.
 func (p *VipsProcessor) GetFromCache(key string) ([]byte, bool) {
 	if p.cache == nil {
@@ -1012,6 +1126,12 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	}
 	if params.AutoOrient {
 		parts = append(parts, "orient")
+	}
+	// Keeping metadata produces different bytes, so it has to be part of the
+	// key. Stripping is the default, so only the opposite is recorded — this
+	// leaves every already-cached key unchanged.
+	if !params.StripMetadata {
+		parts = append(parts, "meta")
 	}
 
 	// The watermark keys on its source, never on its bytes: two requests for

@@ -62,6 +62,7 @@ unsigned protects nothing that matters.
 | `STORAGE_BUCKET_<NAME>_POOL_SIZE` | Jay connection pool size |
 | `STORAGE_BUCKET_<NAME>_BACKUP_<N>_TARGET` / `_MODE` | Backup target and mode — see [Backups](/falco/guides/backups/) |
 | `STORAGE_BUCKET_<NAME>_KEY_<KEYNAME>_KEY` | A key scoped to this bucket |
+| `STORAGE_BUCKET_ALIASES` | Comma-separated `alias=bucket` pairs. Lets a client keep sending a name that is not a bucket — see [Buckets and groups](/falco/guides/buckets/). An alias pointing nowhere, shadowing a bucket, or missing its `=` stops the boot |
 | `STORAGE_GROUP_<NAME>_BUCKETS` | Comma-separated buckets in a group |
 | `STORAGE_GROUP_<NAME>_KEY_<KEYNAME>_KEY` | A key scoped to the group |
 | `STORAGE_GROUP_<NAME>_SUBGROUP_<SUB>_BUCKETS` | Subgroup membership |

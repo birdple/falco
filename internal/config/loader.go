@@ -93,8 +93,52 @@ func (l *loader) loadFromEnv(v *viper.Viper) {
 	// Auto-discover buckets from STORAGE_BUCKET_<NAME>_TYPE env vars
 	l.discoverBucketsFromEnv(v)
 
+	// Read bucket aliases from STORAGE_BUCKET_ALIASES
+	l.loadBucketAliasesFromEnv(v)
+
 	// Auto-discover groups from STORAGE_GROUP_<NAME>_BUCKETS env vars
 	l.discoverGroupsFromEnv(v)
+}
+
+// loadBucketAliasesFromEnv reads STORAGE_BUCKET_ALIASES, a comma-separated list
+// of `alias=bucket` pairs, into storage.bucket_aliases.
+//
+// It is one variable rather than the STORAGE_BUCKET_<NAME>_* pattern used
+// elsewhere because the whole point of an alias is to name something that
+// pattern cannot express: "birdple-dev" has a hyphen, so no environment
+// variable can declare a bucket by that name.
+//
+// A malformed entry is NOT skipped. Dropping it would leave the operator with
+// an alias they believe is configured and requests refused as if it were never
+// written, which is the same silence this whole mechanism exists to remove;
+// validateStorage turns the sentinel written here into a startup failure.
+func (l *loader) loadBucketAliasesFromEnv(v *viper.Viper) {
+	raw := os.Getenv("STORAGE_BUCKET_ALIASES")
+	if raw == "" {
+		return
+	}
+
+	aliases := make(map[string]string)
+	for entry := range strings.SplitSeq(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		alias, target, found := strings.Cut(entry, "=")
+		alias = strings.TrimSpace(alias)
+		target = strings.TrimSpace(target)
+		if !found || alias == "" || target == "" {
+			// Recorded with an empty target so validateStorage names the
+			// offending entry and refuses to start.
+			aliases[entry] = ""
+			continue
+		}
+		aliases[alias] = target
+	}
+
+	if len(aliases) > 0 {
+		v.Set("storage.bucket_aliases", aliases)
+	}
 }
 
 // getEnvMappings returns environment variable to config key mappings

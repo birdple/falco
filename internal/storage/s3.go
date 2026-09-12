@@ -232,20 +232,17 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 	return stats, nil
 }
 
-// List lists objects with the given prefix
+// List returns every object under prefix, following S3 pagination.
+//
+// The prefix is matched verbatim. This used to append a trailing slash, which
+// made the same prefix list differently on S3 than on jay; directory semantics
+// are the caller's to ask for.
 func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var results []ListResult
 
-	// Normalize prefix - add trailing slash if prefix is provided and doesn't end with /
-	listPrefix := prefix
-	if prefix != "" && prefix[len(prefix)-1] != '/' {
-		listPrefix = prefix + "/"
-	}
-
-	// List objects with prefix
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(listPrefix),
+		Prefix: aws.String(prefix),
 	})
 
 	for paginator.HasMorePages() {
@@ -253,30 +250,68 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, erro
 		if err != nil {
 			return nil, fmt.Errorf("failed to list objects: %w", err)
 		}
-
-		for _, obj := range page.Contents {
-			key := aws.ToString(obj.Key)
-			size := *obj.Size
-
-			// Skip directory markers (objects with size 0 that end with /)
-			if size == 0 && len(key) > 0 && key[len(key)-1] == '/' {
-				continue
-			}
-
-			// Skip empty keys
-			if key == "" {
-				continue
-			}
-
-			results = append(results, ListResult{
-				Key:      key,
-				Size:     size,
-				Modified: *obj.LastModified,
-			})
-		}
+		results = append(results, s3Contents(page.Contents)...)
 	}
 
 	return results, nil
+}
+
+// ListPage returns one page of objects, honouring prefix, delimiter and cursor.
+//
+// The cursor is S3's continuation token, passed through opaquely.
+func (s *S3Storage) ListPage(ctx context.Context, opts ListOptions) (*ListPage, error) {
+	in := &s3.ListObjectsV2Input{
+		Bucket:  aws.String(s.bucket),
+		Prefix:  aws.String(opts.Prefix),
+		MaxKeys: aws.Int32(int32(NormalizeMaxKeys(opts.MaxKeys))),
+	}
+	if opts.Delimiter != "" {
+		in.Delimiter = aws.String(opts.Delimiter)
+	}
+	if opts.Cursor != "" {
+		in.ContinuationToken = aws.String(opts.Cursor)
+	}
+
+	page, err := s.client.ListObjectsV2(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list objects: %w", err)
+	}
+
+	out := &ListPage{
+		Objects:     s3Contents(page.Contents),
+		NextCursor:  aws.ToString(page.NextContinuationToken),
+		IsTruncated: aws.ToBool(page.IsTruncated),
+	}
+	for _, cp := range page.CommonPrefixes {
+		if p := aws.ToString(cp.Prefix); p != "" {
+			out.CommonPrefixes = append(out.CommonPrefixes, p)
+		}
+	}
+	return out, nil
+}
+
+// s3Contents converts a page of S3 objects, dropping the entries that are not
+// real objects: empty keys and the zero-byte markers S3 consoles create to
+// fake directories.
+func s3Contents(contents []types.Object) []ListResult {
+	out := make([]ListResult, 0, len(contents))
+	for _, obj := range contents {
+		key := aws.ToString(obj.Key)
+		if key == "" {
+			continue
+		}
+		size := aws.ToInt64(obj.Size)
+		if size == 0 && key[len(key)-1] == '/' {
+			continue
+		}
+		out = append(out, ListResult{
+			Key:      key,
+			Size:     size,
+			Modified: aws.ToTime(obj.LastModified),
+			ETag:     strings.Trim(aws.ToString(obj.ETag), `"`),
+		})
+	}
+	return out
 }
 
 // isNotFoundError checks if an error indicates that an object was not found

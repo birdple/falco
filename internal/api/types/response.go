@@ -52,7 +52,17 @@ type ListResponse struct {
 	Count       int             `json:"count"`
 	Files       []ListItem      `json:"files,omitempty"`
 	Directories []DirectoryInfo `json:"directories,omitempty"`
-	Error       *APIError       `json:"error,omitempty"`
+
+	// Truncated says there is more beyond what Files holds. It used to be
+	// absent, and jay's backend answered at most 1000 keys and dropped the
+	// truncation flag, so a listing of a large prefix came back short and
+	// silent. Delete already reported this; list did not.
+	Truncated bool `json:"truncated"`
+	// NextCursor is passed back as ?cursor= to continue. Empty means this is
+	// the last page.
+	NextCursor string `json:"next_cursor,omitempty"`
+
+	Error *APIError `json:"error,omitempty"`
 }
 
 // ListItem represents a single file in a list response
@@ -60,13 +70,21 @@ type ListItem struct {
 	Key      string    `json:"key"`
 	Size     int64     `json:"size"`
 	Modified time.Time `json:"modified"`
+	// ContentType and ETag are filled only when the backend's listing carries
+	// them. Empty means "not reported", not "empty".
+	ContentType string `json:"content_type,omitempty"`
+	ETag        string `json:"etag,omitempty"`
 }
 
 // DirectoryInfo represents information about a subdirectory
 type DirectoryInfo struct {
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	FileCount int    `json:"file_count"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// FileCount is a pointer because it is only knowable when the whole
+	// listing was walked. In a paginated request the directories come from the
+	// backend's delimiter roll-up, which carries no count, and a plain 0 there
+	// would read as "empty folder".
+	FileCount *int `json:"file_count"`
 }
 
 // DeleteResponse represents the response for delete operations

@@ -59,6 +59,7 @@ type innerStruct struct {
 // v2+Wire y los bytes tienen que coincidir exactamente.
 func diffCases() map[string]any {
 	stamp := time.Date(2026, 8, 21, 15, 4, 5, 123456789, time.UTC)
+	zeroCount := 0
 	tricky := "a&b <script> \"x\"    ñ 日本語 emoji 🐦"
 
 	return map[string]any{
@@ -134,7 +135,14 @@ func diffCases() map[string]any {
 		"falco/ListResponse-lleno": types.ListResponse{
 			Success: true, Prefix: "p/&", Count: 0,
 			Files:       []types.ListItem{{Key: "<k>", Size: 0, Modified: stamp}},
-			Directories: []types.DirectoryInfo{{Name: "d", Path: "/d", FileCount: 0}},
+			Directories: []types.DirectoryInfo{{Name: "d", Path: "/d", FileCount: &zeroCount}},
+		},
+		// Paginated listings carry no file count: the pointer is nil and has to
+		// serialise as null in both v1 and v2, not vanish or turn into a 0.
+		"falco/ListResponse-paginado": types.ListResponse{
+			Success: true, Prefix: "p/", Count: 1, Truncated: true, NextCursor: "p/a&b",
+			Files:       []types.ListItem{{Key: "a", Size: 1, Modified: stamp, ContentType: "image/webp", ETag: "e"}},
+			Directories: []types.DirectoryInfo{{Name: "d", Path: "p/d", FileCount: nil}},
 		},
 		"falco/DeleteResponse-cero":  types.DeleteResponse{},
 		"falco/DeleteResponse-vacio": types.DeleteResponse{Deleted: []string{}, Failed: []string{}},

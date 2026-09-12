@@ -1,0 +1,98 @@
+package views
+
+import "fmt"
+
+// ObjectPage shows one object in full, with its real metadata.
+templ ObjectPage(data ObjectDetail) {
+	@Shell(data.Page) {
+		<div class="flex-1 h-full overflow-y-auto">
+			<div class="p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
+				<div class="flex items-start justify-between gap-4">
+					<div class="min-w-0">
+						<h1 class="text-xl font-semibold tracking-tight truncate">{ data.Name }</h1>
+						<p class="text-sm text-neutral-500 dark:text-neutral-400 font-mono mt-1 break-all">{ data.Bucket }/{ data.Key }</p>
+					</div>
+					<div class="flex items-center gap-2 shrink-0">
+						<a
+							href={ templ.SafeURL(playgroundURL(data.Bucket, data.Key)) }
+							class="px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors flex items-center gap-1.5"
+						>
+							@iconSliders()
+							Transform
+						</a>
+						<button
+							@click={ fmt.Sprintf("deleteOne('%s', '%s', '%s')", data.Bucket, data.Key, DashboardURL(data.Bucket, "")) }
+							class="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm font-semibold transition-colors flex items-center gap-1.5"
+						>
+							@iconTrash(14)
+							Delete
+						</button>
+					</div>
+				</div>
+
+				if data.Error != "" {
+					@InlineError(data.Error)
+				} else {
+					<div class="grid lg:grid-cols-[1.4fr_1fr] gap-6">
+						<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-950 overflow-hidden flex items-center justify-center min-h-80">
+							<img src={ data.FullURL } alt={ data.Name } class="max-w-full max-h-[70vh] object-contain"/>
+						</div>
+
+						<div class="space-y-4">
+							<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+								<h2 class="text-sm font-semibold mb-3">Metadata</h2>
+								<dl class="space-y-2 text-sm">
+									@metaRow("Format", data.Format)
+									@metaRow("Content type", data.ContentType)
+									@metaRow("Size", data.SizeHuman)
+									if data.Width > 0 && data.Height > 0 {
+										@metaRow("Dimensions", fmt.Sprintf("%d × %d", data.Width, data.Height))
+									}
+									@metaRow("Created", HumanizeTime(data.CreatedAt))
+									if data.OriginalName != "" {
+										@metaRow("Original name", data.OriginalName)
+									}
+									if data.OwnerID != "" {
+										@metaRow("Owner", data.OwnerID)
+									}
+									if data.ETag != "" {
+										@metaRow("ETag", data.ETag)
+									}
+								</dl>
+							</div>
+
+							<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+								<h2 class="text-sm font-semibold mb-1">Signed URL</h2>
+								if data.CanSign {
+									<p class="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
+										Valid until { HumanizeTime(data.ExpiresAt) }.
+									</p>
+									<div class="flex items-start gap-2">
+										<code class="flex-1 text-[11px] font-mono bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg p-2.5 break-all max-h-32 overflow-y-auto">{ data.SignedURL }</code>
+										<button
+											@click={ fmt.Sprintf("copy(%q)", data.SignedURL) }
+											class="p-2 rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors shrink-0"
+											title="Copy"
+											aria-label="Copy signed URL"
+										>
+											@iconCopy()
+										</button>
+									</div>
+								} else {
+									<p class="text-xs text-neutral-500 dark:text-neutral-400">{ data.SignNote }</p>
+								}
+							</div>
+						</div>
+					</div>
+				}
+			</div>
+		</div>
+	}
+}
+
+templ metaRow(label, value string) {
+	<div class="flex items-start justify-between gap-4">
+		<dt class="text-neutral-500 dark:text-neutral-400 shrink-0">{ label }</dt>
+		<dd class="font-medium text-right break-all">{ value }</dd>
+	</div>
+}
