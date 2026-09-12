@@ -131,7 +131,7 @@ func TestFilesystemStorage_ListPage(t *testing.T) {
 func TestJayStorage_ListPage_ForwardsCursorAndDelimiter(t *testing.T) {
 	var seen jayclient.ListOptions
 	fc := &fakeJayClient{
-		listFn: func(_ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+		listFn: func(_ context.Context, _ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
 			seen = *opts
 			return &jayclient.ListResult{
 				Objects: []jayclient.ListEntry{{
@@ -178,7 +178,7 @@ func TestJayStorage_List_FollowsPaginationBeyondOnePage(t *testing.T) {
 	// nothing. 2500 keys is the smallest size that needs three pages.
 	const total = 2500
 	fc := &fakeJayClient{
-		listFn: func(_ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+		listFn: func(_ context.Context, _ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
 			start := 0
 			if opts.StartAfter != "" {
 				var n int
@@ -221,7 +221,7 @@ func TestJayStorage_List_FailsOnStalledCursor(t *testing.T) {
 	// rest behind and never know.
 	calls := 0
 	fc := &fakeJayClient{
-		listFn: func(_ string, _ *jayclient.ListOptions) (*jayclient.ListResult, error) {
+		listFn: func(_ context.Context, _ string, _ *jayclient.ListOptions) (*jayclient.ListResult, error) {
 			calls++
 			if calls > 10 {
 				t.Fatal("List looped on a cursor that never advances")
@@ -252,7 +252,7 @@ func TestJayStorage_List_FailsAtSafetyCap(t *testing.T) {
 	// is indistinguishable from a complete one, which is the original bug.
 	pages := 0
 	fc := &fakeJayClient{
-		listFn: func(_ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+		listFn: func(_ context.Context, _ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
 			// Never runs out, and always advances the cursor, so the only thing
 			// that can stop the walk is the cap.
 			res := &jayclient.ListResult{IsTruncated: true}

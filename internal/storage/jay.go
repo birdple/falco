@@ -29,13 +29,13 @@ type JayConfig struct {
 // jayClientIface is the minimal surface of jayclient.Client that JayStorage uses.
 // It exists solely so tests can swap in a fake.
 type jayClientIface interface {
-	PutObject(bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error)
-	GetObject(bucket, key string) (*jayclient.GetResult, error)
-	HeadObject(bucket, key string) (*jayclient.ObjectInfo, error)
-	DeleteObject(bucket, key string) error
-	ListObjects(bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error)
-	HeadBucket(name string) (*jayclient.BucketInfo, error)
-	CreateBucket(name string) (*jayclient.BucketInfo, error)
+	PutObject(ctx context.Context, bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error)
+	GetObject(ctx context.Context, bucket, key string) (*jayclient.GetResult, error)
+	HeadObject(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error)
+	DeleteObject(ctx context.Context, bucket, key string) error
+	ListObjects(ctx context.Context, bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error)
+	HeadBucket(ctx context.Context, name string) (*jayclient.BucketInfo, error)
+	CreateBucket(ctx context.Context, name string) (*jayclient.BucketInfo, error)
 	Close() error
 }
 
@@ -49,6 +49,10 @@ type JayStorage struct {
 }
 
 // NewJayStorage dials Jay, ensures the bucket exists, and returns a backend.
+//
+// Startup is bounded like the S3 and R2 constructors: a jay that accepts the
+// TCP connection but never answers the handshake must fail the boot, not hang
+// it.
 func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 	if cfg == nil || cfg.Addr == "" || cfg.TokenID == "" || cfg.Secret == "" || cfg.Bucket == "" {
 		return nil, fmt.Errorf("%w: jay: addr/token_id/secret/bucket are required", ErrInvalidConfiguration)
@@ -57,7 +61,10 @@ func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 	if pool <= 0 {
 		pool = 4
 	}
-	c, err := jayclient.Dial(cfg.Addr, cfg.TokenID, cfg.Secret, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := jayclient.Dial(ctx, cfg.Addr, cfg.TokenID, cfg.Secret, jayclient.WithPoolSize(pool))
 	if err != nil {
 		return nil, fmt.Errorf("jay: dial %s: %w", cfg.Addr, err)
 	}
@@ -77,9 +84,9 @@ func NewJayStorage(cfg *JayConfig) (*JayStorage, error) {
 	}
 
 	// Ensure the bucket exists (idempotent).
-	if _, err := c.CreateBucket(cfg.Bucket); err != nil && !isBucketAlreadyExists(err) {
+	if _, err := c.CreateBucket(ctx, cfg.Bucket); err != nil && !isBucketAlreadyExists(err) {
 		// HeadBucket fallback — if CreateBucket says it exists we're fine.
-		if _, headErr := c.HeadBucket(cfg.Bucket); headErr != nil {
+		if _, headErr := c.HeadBucket(ctx, cfg.Bucket); headErr != nil {
 			_ = c.Close()
 			return nil, fmt.Errorf("jay: ensure bucket %q: create: %w; head: %w", cfg.Bucket, err, headErr)
 		}
@@ -130,7 +137,7 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 		// twice the CPU of the SHA-256 checksum jay always computes anyway.
 		SkipETag: true,
 	}
-	res, err := s.client.PutObject(s.bucket, key, data, metadata.Size, opts)
+	res, err := s.client.PutObject(ctx, s.bucket, key, data, metadata.Size, opts)
 	if err != nil {
 		return fmt.Errorf("jay: put %s: %w", key, err)
 	}
@@ -140,7 +147,7 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 
 // Retrieve downloads an object and reconstructs metadata from Jay headers.
 func (s *JayStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
-	res, err := s.client.GetObject(s.bucket, key)
+	res, err := s.client.GetObject(ctx, s.bucket, key)
 	if err != nil {
 		if isJayNotFound(err) {
 			return nil, nil, ErrImageNotFound
@@ -157,7 +164,7 @@ func (s *JayStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *
 
 // Exists checks for presence via HeadObject.
 func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := s.client.HeadObject(s.bucket, key)
+	_, err := s.client.HeadObject(ctx, s.bucket, key)
 	if err == nil {
 		return true, nil
 	}
@@ -169,7 +176,7 @@ func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
 
 // Delete removes an object.
 func (s *JayStorage) Delete(ctx context.Context, key string) error {
-	if err := s.client.DeleteObject(s.bucket, key); err != nil {
+	if err := s.client.DeleteObject(ctx, s.bucket, key); err != nil {
 		if isJayNotFound(err) {
 			return ErrImageNotFound
 		}
@@ -219,7 +226,7 @@ func (s *JayStorage) List(ctx context.Context, prefix string) ([]ListResult, err
 
 // ListPage returns one page of objects, honouring prefix, delimiter and cursor.
 func (s *JayStorage) ListPage(ctx context.Context, opts ListOptions) (*ListPage, error) {
-	res, err := s.client.ListObjects(s.bucket, &jayclient.ListOptions{
+	res, err := s.client.ListObjects(ctx, s.bucket, &jayclient.ListOptions{
 		Prefix:     opts.Prefix,
 		Delimiter:  opts.Delimiter,
 		StartAfter: opts.Cursor,
@@ -267,7 +274,7 @@ func parseJayTime(v, key string) time.Time {
 
 // Health pings the bucket via HeadBucket.
 func (s *JayStorage) Health(ctx context.Context) error {
-	_, err := s.client.HeadBucket(s.bucket)
+	_, err := s.client.HeadBucket(ctx, s.bucket)
 	if err != nil {
 		return fmt.Errorf("jay: unhealthy: %w", err)
 	}

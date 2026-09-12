@@ -16,57 +16,57 @@ import (
 
 // fakeJayClient implements jayClientIface for testing.
 type fakeJayClient struct {
-	putFn    func(bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error)
-	getFn    func(bucket, key string) (*jayclient.GetResult, error)
-	headFn   func(bucket, key string) (*jayclient.ObjectInfo, error)
-	delFn    func(bucket, key string) error
-	listFn   func(bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error)
-	hBucket  func(name string) (*jayclient.BucketInfo, error)
-	cBucket  func(name string) (*jayclient.BucketInfo, error)
+	putFn    func(ctx context.Context, bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error)
+	getFn    func(ctx context.Context, bucket, key string) (*jayclient.GetResult, error)
+	headFn   func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error)
+	delFn    func(ctx context.Context, bucket, key string) error
+	listFn   func(ctx context.Context, bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error)
+	hBucket  func(ctx context.Context, name string) (*jayclient.BucketInfo, error)
+	cBucket  func(ctx context.Context, name string) (*jayclient.BucketInfo, error)
 	closeErr error
 }
 
-func (f *fakeJayClient) PutObject(bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error) {
+func (f *fakeJayClient) PutObject(ctx context.Context, bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error) {
 	if f.putFn == nil {
 		return nil, errors.New("fakeJayClient: unexpected PutObject call")
 	}
-	return f.putFn(bucket, key, data, size, opts)
+	return f.putFn(ctx, bucket, key, data, size, opts)
 }
-func (f *fakeJayClient) GetObject(bucket, key string) (*jayclient.GetResult, error) {
+func (f *fakeJayClient) GetObject(ctx context.Context, bucket, key string) (*jayclient.GetResult, error) {
 	if f.getFn == nil {
 		return nil, errors.New("fakeJayClient: unexpected GetObject call")
 	}
-	return f.getFn(bucket, key)
+	return f.getFn(ctx, bucket, key)
 }
-func (f *fakeJayClient) HeadObject(bucket, key string) (*jayclient.ObjectInfo, error) {
+func (f *fakeJayClient) HeadObject(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {
 	if f.headFn == nil {
 		return nil, errors.New("fakeJayClient: unexpected HeadObject call")
 	}
-	return f.headFn(bucket, key)
+	return f.headFn(ctx, bucket, key)
 }
-func (f *fakeJayClient) DeleteObject(bucket, key string) error {
+func (f *fakeJayClient) DeleteObject(ctx context.Context, bucket, key string) error {
 	if f.delFn == nil {
 		return errors.New("fakeJayClient: unexpected DeleteObject call")
 	}
-	return f.delFn(bucket, key)
+	return f.delFn(ctx, bucket, key)
 }
-func (f *fakeJayClient) ListObjects(bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+func (f *fakeJayClient) ListObjects(ctx context.Context, bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
 	if f.listFn == nil {
 		return nil, errors.New("fakeJayClient: unexpected ListObjects call")
 	}
-	return f.listFn(bucket, opts)
+	return f.listFn(ctx, bucket, opts)
 }
-func (f *fakeJayClient) HeadBucket(name string) (*jayclient.BucketInfo, error) {
+func (f *fakeJayClient) HeadBucket(ctx context.Context, name string) (*jayclient.BucketInfo, error) {
 	if f.hBucket == nil {
 		return nil, errors.New("fakeJayClient: unexpected HeadBucket call")
 	}
-	return f.hBucket(name)
+	return f.hBucket(ctx, name)
 }
-func (f *fakeJayClient) CreateBucket(name string) (*jayclient.BucketInfo, error) {
+func (f *fakeJayClient) CreateBucket(ctx context.Context, name string) (*jayclient.BucketInfo, error) {
 	if f.cBucket == nil {
 		return nil, errors.New("fakeJayClient: unexpected CreateBucket call")
 	}
-	return f.cBucket(name)
+	return f.cBucket(ctx, name)
 }
 func (f *fakeJayClient) Close() error { return f.closeErr }
 
@@ -79,7 +79,7 @@ func TestJayStorage_Store_Success(t *testing.T) {
 	var gotSize int64
 	var gotMeta map[string]string
 	fc := &fakeJayClient{
-		putFn: func(bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error) {
+		putFn: func(ctx context.Context, bucket, key string, data io.Reader, size int64, opts *jayclient.PutOptions) (*jayclient.PutResult, error) {
 			gotBucket, gotKey, gotSize = bucket, key, size
 			if opts != nil {
 				gotMeta = opts.Metadata
@@ -143,7 +143,7 @@ func TestJayStorage_MetadataRoundtrip(t *testing.T) {
 
 func TestJayStorage_Retrieve_Success(t *testing.T) {
 	fc := &fakeJayClient{
-		getFn: func(bucket, key string) (*jayclient.GetResult, error) {
+		getFn: func(ctx context.Context, bucket, key string) (*jayclient.GetResult, error) {
 			return &jayclient.GetResult{
 				ContentType: "image/png", Size: 123, ETag: "etag-r",
 				Metadata: metaToMap(&ImageMetadata{
@@ -167,7 +167,7 @@ func TestJayStorage_Retrieve_Success(t *testing.T) {
 
 func TestJayStorage_Retrieve_NotFound(t *testing.T) {
 	fc := &fakeJayClient{
-		getFn: func(bucket, key string) (*jayclient.GetResult, error) {
+		getFn: func(ctx context.Context, bucket, key string) (*jayclient.GetResult, error) {
 			return nil, &jayclient.Error{Code: "NoSuchKey", Message: "not found"}
 		},
 	}
@@ -180,12 +180,12 @@ func TestJayStorage_Retrieve_NotFound(t *testing.T) {
 
 func TestJayStorage_Exists_TrueFalse(t *testing.T) {
 	exists := &fakeJayClient{
-		headFn: func(bucket, key string) (*jayclient.ObjectInfo, error) {
+		headFn: func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {
 			return &jayclient.ObjectInfo{Size: 1}, nil
 		},
 	}
 	missing := &fakeJayClient{
-		headFn: func(bucket, key string) (*jayclient.ObjectInfo, error) {
+		headFn: func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {
 			return nil, &jayclient.Error{Code: "NoSuchKey"}
 		},
 	}
@@ -204,7 +204,7 @@ func TestJayStorage_Exists_TrueFalse(t *testing.T) {
 
 func TestJayStorage_Delete(t *testing.T) {
 	called := false
-	fc := &fakeJayClient{delFn: func(bucket, key string) error { called = true; return nil }}
+	fc := &fakeJayClient{delFn: func(ctx context.Context, bucket, key string) error { called = true; return nil }}
 	if err := newJayStorageWithClient(fc, "bk").Delete(context.Background(), "k"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestJayStorage_Delete(t *testing.T) {
 		t.Fatal("DeleteObject not called")
 	}
 
-	missing := &fakeJayClient{delFn: func(bucket, key string) error {
+	missing := &fakeJayClient{delFn: func(ctx context.Context, bucket, key string) error {
 		return &jayclient.Error{Code: "NoSuchKey"}
 	}}
 	if err := newJayStorageWithClient(missing, "bk").Delete(context.Background(), "k"); !errors.Is(err, ErrImageNotFound) {
@@ -222,7 +222,7 @@ func TestJayStorage_Delete(t *testing.T) {
 
 func TestJayStorage_List(t *testing.T) {
 	fc := &fakeJayClient{
-		listFn: func(bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
+		listFn: func(ctx context.Context, bucket string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
 			if opts.Prefix != "pfx/" {
 				t.Fatalf("wrong prefix: %s", opts.Prefix)
 			}
@@ -244,18 +244,80 @@ func TestJayStorage_List(t *testing.T) {
 }
 
 func TestJayStorage_Health(t *testing.T) {
-	ok := &fakeJayClient{hBucket: func(name string) (*jayclient.BucketInfo, error) {
+	ok := &fakeJayClient{hBucket: func(ctx context.Context, name string) (*jayclient.BucketInfo, error) {
 		return &jayclient.BucketInfo{Name: name}, nil
 	}}
 	if err := newJayStorageWithClient(ok, "bk").Health(context.Background()); err != nil {
 		t.Fatalf("expected healthy, got %v", err)
 	}
 
-	bad := &fakeJayClient{hBucket: func(name string) (*jayclient.BucketInfo, error) {
+	bad := &fakeJayClient{hBucket: func(ctx context.Context, name string) (*jayclient.BucketInfo, error) {
 		return nil, errors.New("dial tcp: connection refused")
 	}}
 	if err := newJayStorageWithClient(bad, "bk").Health(context.Background()); err == nil {
 		t.Fatal("expected unhealthy")
+	}
+}
+
+// TestJayStorage_ContextReachesClient pins the reason jay was bumped to a
+// client that takes a context: before it, the caller's ctx stopped at this
+// layer and the 30 s timeout around Retrieve in the delivery handler cancelled
+// nothing. Every operation must hand the exact ctx it received to the client.
+func TestJayStorage_ContextReachesClient(t *testing.T) {
+	type ctxKey struct{}
+	want := context.WithValue(context.Background(), ctxKey{}, "marker")
+	seen := func(t *testing.T, op string, got context.Context) {
+		t.Helper()
+		if got == nil || got.Value(ctxKey{}) != "marker" {
+			t.Fatalf("%s: client did not receive the caller's context", op)
+		}
+	}
+	fc := &fakeJayClient{
+		putFn: func(ctx context.Context, _, _ string, data io.Reader, _ int64, _ *jayclient.PutOptions) (*jayclient.PutResult, error) {
+			seen(t, "PutObject", ctx)
+			_, _ = io.Copy(io.Discard, data)
+			return &jayclient.PutResult{}, nil
+		},
+		getFn: func(ctx context.Context, _, _ string) (*jayclient.GetResult, error) {
+			seen(t, "GetObject", ctx)
+			return &jayclient.GetResult{Body: io.NopCloser(bytes.NewReader(nil)), Metadata: map[string]string{}}, nil
+		},
+		headFn: func(ctx context.Context, _, _ string) (*jayclient.ObjectInfo, error) {
+			seen(t, "HeadObject", ctx)
+			return &jayclient.ObjectInfo{}, nil
+		},
+		delFn: func(ctx context.Context, _, _ string) error {
+			seen(t, "DeleteObject", ctx)
+			return nil
+		},
+		listFn: func(ctx context.Context, _ string, _ *jayclient.ListOptions) (*jayclient.ListResult, error) {
+			seen(t, "ListObjects", ctx)
+			return &jayclient.ListResult{}, nil
+		},
+		hBucket: func(ctx context.Context, _ string) (*jayclient.BucketInfo, error) {
+			seen(t, "HeadBucket", ctx)
+			return &jayclient.BucketInfo{}, nil
+		},
+	}
+	js := newJayStorageWithClient(fc, "bk")
+
+	if err := js.Store(want, "k", bytes.NewReader([]byte("x")), &ImageMetadata{Size: 1}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if _, _, err := js.Retrieve(want, "k"); err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if _, err := js.Exists(want, "k"); err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if err := js.Delete(want, "k"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := js.List(want, "pfx"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if err := js.Health(want); err != nil {
+		t.Fatalf("Health: %v", err)
 	}
 }
 
