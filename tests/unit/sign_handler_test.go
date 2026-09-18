@@ -33,11 +33,9 @@ func postSign(t *testing.T, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// Un error de decode y un path faltante son causas distintas y tienen que
-// reportarse distinto. Estaban colapsados en un solo `err != nil || Path == ""`,
-// así que un campo desconocido salía como "path is required" aunque el caller
-// sí hubiera mandado path — y con json/v2, que es case-sensitive y rechaza
-// campos desconocidos, ese caso pasó de inalcanzable a común.
+// A decode error and a missing path are different causes and have to be
+// reported differently: json/v2 is case-sensitive and rejects unknown fields,
+// so a caller that did send path can get a decode error.
 func TestHandleSignURL_DecodeErrorIsNotDisguisedAsMissingPath(t *testing.T) {
 	cases := []struct {
 		nombre string

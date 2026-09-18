@@ -2,11 +2,6 @@ package handlers
 
 // Operational endpoints: storage statistics, cache inspection and purge, and
 // the readiness probe.
-//
-// These exist because the numbers behind them were already computed in Go and
-// reachable from nowhere: GetStats and GetCacheStats had no HTTP route at all,
-// so the only way to see a hit ratio was to scrape Prometheus, and there was no
-// way to purge a cache entry short of deleting the image.
 
 import (
 	"context"
@@ -23,11 +18,9 @@ import (
 	"github.com/birdple/falco/internal/version"
 )
 
-// statsTimeout bounds a single backend's stats call.
-//
-// The dashboard used to ask every bucket in series with jay's own 5 s client
-// timeout underneath, so N unreachable buckets cost N×5 s of a 30 s request
-// budget. Here the calls run concurrently and each one is capped.
+// statsTimeout bounds a single backend's stats call. The calls run
+// concurrently and each one is capped, so N unreachable buckets do not add up
+// to N timeouts inside the request budget.
 const statsTimeout = 5 * time.Second
 
 // BucketStats is one bucket's entry in the stats response.

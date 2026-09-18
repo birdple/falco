@@ -41,10 +41,8 @@ func (d *defaultsProvider) setServerDefaults(v *viper.Viper) {
 	v.SetDefault("server.max_header_value_count", 100)
 }
 
-// setStorageDefaults sets storage default values.
-// No default bucket is registered: if the operator does not configure a bucket,
-// validation must fail at startup. This matches the birdple-v2 monorepo rule
-// that sensitive configuration has no implicit defaults.
+// setStorageDefaults registers no default bucket: with no bucket configured,
+// validation must fail at startup.
 func (d *defaultsProvider) setStorageDefaults(v *viper.Viper) {
 	// Intentionally empty. See validator.validateStorage.
 }
@@ -60,11 +58,9 @@ func (d *defaultsProvider) setCacheDefaults(v *viper.Viper) {
 
 // setProcessingDefaults sets processing default values
 func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
-	// 10 MB, matching config.yaml, both docker-compose files, and the limit
-	// birdple-api and the mobile app validate against. The compiled default was
-	// 5 and nobody noticed because every environment sets the variable — a
-	// deployment that forgot to would have rejected with 413 images the rest of
-	// the stack considers fine.
+	// 10 MB: the same limit config.yaml, the compose files, birdple-api and
+	// the app set. A different default would reject with 413 images the rest
+	// of the stack accepts.
 	v.SetDefault("processing.max_file_size_mb", 10)
 	v.SetDefault("processing.default_quality", 85)
 	v.SetDefault("processing.default_format", "webp")
@@ -75,15 +71,10 @@ func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
 	v.SetDefault("processing.max_dimensions.height", 2048)
 }
 
-// setSecurityDefaults sets security default values.
-//
-// IMPORTANT: api_key_required and hmac_required have NO defaults. Both must be
-// set explicitly in the environment. This prevents a misconfigured deployment
-// from silently booting with no auth and no signing — previously the cause of
-// the "/api/v1/images/* is publicly readable" CRITICAL finding.
-//
-// Only values that are safe to default (format tweaks, rate limit knobs, CORS
-// development fallbacks) are set here.
+// setSecurityDefaults sets security default values. api_key_required and
+// hmac_required have no default: a misconfigured deployment must not boot
+// silently with no auth and no signing. Only values that are safe to default
+// (format tweaks, rate limit knobs, CORS development fallbacks) are set here.
 func (d *defaultsProvider) setSecurityDefaults(v *viper.Viper) {
 	v.SetDefault("security.cors.origins", []string{"http://localhost:*", "https://localhost:*"})
 	v.SetDefault("security.cors.methods", []string{"GET", "POST", "OPTIONS"})

@@ -45,10 +45,9 @@ type CacheStats struct {
 // statUnmeasured marks a CacheStats field this backend cannot measure.
 const statUnmeasured = -1
 
-// NoCacheStats describes the absence of a cache. It is deliberately
-// distinguishable from an empty cache: the fields that would only mean anything
-// with a cache behind them are marked as
-// no medidos en vez de en cero.
+// NoCacheStats describes the absence of a cache, distinguishable from an empty
+// one: the fields that only mean anything with a cache behind them are marked
+// unmeasured rather than zero.
 func NoCacheStats() CacheStats {
 	return CacheStats{
 		Backend:   "none",
@@ -173,13 +172,10 @@ func (c *LRUCache) Clear() {
 	c.currentSize = 0
 }
 
-// Stop gracefully stops the cache cleanup goroutine.
-//
-// Closes the channel rather than sending on it. The non-blocking send this
-// replaced fell through to its `default` whenever the goroutine happened to be
-// inside cleanupExpired at that moment — so Stop stopped nothing and the
-// goroutine outlived the process's interest in it. Closing wakes the receiver
-// wherever it is, and the sync.Once makes calling Stop twice harmless.
+// Stop stops the cleanup goroutine. It closes the channel rather than sending
+// on it: a non-blocking send falls through to its `default` while the
+// goroutine is inside cleanupExpired and stops nothing. The sync.Once makes
+// calling Stop twice harmless.
 func (c *LRUCache) Stop() {
 	c.stopOnce.Do(func() { close(c.stopCleanup) })
 }

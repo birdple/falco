@@ -27,8 +27,8 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	assert.Equal(t, 24, v.GetInt("cache.ttl_hours"))
 
 	// Processing defaults
-	// 10, no 5: el default compilado tiene que coincidir con lo que fijan
-	// `config.yaml`, los compose y los límites de birdple-api y la app.
+	// The compiled default has to match what `config.yaml`, the compose files
+	// and the birdple-api / app limits set.
 	assert.Equal(t, 10, v.GetInt("processing.max_file_size_mb"))
 	assert.Equal(t, 85, v.GetInt("processing.default_quality"))
 	assert.Equal(t, "webp", v.GetString("processing.default_format"))

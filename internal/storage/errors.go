@@ -27,11 +27,10 @@ var (
 	// it is not a registered bucket, not a declared alias, and the backend it
 	// resolved to has no way to switch to it.
 	//
-	// It exists so that case stops being invisible. WithBucket returns a
-	// backend and not an error, and the circuit-breaker wrapper implements it
-	// for every backend by handing back itself — so a bucket the backend could
-	// not reach used to end up written into the default one, answered 201, and
-	// reported nowhere but a log line.
+	// It exists so that case is visible: WithBucket returns a backend and not
+	// an error, and the circuit-breaker wrapper implements it for every backend
+	// by handing back itself, so without this error an unreachable bucket
+	// would end up written into the default one with a 201.
 	ErrBucketNotHonoured = errors.New("requested bucket cannot be served")
 
 	// ErrUnsupportedOperation means the backend cannot do this at all — not that

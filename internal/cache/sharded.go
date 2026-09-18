@@ -13,9 +13,9 @@ const defaultShardCount = 16
 type ShardedCache struct {
 	shards []*LRUCache
 	count  uint64
-	// The seed is created once. maphash.String hashes the string without
-	// copying it to a []byte and without allocating a hasher per call, which is
-	// what the previous fnv version did on EVERY Get/Set/Delete/Contains.
+	// The seed is created once. maphash.String hashes without copying to a
+	// []byte or allocating a hasher per call, and this runs on every
+	// Get/Set/Delete/Contains.
 	seed maphash.Seed
 }
 

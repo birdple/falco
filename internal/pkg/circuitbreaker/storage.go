@@ -37,25 +37,11 @@ type CircuitBreakerSettings struct {
 
 // IsBackendFailure reports whether err should count against the circuit breaker.
 //
-// A missing object is NOT a backend failure: the backend answered, correctly,
-// that the key does not exist. Counting it as one is how a screen listing a few
-// images whose rows outlived their bytes trips the breaker — and an open
-// breaker rejects every other operation on the bucket, uploads included.
-//
-// That is not hypothetical. With the default of 5 consecutive failures, a
-// client rendering a handful of dangling image URLs opened the breaker and the
-// next upload died with "circuit breaker is open" for the whole 30 s timeout —
-// a read problem taking writes down with it, and a self-sustaining one: failed
-// uploads leave more dangling URLs, which trip the breaker again.
-//
-// `ErrListingTooLarge` is here for the same reason: the backend answered, and
-// the answer is "that prefix is bigger than one listing". Five of those in a row
-// — a dashboard reloading the same oversized prefix — would otherwise open the
-// breaker and take uploads down with them.
-//
-// The breaker exists for a backend that is down or unreachable. Both of these
-// are normal answers and are reported to the caller either way; they just do not
-// count here.
+// The breaker exists for a backend that is down or unreachable. A missing
+// object and an oversized prefix are normal answers from the backend: counting
+// them would open the breaker over a handful of dangling URLs and take down
+// uploads for the whole bucket. They are reported to the caller either way;
+// they just do not count here.
 func IsBackendFailure(err error) bool {
 	return err != nil && !storage.IsNotFound(err) && !storage.IsListingTooLarge(err)
 }
@@ -111,10 +97,8 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 // execute runs fn behind the circuit breaker and returns its result already
 // typed.
 //
-// gobreaker.Execute works in terms of `any`, so without this every wrapper
-// repeated the same unchecked type assertion — seven separate chances to panic
-// if one of them ever returned something else. Here the assertion happens once,
-// and it is checked.
+// gobreaker.Execute works in terms of `any`; here the type assertion happens
+// once and is checked, instead of unchecked in every wrapper.
 func (s *StorageBackend) execute[T any](fn func() (T, error)) (T, error) {
 	var zero T
 	res, err := s.cb.Execute(func() (any, error) {

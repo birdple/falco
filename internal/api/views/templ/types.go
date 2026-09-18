@@ -15,8 +15,8 @@ import (
 type PageData struct {
 	Title string
 	// Theme is resolved on the server from a cookie, so the correct colours
-	// are in the first byte of HTML. Doing it from an inline script meant the
-	// panel's own CSP blocked it and every load flashed white.
+	// are in the first byte of HTML: an inline script is blocked by the
+	// panel's CSP and the page flashes white.
 	Theme string
 	// CSRFToken is published in a <meta> and attached by app.js to every
 	// mutating request.
@@ -106,10 +106,9 @@ type ObjectItem struct {
 	Modified      time.Time
 	ModifiedHuman string
 
-	// Format is read from stored metadata where available. It is NOT guessed
-	// from the key: falco stores content-hashed keys with no extension, so
-	// guessing could only ever answer "IMG" — which is exactly what the old
-	// badge always said.
+	// Format is read from stored metadata, never from the key: falco stores
+	// content-hashed keys with no extension, so the name could only ever
+	// yield "IMG".
 	Format      string
 	ContentType string
 }
@@ -151,9 +150,8 @@ type BucketStats struct {
 	StatsError string
 }
 
-// UploadConfig carries the real limits into the upload dialog. The old panel
-// hardcoded "PNG, JPG, WebP up to 10MB" in the markup while the limit was
-// configurable and the accepted types were a different list.
+// UploadConfig carries the real upload limits into the upload dialog, read
+// from configuration rather than written into the markup.
 type UploadConfig struct {
 	Buckets       []string
 	Bucket        string
@@ -344,8 +342,7 @@ type LoginData struct {
 	Theme string
 	Error string
 	// Disabled marks the panel as unavailable because nothing is configured to
-	// authenticate against. It is a refusal, not a blank form: the old panel
-	// answered that situation by granting admin access to anyone.
+	// authenticate against. It is a refusal, not a blank form.
 	Disabled bool
 }
 

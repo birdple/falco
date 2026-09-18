@@ -15,16 +15,14 @@ import (
 )
 
 const (
-	// sessionCookie holds an opaque session id. It replaces the old falco_key
-	// cookie, which carried the API key itself — and whose HttpOnly flag was
-	// pointless because the same key was also copied into localStorage, where
-	// any script on the page could read it.
+	// sessionCookie holds an opaque session id, never the API key: a key in a
+	// cookie or in localStorage can be read by any script on the page.
 	sessionCookie = "falco_session"
 
 	// themeCookie remembers the light/dark choice. It is read on the server so
-	// the correct theme is in the first byte of HTML: doing it from an inline
-	// script was blocked by the panel's own CSP, which allows 'unsafe-eval'
-	// (Alpine needs it) but not 'unsafe-inline'.
+	// the theme is in the first byte of HTML: an inline script is blocked by
+	// the panel's CSP, which allows 'unsafe-eval' (Alpine) but not
+	// 'unsafe-inline'.
 	themeCookie = "falco_theme"
 
 	sessionTTL     = 12 * time.Hour
@@ -195,16 +193,13 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// isSecureRequest reports whether the browser reached us over TLS.
+// isSecureRequest reports whether the browser reached us over TLS. It decides
+// the cookie's Secure flag: setting it over plain HTTP makes the browser drop
+// the cookie and the login bounce in a loop with no error.
 //
-// The cookie used to be written with Secure unconditionally. Over plain HTTP
-// the browser silently drops it, so /ui/auth answered {"ok":true}, the page
-// redirected to the dashboard, and the dashboard bounced straight back to the
-// login — an infinite loop with no error anywhere.
-//
-// X-Forwarded-Proto is honoured only from a trusted proxy, matching the rule
-// the rest of falco already applies to client IPs: otherwise any client could
-// claim HTTPS and have the cookie marked Secure over a plaintext hop.
+// X-Forwarded-Proto is honoured only from a trusted proxy, the same rule falco
+// applies to client IPs: otherwise any client could claim HTTPS and have the
+// cookie marked Secure over a plaintext hop.
 func isSecureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true

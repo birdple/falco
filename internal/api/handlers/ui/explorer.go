@@ -169,11 +169,8 @@ func (h *Handler) decorate(items []storage.ListResult, bucket string) []views.Ob
 }
 
 // bucketItems builds the sidebar, asking every bucket for its stats
-// concurrently.
-//
-// The old sidebar did this in series, with jay's own 5 s client timeout
-// underneath: N unreachable buckets cost N×5 s on every single page view,
-// against a 30 s request budget.
+// concurrently: in series, N unreachable buckets add up to N client timeouts
+// on every page view.
 func (h *Handler) bucketItems(ctx context.Context, names []string, current string) []views.BucketItem {
 	items := make([]views.BucketItem, len(names))
 	defaultName := h.cfg.GetDefaultBucketName()
@@ -279,11 +276,8 @@ func splitListing(results []storage.ListResult, prefix string) ([]views.FolderIt
 	return out, objects
 }
 
-// breadcrumbs turns a prefix into navigable steps, at any depth.
-//
-// The old dashboard only ever looked at the first path segment and discarded
-// everything below it, so "avatars/2024/x.webp" had no folder to click and no
-// row in the grid: it was simply unreachable.
+// breadcrumbs turns a prefix into navigable steps, at any depth:
+// "avatars/2024/x.webp" has to yield a folder per segment.
 func breadcrumbs(prefix string) []views.Crumb {
 	trimmed := strings.Trim(prefix, "/")
 	if trimmed == "" {
@@ -324,10 +318,8 @@ func normalizePrefix(raw string) string {
 
 // domID hashes a storage key into something usable as an HTML id.
 //
-// The key itself cannot be used: it contains slashes and dots, so an id like
-// "image-avatars/a1b2" produces "#image-avatars/a1b2", which is not a valid CSS
-// selector and throws inside querySelector — which is exactly what happened to
-// the delete button inside any folder.
+// The key itself cannot be used: it contains slashes and dots, and
+// "#image-avatars/a1b2" is not a valid CSS selector, so querySelector throws.
 func domID(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:8])
@@ -335,9 +327,8 @@ func domID(key string) string {
 
 // formatLabel turns a content type into a short badge.
 //
-// It reads the content type, never the key. falco stores content-hashed keys
-// with no extension, so the old badge — which switched on the file extension —
-// could only ever fall through to "IMG", for every object, forever.
+// It reads the content type, never the key: falco stores content-hashed keys
+// with no extension, so the name could only ever yield "IMG".
 func formatLabel(contentType string) string {
 	if contentType == "" {
 		return "—"
@@ -360,9 +351,7 @@ func formatLabel(contentType string) string {
 // signedThumb builds a delivery URL for the panel to display.
 //
 // Signing happens here, on the server, so the HMAC key never reaches the
-// browser. Without it every thumbnail is a 403 in any deployment running with
-// HMAC_REQUIRED=true — which is how the panel looked in the stack it actually
-// ships in.
+// browser. Unsigned, with HMAC_REQUIRED=true every thumbnail is a 403.
 func (h *Handler) signedThumb(bucket, key string, width int) string {
 	q := url.Values{}
 	q.Set("b", bucket)

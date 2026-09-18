@@ -73,8 +73,6 @@ func NewServer(cfg *ServerConfig) *Server {
 	return s
 }
 
-// setupRouter configures the Chi router with middleware and routes
-// setupRouter builds the chi router: middleware stack first, then routes.
 // Router tuning knobs.
 const (
 	// requestTimeout caps how long any single request may run. Generous
@@ -90,6 +88,7 @@ const (
 	corsMaxAgeSeconds = 300
 )
 
+// setupRouter builds the chi router: middleware stack first, then routes.
 func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 	s.useMiddleware(r)
@@ -269,10 +268,10 @@ func (s *Server) mountPprof(r chi.Router) {
 func (s *Server) mountAPIRoutes(r chi.Router) {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/images/*", s.handler.HandleDelivery)
-		// HEAD must answer the same headers as GET — content type, length,
-		// ETag and cache policy — so it runs the same handler and lets
-		// net/http drop the body. It costs the same work as a GET; it exists
-		// for correctness (405 was the old answer), not as a cheap probe.
+		// HEAD must answer the same headers as GET (content type, length,
+		// ETag, cache policy), so it runs the same handler and lets net/http
+		// drop the body. It costs the same work as a GET; it is not a cheap
+		// probe.
 		r.Head("/images/*", s.handler.HandleDelivery)
 		r.Get("/proxy/*", s.handler.HandleProxy)
 
@@ -284,10 +283,7 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 			r.Delete("/delete", s.handler.HandleDelete)
 			r.Post("/sign", s.handler.HandleSignURL)
 
-			// Metadata, statistics and cache control. These read state that
-			// was already computed in Go and had no route out: GetStats and
-			// GetCacheStats were reachable from nowhere, and a cache entry
-			// could only be dropped as a side effect of deleting its image.
+			// Metadata, statistics and cache control.
 			r.Get("/meta/*", s.handler.HandleObjectMeta)
 			r.Get("/stats", s.handler.HandleStats)
 			r.Get("/cache", s.handler.HandleCacheStats)
@@ -338,10 +334,10 @@ func (s *Server) setupServer() {
 		WriteTimeout:      s.config.Server.WriteTimeout,
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
-		// Topes de cabecera: falco es un CDN de imágenes de cara pública detrás
-		// from Cloudflare. MaxHeaderBytes caps the weight and
-		// MaxHeaderValueCount (Go 1.27) the count; without the latter, thousands
-		// of tiny headers stay under the byte cap and still cost parsing time.
+		// Header caps: falco is a public-facing image CDN behind Cloudflare.
+		// MaxHeaderBytes caps the weight and MaxHeaderValueCount (Go 1.27) the
+		// count; without the latter, thousands of tiny headers stay under the
+		// byte cap and still cost parsing time.
 		MaxHeaderBytes:      s.config.Server.MaxHeaderBytes,
 		MaxHeaderValueCount: s.config.Server.MaxHeaderValueCount,
 	}

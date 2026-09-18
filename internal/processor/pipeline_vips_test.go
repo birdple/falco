@@ -12,11 +12,9 @@ import (
 	"github.com/cshum/vipsgen/vips"
 )
 
-// These tests run the real libvips pipeline rather than asserting on parameter
-// plumbing. Everything else in the package is checked without libvips, which is
-// exactly how a transformation can be "wired up" and still do nothing: the
-// watermark, saturation and hue all shipped as struct fields that no stage
-// applied, and no test noticed because no test looked at a pixel.
+// These tests run the real libvips pipeline and look at pixels. Everything
+// else in the package is checked without libvips, which is how a
+// transformation can be "wired up" as a struct field that no stage applies.
 func TestMain(m *testing.M) {
 	// Same configuration as cmd/server: VectorEnabled matters because Startup
 	// with a nil config silently disables libvips' SIMD paths.
@@ -72,9 +70,8 @@ func pngBytes(t *testing.T, img *vips.Image) []byte {
 	return data
 }
 
-// TestApplyWatermarkCompositesPixels is the test the original defect needed:
-// the parameters existed, the cache key accounted for them, and nothing drew
-// anything.
+// TestApplyWatermarkCompositesPixels asserts that the watermark is actually
+// drawn, not just that it enters the cache key.
 func TestApplyWatermarkCompositesPixels(t *testing.T) {
 	base := newTestImage(t, 400, 300, []float64{120, 120, 120})
 	defer base.Close()
@@ -235,9 +232,9 @@ func TestRightAngleRotationIsExact(t *testing.T) {
 	}
 }
 
-// TestSharpenUsesTheRequestedAmount: the previous implementation passed nil and
-// always sharpened by libvips' default, so the parameter was a boolean wearing
-// a range. Two different amounts must produce two different images.
+// TestSharpenUsesTheRequestedAmount: two different amounts must produce two
+// different images; with a nil sigma libvips always uses its default and the
+// parameter is a boolean wearing a range.
 func TestSharpenUsesTheRequestedAmount(t *testing.T) {
 	// A flat image cannot show sharpening, so this one has an edge in it.
 	edge := newTestImage(t, 100, 100, []float64{128, 128, 128})
@@ -261,9 +258,8 @@ func TestSharpenUsesTheRequestedAmount(t *testing.T) {
 			t.Fatalf("applyColorAdjustments falló: %v", err)
 		}
 		// Sampled on the dark side of the halo, a few pixels out from the
-		// edge. The edge itself is a fixed point of the unsharp mask — it
-		// reads the same at every sigma, which is what made the first version
-		// of this test claim the parameter did nothing.
+		// edge: the edge itself is a fixed point of the unsharp mask and reads
+		// the same at every sigma.
 		return pixel(t, img, 26, 45)[0]
 	}
 
@@ -278,12 +274,9 @@ func TestSharpenUsesTheRequestedAmount(t *testing.T) {
 	}
 }
 
-// TestSaturationSurvivesAnUntaggedImage covers the failure this suite found:
-// an image libvips tagged "multiband" has no route back from LCh, so restoring
-// its original interpretation fails. The transformation has already been
-// applied by then, and turning that into a 422 would fail a request over a
-// colour tag. It falls back to sRGB, which every encoder downstream wants
-// anyway.
+// TestSaturationSurvivesAnUntaggedImage: an image libvips tagged "multiband"
+// has no route back from LCh. The transformation has already been applied by
+// then, so it falls back to sRGB instead of answering 422 over a colour tag.
 func TestSaturationSurvivesAnUntaggedImage(t *testing.T) {
 	img, err := vips.NewBlack(50, 50, &vips.BlackOptions{Bands: 3})
 	if err != nil {

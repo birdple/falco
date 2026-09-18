@@ -429,9 +429,6 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	mockStorage.AssertExpectations(t)
 }
 
-// Removed TestHandleHealth_GetStatsError: health endpoint no longer calls GetStats()
-// (health is a lean load-balancer probe; verbose stats belong in /metrics).
-
 // Tests for HandleUpdate
 func TestHandleUpdate_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
@@ -656,13 +653,9 @@ func TestHandleDocs(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "redoc")
 }
 
-// TestHandleUpload_CustomID cubre las tres procedencias del id de una imagen:
-// el ?id= de la URL, el campo "id" de un multipart y el "id" de un body JSON.
-//
-// Existe porque la implementación reescribía r.URL.RawQuery a mitad del
-// handler para que las tres desembocaran en una única lectura del query. Al
-// quitar ese truco (y hoistear r.URL.Query()) hacía falta algo que afirmara
-// que las tres siguen llegando a la clave de storage correcta.
+// TestHandleUpload_CustomID covers the three sources of an image id: the
+// URL's ?id=, a multipart "id" field and the "id" of a JSON body. All three
+// have to reach the correct storage key.
 func TestHandleUpload_CustomID(t *testing.T) {
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0} // JPEG header
 
@@ -707,11 +700,9 @@ func TestHandleUpload_CustomID(t *testing.T) {
 			wantKey: "desde-form",
 		},
 		{
-			// Con los dos presentes gana el del query, y no es una decisión de
-			// falco: r.FormValue lee de r.Form, que net/http arma poniendo
-			// primero los valores del query y anexando después los del
-			// multipart — o sea que devuelve el del query. Es la precedencia
-			// que ya había antes del refactor y el test la deja escrita.
+			// With both present the query one wins, and that is not falco's
+			// decision: r.FormValue reads r.Form, which net/http builds with
+			// the query values first and the multipart ones after.
 			name: "con ambos presentes gana el del query",
 			request: func(t *testing.T) *http.Request {
 				return newMultipartReq(t, "/upload?id=desde-query", "desde-form")

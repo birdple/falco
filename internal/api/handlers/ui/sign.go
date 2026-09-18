@@ -19,9 +19,8 @@ func (h *Handler) signingEnabled() bool {
 // signPath returns a signed delivery URL for path, valid for ttl.
 //
 // This is the only place the panel touches the HMAC key, and it runs on the
-// server: the browser receives finished URLs and never the key itself. The old
-// panel had no signing at all, so with HMAC_REQUIRED=true — the setting the
-// stack actually runs — every image in the grid was a 403.
+// server: the browser receives finished URLs, never the key. Unsigned, with
+// HMAC_REQUIRED=true every image in the grid is a 403.
 //
 // The returned string is used verbatim. Signing rewrites the query (the expiry
 // is merged in and the parameters are re-encoded in sorted order), so

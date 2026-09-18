@@ -129,12 +129,9 @@ func (s *JayStorage) Store(ctx context.Context, key string, data io.Reader, meta
 	opts := &jayclient.PutOptions{
 		ContentType: metadata.ContentType,
 		Metadata:    metaToMap(metadata),
-		// falco never reads or serves jay's MD5 ETag (see serveImage in
-		// internal/api/handlers/base.go, which derives its own HTTP ETag from
-		// ID+Size+CreatedAt) and never talks to jay's S3 API for these
-		// objects, so the S3-compatibility ETag jay would otherwise compute
-		// is pure overhead here — profiling in jay showed it costs roughly
-		// twice the CPU of the SHA-256 checksum jay always computes anyway.
+		// falco never reads jay's MD5 ETag (serveImage derives its own from
+		// ID+Size+CreatedAt) nor uses jay's S3 API for these objects, so
+		// computing it is extra CPU on top of the SHA-256 jay computes anyway.
 		SkipETag: true,
 	}
 	res, err := s.client.PutObject(ctx, s.bucket, key, data, metadata.Size, opts)
@@ -185,17 +182,13 @@ func (s *JayStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// List returns every object under prefix, following jay's pagination.
-//
-// It used to ask for a single page of 1000 and throw IsTruncated away, so a
-// bucket with more than that listed short and said nothing. Callers that want
-// one page at a time use ListPage instead.
+// List returns every object under prefix, following jay's pagination. One
+// page at a time is ListPage.
 //
 // Two things stop the walk before the prefix runs out, and both return an
 // error rather than the keys gathered so far: MaxFullListingObjects, and a
-// cursor that stops advancing. Returning a short slice would put the caller
-// back exactly where the original bug left it — holding an incomplete listing
-// that looks complete.
+// cursor that stops advancing. A short slice is an incomplete listing that
+// looks complete.
 func (s *JayStorage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var out []ListResult
 	cursor := ""
@@ -256,10 +249,9 @@ func (s *JayStorage) ListPage(ctx context.Context, opts ListOptions) (*ListPage,
 
 // parseJayTime turns jay's timestamp into a time.Time.
 //
-// jay answers RFC3339 in Get/Head but "2006-01-02T15:04:05Z" in listings, and
-// both parse as RFC3339. The error used to be discarded, which turned an
-// unparseable date into a zero time that renders as year 1 — a wrong date is
-// worse than a missing one, so log it instead of swallowing it.
+// jay answers RFC3339 in Get/Head and "2006-01-02T15:04:05Z" in listings; both
+// parse as RFC3339. A parse error is logged rather than swallowed: a zero time
+// renders as year 1, and a wrong date is worse than a missing one.
 func parseJayTime(v, key string) time.Time {
 	if v == "" {
 		return time.Time{}

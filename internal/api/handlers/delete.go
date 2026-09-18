@@ -17,16 +17,11 @@ import (
 const (
 	// deleteWorkers is the number of concurrent goroutines used for prefix deletes.
 	deleteWorkers = 10
-	// listCap is the point past which a listing stops being trustworthy: the
-	// safety cap storage.List enforces while walking a prefix.
-	//
-	// It used to be the 1000-key page size, back when List asked for one page
-	// and dropped the truncation flag. Now List walks every page, so a listing
-	// of 1000 is simply a listing of 1000 — comparing against the page size
-	// would flag every prefix over it as truncated and teach callers to ignore
-	// the field. A prefix bigger than the cap fails outright; a prefix that
-	// fills it exactly comes back without an error and is the one case left
-	// where "there may be more" cannot be ruled out, which is what this reports.
+	// listCap is the cap storage.List enforces while walking a prefix, not the
+	// page size: List walks every page, so comparing against the page size
+	// would flag any large prefix as truncated. A prefix that fills the cap
+	// exactly comes back without an error and is the one case where "there may
+	// be more" cannot be ruled out; that is what this reports.
 	listCap = storage.MaxFullListingObjects
 )
 
@@ -51,15 +46,10 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// What the response has to carry, beyond the count: the keys that were asked
-	// for and are still there, and whether the listing this delete worked from
-	// could have left objects out.
-	//
-	// Both used to end up in the log alone while the response said
-	// `success: true`. With jay down, a user asking to "delete my photos" got
-	// back `{"success":true,"count":0}`, birdple-api recorded the photos as
-	// deleted, and they were still in the bucket with nothing left to retry
-	// from.
+	// Beyond the count, the response carries the keys that were asked for and
+	// are still there, and whether the listing this delete worked from could
+	// have left objects out. Without that, a delete against a backend that is
+	// down reports success and the caller has nothing left to retry from.
 	var tally deleteTally
 	var truncated bool
 
@@ -121,9 +111,9 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, response)
 }
 
-// invalidateCache drops every cached variant of a key that no longer exists (or
-// whose bytes changed). Without this, LRUCache.Delete existed and nothing ever
-// called it: a deleted image kept being served from RAM for up to 24 hours.
+// invalidateCache drops every cached variant of a key that no longer exists or
+// whose bytes changed; otherwise the deleted image keeps being served from RAM
+// until its TTL expires.
 func (h *Handler) invalidateCache(key string) {
 	if h.imageProcessor == nil {
 		return

@@ -138,12 +138,8 @@ func TestHandleProxy_SSRFBlocksPrivateEvenIfAllowlisted(t *testing.T) {
 	}))
 	upstream.Start()
 
-	// Override the allowlist to permit the loopback address used by httptest.
-	// Note: httptest.Server binds to 127.0.0.1; we whitelist "127.0.0.1" AND
-	// skip the SSRF guard for this test by using the server's hostname directly.
-	// Since 127.0.0.1 is private the SSRF guard will still fire — that is
-	// intentional and correct behavior. We assert 403 from the guard here,
-	// demonstrating that the allowlist check passed but SSRF blocked it.
+	// 127.0.0.1 goes into the allowlist so the request passes that check and
+	// reaches the SSRF guard, which is what has to answer 403.
 	t.Setenv("PROXY_ALLOWED_HOSTS", "127.0.0.1")
 
 	router := makeProxyRouter(t, mockStorage, mockProcessor)

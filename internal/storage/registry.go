@@ -48,17 +48,15 @@ func (r *Registry) SetDefault(name string) error {
 // RegisterAlias makes `alias` resolve to the backend registered as `target`.
 //
 // Aliases exist because the name a client asks for and the name an operator
-// declared are configured in two different places, and nothing keeps them in
-// step: falco's bucket names come from STORAGE_BUCKET_<NAME>_* (so they cannot
-// even contain a hyphen), while every consumer hardcodes or configures its own
-// string. Before aliases the mismatch was absorbed silently — an upload naming
-// an unknown bucket landed in the default one and still answered 201. An alias
-// turns that accident into a declaration: the operator states that "birdple-dev"
-// means "jay", and anything NOT declared is refused instead of redirected.
+// declared are configured in two different places: falco's bucket names come
+// from STORAGE_BUCKET_<NAME>_* (so they cannot even contain a hyphen), while
+// every consumer brings its own string. The operator states that "birdple-dev"
+// means "jay", and anything not declared is refused instead of redirected to
+// the default bucket.
 //
 // Registering an alias over an existing backend name, or pointing one at a
-// backend that is not registered, is a configuration error and is refused here
-// rather than discovered on the first request.
+// backend that is not registered, is a configuration error and is refused
+// here rather than on the first request.
 func (r *Registry) RegisterAlias(alias, target string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

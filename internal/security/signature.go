@@ -78,9 +78,8 @@ func CanonicalizeRequest(path string, values url.Values) string {
 	if len(values) == 0 {
 		return path
 	}
-	// Our own copy, so the caller can still read "sig" from theirs. Clone is a
-	// deep copy: the hand-rolled version this replaced shared the value slices
-	// with the original map.
+	// Our own copy, so the caller can still read "sig" from theirs. Clone
+	// copies the value slices too, not just the map.
 	clone := values.Clone()
 	clone.Del("sig")
 	if len(clone) == 0 {

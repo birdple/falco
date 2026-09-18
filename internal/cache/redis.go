@@ -16,9 +16,8 @@ const keyPrefix = "falco:"
 type RedisCache struct {
 	client *redis.Client
 	ttl    time.Duration
-	// Contadores propios de este proceso. Redis no puede decirnos cuántos
-	// hits THIS cache had — its INFO aggregates every client of the server —
-	// but we do know how each of our own Gets was answered.
+	// This process's own counters: Redis' INFO aggregates every client of the
+	// server, but each of our own Gets knows how it was answered.
 	hits   atomic.Int64
 	misses atomic.Int64
 }
@@ -127,9 +126,8 @@ func (r *RedisCache) Stats() CacheStats {
 	}
 }
 
-// PoolStats exposes go-redis connection-pool metrics. These used to be mixed
-// into the map Stats returned; now that Stats has one uniform type across all
-// three backends, they live here instead.
+// PoolStats exposes go-redis connection-pool metrics, apart from Stats, which
+// has one uniform type across the three backends.
 func (r *RedisCache) PoolStats() *redis.PoolStats {
 	return r.client.PoolStats()
 }

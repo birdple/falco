@@ -31,9 +31,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	storageName := query.Get("storage")
 	// customID starts as the URL's ?id= and is overridden by the form or JSON
-	// field when one arrives and is valid. This used to be done by rewriting
-	// r.URL.RawQuery halfway through the handler so a later read would see it —
-	// and the JSON branch wiped the rest of the query string in the process.
+	// field when one arrives and is valid. Never by rewriting r.URL.RawQuery.
 	customID := query.Get("id")
 	bucket := utils.QueryParam(query, "b", "bucket")
 	directory := utils.QueryParam(query, "d", "dir", "directory")
@@ -87,12 +85,9 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// mutated by an admin-scoped key.
 	ownerID := r.Header.Get("X-Owner-Id")
 
-	// Dedup-by-key: the storageKey is derived from a content hash of the raw
-	// upload, so identical uploads land on the same key. The Jay backend is
-	// idempotent by key — overwriting with the same bytes is a no-op at the
-	// storage layer. We therefore skip the previous Exists + Retrieve-discard
-	// round-trips and rely on Store alone. Callers still get the stable
-	// `{id, url}` response, which is what dedup semantics actually guarantee.
+	// Dedup by key: storageKey derives from the content hash, so identical
+	// uploads land on the same key and Store with the same bytes is a no-op at
+	// the backend. No Exists round-trip is needed first.
 
 	storeReader, storedMeta, prepErr := h.prepareForStorage(ctx, imageData, uploadTarget{
 		imageID:  imageID,

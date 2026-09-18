@@ -29,13 +29,12 @@ var bufferPool = sync.Pool{
 }
 
 // defaultWebPEffort is libwebp's encode effort (0-6, higher = slower/smaller)
-// used when SetWebPEffort is never called. 4 trades ~5% larger output for a
-// >2x faster encode versus libwebp's own max (6) — see SetWebPEffort.
+// used when SetWebPEffort is never called. libwebp's max (6) encodes much
+// slower for a marginal size gain.
 const defaultWebPEffort = 4
 
 // defaultCacheTTL is used when SetCacheTTL is never called or is called with
-// a non-positive value. See SetCacheTTL for why this exists as a real,
-// config-driven setting instead of the hardcoded 24h it replaced.
+// a non-positive value.
 const defaultCacheTTL = 24 * time.Hour
 
 // VipsProcessor implements ImageProcessor using libvips
@@ -73,33 +72,25 @@ func (p *VipsProcessor) SetMaxConcurrency(n int) {
 }
 
 // SetWebPEffort sets libwebp's encode effort (0-6, higher = slower/smaller
-// output). Measured locally on real BGG box art with libvips 8.18.5: effort
-// 6 (libvips' own default) takes ~2.3x longer than effort 4 for a ~5% size
-// gain. A value <0 is ignored (keeps defaultWebPEffort); 0 leaves the field
-// unset only if explicitly passed as such by a future caller — in practice
-// config always supplies a positive value.
+// output). A negative value is ignored and keeps defaultWebPEffort.
 func (p *VipsProcessor) SetWebPEffort(effort int) {
 	if effort >= 0 {
 		p.webpEffort = effort
 	}
 }
 
-// SetCacheTTL sets how long a processed entry stays in the LRU cache before
-// expiring, read from CACHE_TTL_HOURS. Previously this value was loaded from
-// config but only ever fed to NewShardedCache's cleanupInterval parameter —
-// the goroutine sweep frequency, not a per-entry expiry — while the actual
-// TTL used in Process() was hardcoded at 24h regardless of config. So raising
-// CACHE_TTL_HOURS did nothing; this setter is what makes it real.
+// SetCacheTTL sets how long a processed entry stays in the LRU cache, read
+// from CACHE_TTL_HOURS. It is the per-entry TTL; NewShardedCache's sweep
+// frequency is a different knob.
 func (p *VipsProcessor) SetCacheTTL(ttl time.Duration) {
 	if ttl > 0 {
 		p.cacheTTL = ttl
 	}
 }
 
-// Process processes an image with the given parameters.
-// cacheKey should be obtained from GenerateCacheKey; pass "" to skip caching.
-// The caller is expected to check GetFromCache before calling Process on the
-// delivery path — this method no longer reads from cache, only writes.
+// Process processes an image with the given parameters. cacheKey comes from
+// GenerateCacheKey; "" skips caching. It only writes to the cache, never
+// reads: the caller checks GetFromCache first.
 func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *ProcessingParams, cacheKey string) (*ProcessedImage, error) {
 	// Read input data
 	inputData, err := io.ReadAll(input)
@@ -112,11 +103,9 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 
 	m := metrics.Default()
 
-	// Acquire processing slot (limits concurrent CPU-intensive operations).
-	// Measured on its own label ("semaphore_wait") separately from the work
-	// itself below ("transform"): under a burst of cold images, most of the
-	// latency a client observes is queueing here, not libvips work — and
-	// without this split the two are indistinguishable from the outside.
+	// Processing slot (bounds concurrent operations). Measured under its own
+	// label ("semaphore_wait"), apart from "transform": from the outside,
+	// queueing and libvips work are indistinguishable without that split.
 	if p.sem != nil {
 		waitStart := time.Now()
 		select {
@@ -188,7 +177,6 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	}, nil
 }
 
-// applyTransformations applies all transformations to the image
 // applyTransformations runs the transformation pipeline over an image.
 //
 // The order is load-bearing, not incidental:
@@ -273,10 +261,9 @@ func applyGeometry(img *vips.Image, params *ProcessingParams) error {
 
 // rotateImage turns the image, using the exact rotation for right angles.
 //
-// vips_rotate interpolates, which for a quarter turn means resampling every
-// pixel and coming out a pixel short (a 400x300 rotated 90 degrees measured
-// 300x399). vips_rot is a transpose: lossless, faster, and exactly the size the
-// caller expects. Right angles are also the overwhelmingly common request.
+// vips_rotate interpolates: for a quarter turn it resamples every pixel and
+// comes out a pixel short. vips_rot is a transpose: lossless, faster and
+// exactly the expected size. Right angles are also the common request.
 func rotateImage(img *vips.Image, degrees float64) error {
 	switch normalizeAngle(degrees) {
 	case 0:
@@ -337,9 +324,6 @@ func (p *VipsProcessor) applyResize(img *vips.Image, params *ProcessingParams) e
 //     libvips' Crop enum cannot express — it only offers low/centre/high on
 //     both axes at once. So the image is scaled to cover the box and then the
 //     region is extracted by hand.
-//
-// The compass points used to fall through to InterestingCentre: the parser
-// accepted `gravity=north` and the caller got a centre crop, with nothing said.
 func smartResize(img *vips.Image, params *ProcessingParams) error {
 	width, height := params.Width, params.Height
 	if width == 0 {
@@ -434,19 +418,17 @@ func positionalCrop(img *vips.Image, width, height int, at anchor) error {
 
 // safeResizeDimensions works out what the image may actually be resized to,
 // filling in a missing dimension from the aspect ratio and refusing to upscale
-// where upscaling would be pointless.
-//
-// The distinction that matters is between a BOX and a CAP:
+// where upscaling would be pointless. The distinction is between a box and a
+// cap:
 //
 //   - both dimensions given is an exact box (a 128x128 avatar slot), and
 //     upscaling a smaller source to fill it is the whole point;
 //   - one dimension given is a cap, with the other derived to preserve aspect
 //     ratio. Upscaling past the source's native resolution there just produces
-//     a bigger, blurrier file for no visual gain — measured: a 150x150 source
-//     capped at w=600 came back 600x600 and 48% heavier before this was fixed.
+//     a bigger, blurrier file.
 //
-// It is also what stops an upscaling DoS: a request for 100x100 → 10000x10000
-// gets clamped back to the source's own size.
+// It is also what stops an upscaling DoS: 100x100 → 10000x10000 gets clamped
+// back to the source's own size.
 func (p *VipsProcessor) safeResizeDimensions(originalWidth, originalHeight int, params *ProcessingParams) (width, height int) {
 	width, height = params.Width, params.Height
 	explicitBox := width > 0 && height > 0
@@ -546,11 +528,9 @@ func applyColorAdjustments(img *vips.Image, params *ProcessingParams) error {
 	}
 
 	if params.Sharpen > 0 {
-		// The parameter is a 0-100 dial, not a sigma. libvips' own default
-		// sigma is 0.5, which is barely visible; 3.0 is where the halo starts
-		// to show on a photograph. Passing nil here — which is what this used
-		// to do — ignored the requested amount entirely and always sharpened
-		// by the default.
+		// The parameter is a 0-100 dial, not a sigma. libvips' default sigma
+		// (0.5) is barely visible; 3.0 is where the halo starts to show on a
+		// photograph. With nil opts libvips ignores the requested amount.
 		opts := vips.DefaultSharpenOptions()
 		opts.Sigma = minSharpenSigma + (params.Sharpen/100.0)*(maxSharpenSigma-minSharpenSigma)
 		if err := img.Sharpen(opts); err != nil {
@@ -730,16 +710,12 @@ func (p *VipsProcessor) resizeImage(img *vips.Image, params *ProcessingParams) e
 	}
 }
 
-// coverSize picks SizeBoth for an explicit w+h box (upscaling a smaller
-// source to fill it is the caller's intent) and SizeDown otherwise — when
-// only one dimension was requested and the other derived proportionally,
-// there is no box to fill, only a cap, so upscaling would just waste CPU
-// and bytes for no visual gain (measured: a 150x150 source requested at
-// w=600 with no explicit height came back 600x600 and 48% heavier).
+// coverSize picks SizeBoth for an explicit w+h box (filling it, upscaling a
+// smaller source if needed, is the caller's intent) and SizeDown otherwise:
+// with one dimension there is no box to fill, only a cap, and upscaling wastes
+// CPU and bytes for no visual gain.
 //
-// the request onto the matching vips.Size, which is all it does.
-//
-//nolint:revive // the bool is this function's input datum: it maps a fact about
+//nolint:revive // the bool is the input datum: it maps a fact about the request onto a vips.Size
 func coverSize(explicitBox bool) vips.Size {
 	if explicitBox {
 		return vips.SizeBoth
@@ -798,11 +774,9 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 			// Note: Using default filter (adaptive) which works well for most cases
 		})
 	case FormatWebP:
-		// WebP with advanced compression options.
-		// Effort is configurable (see SetWebPEffort) instead of hardcoded at
-		// libwebp's max — measured ~2.3x slower than effort 4 for ~5% smaller
-		// output. MinSize is intentionally omitted: measured zero byte
-		// savings on real BGG box art, just extra CPU.
+		// WebP. Effort is configurable (SetWebPEffort) rather than libwebp's
+		// max, which encodes much slower for a marginal gain. MinSize is
+		// omitted: on real box art it saves no bytes and costs CPU.
 		err = img.WebpsaveTarget(target, &vips.WebpsaveTargetOptions{
 			Q:              quality,
 			Lossless:       quality == 100,                 // Lossless if quality is 100
@@ -852,13 +826,10 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 	return bytes.Clone(buf.Bytes()), format, nil
 }
 
-// keepMode says which metadata survives the re-encode.
-//
-// The encoder used to leave this at vips' zero value, an empty bitfield that
-// keeps nothing — so `?meta=1` was parsed in delivery, travelled all the way
-// into ProcessingParams and changed absolutely nothing. Stripping stays the
-// default: a CDN origin should not hand out the camera GPS coordinates baked
-// into an upload.
+// keepMode says which metadata survives the re-encode. vips' zero value is an
+// empty bitfield that keeps nothing, so it has to be set explicitly for
+// `?meta=1` to have any effect. Stripping stays the default: a CDN origin
+// should not hand out the camera GPS coordinates baked into an upload.
 func keepMode(params *ProcessingParams) vips.Keep {
 	if params.StripMetadata {
 		return vips.KeepNone

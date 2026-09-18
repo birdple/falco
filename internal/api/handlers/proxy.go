@@ -180,12 +180,7 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// ── 7-8. Fetch + process, deduplicated by cacheKey ─────────────────
 	// sf.Do collapses N concurrent requests for the same (url, format, w,
-	// h, q, fit) into a single fetch+decode+encode — measured as the
-	// dominant cost when a crawler requests the same cold image several
-	// times within milliseconds. Deliberately built on context.Background()
-	// rather than r.Context(): this work is shared across every caller
-	// waiting on this key, so one client disconnecting must not cancel the
-	// fetch/process that other, still-connected clients are waiting on.
+	// h, q, fit) into a single fetch+decode+encode.
 	v, err, _ := h.sf.Do(cacheKey, func() (any, error) {
 		return h.fetchAndProcessRemote(rawURL, cacheKey, params)
 	})

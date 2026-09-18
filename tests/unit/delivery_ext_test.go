@@ -127,8 +127,8 @@ func TestHandleDelivery_ExtInvalid(t *testing.T) {
 	mockStorage.AssertNotCalled(t, "Retrieve", mock.Anything, mock.Anything)
 }
 
-// TestHandleDelivery_NoExt checks that /images/abc123 (no extension) still
-// works exactly as before — no format is inferred from the path.
+// TestHandleDelivery_NoExt: /images/abc123 (no extension) infers no format
+// from the path.
 func TestHandleDelivery_NoExt(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
 	mockProcessor := new(mocks.MockImageProcessor)

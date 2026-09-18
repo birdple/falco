@@ -32,10 +32,9 @@ func newBandedImage(t *testing.T, width, height int, top, bottom color.RGBA) *vi
 	return img
 }
 
-// TestSmartResizeHonoursCompassGravity is the test the defect needed: the
-// parser accepted north/south/east/west and every one of them produced a centre
-// crop, because libvips' Crop enum has no way to say "north" and the switch
-// fell through to InterestingCentre.
+// TestSmartResizeHonoursCompassGravity: libvips' Crop enum has no way to say
+// "north", so a compass point that fell through to InterestingCentre would
+// produce a centre crop with nothing said.
 func TestSmartResizeHonoursCompassGravity(t *testing.T) {
 	red := color.RGBA{R: 220, A: 255}
 	blue := color.RGBA{B: 220, A: 255}
@@ -100,9 +99,8 @@ func TestSmartResizeContentAwareStillWorks(t *testing.T) {
 	}
 }
 
-// TestEncodeImageStripsOrKeepsMetadata covers the second phantom parameter:
-// `meta=1` was parsed in delivery and proxy, travelled into ProcessingParams
-// and was never read by the encoder, so it could not change anything.
+// TestEncodeImageStripsOrKeepsMetadata asserts that `meta=1` reaches the
+// encoder and changes the bytes, not just ProcessingParams.
 func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 	p := &VipsProcessor{webpEffort: 4}
 	const field = "exif-ifd0-ImageDescription"

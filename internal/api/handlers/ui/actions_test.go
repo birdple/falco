@@ -64,14 +64,8 @@ func exists(t *testing.T, backend storage.StorageBackend, key string) bool {
 	return ok
 }
 
-// TestDeleteActuallyDeletes is the test the original defect needed.
-//
-// The old panel sent `hx-delete=/api/v1/delete?id=…&b=…` to a handler that
-// reads a strict JSON body and ignores the query string, so every click
-// answered 400 INVALID_JSON — and the client only handled 401, so nothing was
-// shown. The user confirmed a permanent delete and nothing happened.
-//
-// The assertion is the effect on storage, never the text of a confirmation.
+// TestDeleteActuallyDeletes asserts the effect on storage, never the text of a
+// confirmation.
 func TestDeleteActuallyDeletes(t *testing.T) {
 	h, backend := newActionHandler(t)
 	defer h.Close()

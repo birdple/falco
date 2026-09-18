@@ -259,10 +259,8 @@ func TestJayStorage_Health(t *testing.T) {
 	}
 }
 
-// TestJayStorage_ContextReachesClient pins the reason jay was bumped to a
-// client that takes a context: before it, the caller's ctx stopped at this
-// layer and the 30 s timeout around Retrieve in the delivery handler cancelled
-// nothing. Every operation must hand the exact ctx it received to the client.
+// TestJayStorage_ContextReachesClient: every operation must hand the client
+// the exact ctx it received, or the handler's timeout cancels nothing.
 func TestJayStorage_ContextReachesClient(t *testing.T) {
 	type ctxKey struct{}
 	want := context.WithValue(context.Background(), ctxKey{}, "marker")

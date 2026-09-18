@@ -246,10 +246,9 @@ func TestImageMetadata_JSON_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.CreatedAt, decoded.CreatedAt)
 }
 
-// TestImageMetadata_MarshalJSON_Golden congela los bytes exactos que produce
-// MarshalJSON. Son el formato del metadata guardado en Jay y en disco: si esta
-// cadena cambia, cambió el formato de datos, no el estilo del código. Se
-// escribió al migrar a encoding/json/v2 comparando contra la salida de v1.
+// TestImageMetadata_MarshalJSON_Golden freezes the exact bytes MarshalJSON
+// produces. They are the metadata format stored in Jay and on disk: if this
+// string changes, the data format changed, not the code style.
 func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
 	stamp := time.Date(2026, 8, 21, 15, 4, 5, 0, time.UTC)
 

@@ -105,9 +105,9 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The bytes changed but the cache key did not — it derives from key+params —
-	// so without invalidating, the old version kept being served for up to 24
-	// hours and the update looked like it had never applied.
+	// The bytes changed but the cache key did not (it derives from key+params):
+	// without invalidating, the previous version keeps being served until its
+	// TTL expires.
 	h.invalidateCache(req.Key)
 
 	newSize := processedImage.Metadata.Size

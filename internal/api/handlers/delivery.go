@@ -28,10 +28,9 @@ import (
 // Authorization when HMAC is not gating the route. Returns the resolved
 // APIScope (possibly admin) and true on success; false on any auth failure.
 //
-// It honors scoped API keys (bucket/group/subgroup keys from scoped_auth.go)
-// when they exist, and falls back to the admin API key otherwise. This keeps
-// upstream multi-tenant deployments working while closing the bypass that
-// previously exempted /api/v1/images/ from all auth.
+// It honours scoped API keys (bucket/group/subgroup keys from scoped_auth.go)
+// when they exist and falls back to the admin key otherwise: multi-tenant
+// deployments keep working and /api/v1/images/ is never left unauthenticated.
 func (h *Handler) authenticateAndScope(r *http.Request) (*apimw.APIScope, bool) {
 	// Prefer scoped auth when any scoped keys are configured.
 	scopedAuth := apimw.NewScopedAPIKeyAuth(h.config.Security.APIKey, h.config)
@@ -47,11 +46,9 @@ func (h *Handler) authenticateAndScope(r *http.Request) (*apimw.APIScope, bool) 
 	return &apimw.APIScope{IsAdmin: true}, true
 }
 
-// hmacRequireExpiry reads HMAC_REQUIRE_EXPIRY from the environment. Per the
-// monorepo "no insecure default" rule, this variable MUST be set explicitly;
-// the function returns an error if it is missing or unparseable. Callers
-// should reject the request when the error is non-nil rather than pick a
-// default.
+// hmacRequireExpiry reads HMAC_REQUIRE_EXPIRY from the environment. It has no
+// default: when missing or unparseable it returns an error, and the caller
+// rejects the request rather than picking a value.
 func hmacRequireExpiry() (bool, error) {
 	raw := strings.TrimSpace(os.Getenv("HMAC_REQUIRE_EXPIRY"))
 	if raw == "" {
@@ -165,14 +162,8 @@ func (h *Handler) deliverProcessed(w http.ResponseWriter, r *http.Request, req d
 		return
 	}
 
-	// Cache miss with an explicit transform: cacheKey is already known,
-	// so dedup the retrieve+process work across concurrent requests for
-	// the same (storageKey, params) — same fix as HandleProxy's
-	// singleflight, and the same shape of bug (N concurrent requests for
-	// the same resize each paying their own Jay round-trip + decode +
-	// encode). Deliberately built on context.Background(), not
-	// r.Context(): this work is shared, so one client disconnecting must
-	// not cancel it for siblings still waiting on it.
+	// Cache miss with an explicit transform: cacheKey is already known, so the
+	// retrieve+process work is deduplicated by (storageKey, params).
 	v, sfErr, _ := h.sf.Do(cacheKey, func() (any, error) {
 		return h.fetchAndProcess(req, cacheKey)
 	})
@@ -201,11 +192,6 @@ func (h *Handler) deliverRaw(w http.ResponseWriter, r *http.Request, req deliver
 	params, hasTransformations, m := req.params, req.hasTransformations, req.metrics
 	var cacheKey string
 
-	// ── Raw delivery (no explicit transform requested) — fetch from
-	// storage and stream directly. No dedup here: there's no CPU-heavy
-	// work to share, and streaming (vs. the buffered path above) keeps
-	// memory flat regardless of file size — worth preserving for the
-	// common case of downloading a large original as-is.
 	storageStart := time.Now()
 	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
 	storageDuration := time.Since(storageStart).Seconds()
@@ -242,20 +228,15 @@ func (h *Handler) deliverRaw(w http.ResponseWriter, r *http.Request, req deliver
 		return
 	}
 
-	// Ensure format + cacheKey are set (handles the metadata-only edge
-	// case where wantsProcessing was false but needsProcessing is true).
-	// Not deduplicated: cacheKey couldn't be known before this retrieve, so
-	// there's no key to dedup on ahead of time. Rare in practice — the
-	// common "unknown storage format" case is handled by upload-time
-	// metadata, not discovered here.
+	// Rare case: wantsProcessing was false but the metadata says processing is
+	// needed. Not deduplicated: cacheKey could not be known before the retrieve.
 	params.Format = h.resolveOutputFormat(params.Format)
 	if cacheKey == "" {
 		cacheKey = h.imageProcessor.GenerateCacheKey(storageKey, params)
 	}
 
-	// Duration (split into semaphore_wait + transform) is recorded inside
-	// Process() itself now — see vips_processor.go — so only the pass/fail
-	// counter, which needs the format labels, stays here.
+	// Duration (semaphore_wait + transform) is recorded by Process(); only the
+	// pass/fail counter, which needs the format labels, stays here.
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params, cacheKey)
 
 	if err != nil {
@@ -636,9 +617,7 @@ func (h *Handler) authorizeDelivery(w http.ResponseWriter, r *http.Request, quer
 // verifyDeliverySignature checks the HMAC signature covering path and query.
 //
 // A missing or unparseable HMAC_REQUIRE_EXPIRY is a 500, not a default: the
-// monorepo rule is that an unset variable refuses to work rather than degrading
-// silently, and the degradation here would be accepting signed URLs that never
-// expire.
+// silent degradation would be accepting signed URLs that never expire.
 func (h *Handler) verifyDeliverySignature(w http.ResponseWriter, r *http.Request, query url.Values) bool {
 	signedPath := r.URL.Path
 	if raw := r.URL.RawQuery; raw != "" {
@@ -809,9 +788,8 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 		return nil, wmErr
 	}
 
-	// Duration (split into semaphore_wait + transform) is recorded
-	// inside Process() itself now — see vips_processor.go — so only
-	// the pass/fail counter, which needs the format labels, stays here.
+	// Duration (semaphore_wait + transform) is recorded by Process(); only the
+	// pass/fail counter, which needs the format labels, stays here.
 	processedImage, err := h.imageProcessor.Process(processCtx, reader, params, cacheKey)
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()

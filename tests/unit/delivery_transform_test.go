@@ -85,9 +85,8 @@ func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
 	return body.Error.Code
 }
 
-// TestDelivery_TransformParamsReachProcessor is the test that would have caught
-// the original defect: the parameters were documented, the pipeline implemented
-// them, and nothing carried them from the query string to the processor.
+// TestDelivery_TransformParamsReachProcessor asserts that every query-string
+// parameter reaches the processor, not just that the request answers 200.
 func TestDelivery_TransformParamsReachProcessor(t *testing.T) {
 	var got processor.ProcessingParams
 	router, _ := transformRouter(t, &got)

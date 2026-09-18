@@ -24,13 +24,10 @@ import (
 	"github.com/birdple/falco/tests/mocks"
 )
 
-// These tests are about ONE question: after a request that named a bucket, in
-// which bucket did the bytes end up?
-//
-// Asserting the status code is what let PND-0196 live. `POST /upload?b=beta`
-// answered 201 with the object written into the default bucket, so a test that
-// checked for 201 — or for the `url` in the response, which even carried
-// `?b=beta` — passed green with the destination wrong.
+// These tests are about one question: after a request that named a bucket, in
+// which bucket did the bytes end up? The assertion is on the buckets, never on
+// the status or the `url` in the response, which can say 201 with the wrong
+// destination.
 
 // bucketProbe is one filesystem bucket plus the handle used to ask it whether
 // it holds a key. Two of them, on separate temp directories, make "did it land
@@ -50,11 +47,10 @@ func (b bucketProbe) has(t *testing.T, key string) bool {
 // newRoutingHandler builds an API handler over two real filesystem buckets,
 // wrapped in the circuit breaker exactly as cmd/server does.
 //
-// The wrapper is not incidental. It implements BucketAware for EVERY backend,
-// returning itself when the one underneath cannot switch, so
-// `backend.(storage.BucketAware)` always succeeded and the failure had nothing
-// to report it. A harness that registered the bare filesystem backends would
-// not reproduce the defect at all.
+// The wrapper is not incidental: it implements BucketAware for every backend
+// and returns itself when the one underneath cannot switch, so the
+// `backend.(storage.BucketAware)` assertion always passes. With the bare
+// backends the case does not reproduce.
 func newRoutingHandler(t *testing.T, aliases map[string]string) (*handlers.Handler, bucketProbe, bucketProbe) {
 	t.Helper()
 
@@ -146,8 +142,7 @@ func assertRefused(t *testing.T, rec *httptest.ResponseRecorder, status int, cod
 	assert.Equal(t, code, errorCode(t, rec))
 }
 
-// The measurement in PND-0196: `?b=beta` answered 201 and the file was in
-// alpha. The assertion is on the two buckets, not on the status.
+// The assertion is on the two buckets, not on the status.
 func TestUploadLandsInTheRequestedBucket(t *testing.T) {
 	h, alpha, beta := newRoutingHandler(t, nil)
 
@@ -221,8 +216,8 @@ func TestListRefusesAnUnknownBucket(t *testing.T) {
 	assertRefused(t, rec, http.StatusBadRequest, "UNKNOWN_BUCKET")
 }
 
-// An upload that names no bucket at all keeps going to the default one. The fix
-// refuses names it cannot serve; it does not make `?b=` mandatory.
+// An upload that names no bucket still goes to the default one: names that
+// cannot be served are refused, `?b=` is not mandatory.
 func TestUploadWithoutABucketStillUsesTheDefault(t *testing.T) {
 	h, alpha, beta := newRoutingHandler(t, nil)
 
@@ -285,9 +280,8 @@ func (s *switchingBackend) GetStats(context.Context) (*storage.StorageStats, err
 	return &storage.StorageStats{}, nil
 }
 
-// A backend that genuinely switches keeps working, and the object really goes
-// to the remote bucket that was named — which is the one case `?b=` ever
-// honoured, and the one the fix must not break.
+// A backend that genuinely switches keeps working, and the object goes to the
+// remote bucket that was named.
 func TestUploadSwitchesRemoteBucketOnABucketAwareBackend(t *testing.T) {
 	backing := newSwitchingBackend("home")
 	wrapped := circuitbreaker.NewStorageBackend(backing, circuitbreaker.DefaultSettings("main"))
@@ -312,11 +306,9 @@ func TestUploadSwitchesRemoteBucketOnABucketAwareBackend(t *testing.T) {
 		"a BucketAware backend must write to the bucket that was requested")
 }
 
-// Delete takes the bucket in a JSON body rather than the query string — the
-// same shape /update uses. The refusal has to reach that path too, and the
-// object has to still be there afterwards: a delete that answered anything
-// other than "I did not do it" would be the failure this whole change is
-// about, pointed at destruction instead of at writes.
+// Delete takes the bucket in a JSON body rather than the query string (like
+// /update). The refusal has to reach that path too, and the object has to
+// still be there afterwards.
 func TestDeleteRefusesAnUnknownBucketAndDeletesNothing(t *testing.T) {
 	h, alpha, _ := newRoutingHandler(t, nil)
 

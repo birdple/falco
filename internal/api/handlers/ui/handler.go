@@ -66,10 +66,8 @@ func (h *Handler) Close() {
 // enabled reports whether the panel can be served at all.
 //
 // The panel is an authenticated surface over every bucket. With no key
-// configured there is nothing to authenticate against, and the old code
-// responded to that by inventing an admin scope on the spot — so an operator
-// who simply had not set API_KEY got a wide-open panel. A feature that is not
-// configured refuses to run; it does not open.
+// configured there is nothing to authenticate against, and a feature that is
+// not configured refuses to run; it does not open.
 func (h *Handler) enabled() bool {
 	return h.cfg.Security.APIKey != "" || len(h.keys) > 0
 }
@@ -121,10 +119,9 @@ func (h *Handler) accessibleBuckets(scope *Scope) []string {
 
 // resolveBucket picks the bucket to operate on and enforces the scope.
 //
-// It returns an error rather than silently substituting an allowed bucket. The
-// old dashboard swapped in the first accessible bucket, and the HTMX partial
-// did not check at all — so a key scoped to one bucket could read another
-// bucket's full listing just by changing the query string.
+// It returns an error rather than silently substituting an allowed bucket:
+// otherwise a key scoped to one bucket reads another's listing by changing
+// the query string.
 func (h *Handler) resolveBucket(scope *Scope, requested string) (string, error) {
 	name := requested
 	if name == "" {
@@ -151,9 +148,8 @@ func (h *Handler) bucketType(name string) string {
 
 // render writes a templ component.
 //
-// A failed render is logged rather than discarded: the four call sites in the
-// old panel wrote `_ = ...Render(...)`, so a render that died halfway left a
-// 200 with a truncated body and no trace anywhere.
+// A failed render is logged: discarding it leaves a 200 with a truncated body
+// and no trace.
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, name string, c templ.Component) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := c.Render(r.Context(), w); err != nil {

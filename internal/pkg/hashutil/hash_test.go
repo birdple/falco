@@ -114,8 +114,8 @@ func BenchmarkGenerateImageIDFromData(b *testing.B) {
 	}
 }
 
-// TestGenerateImageID_ShortHash: la función está exportada y antes hacía
-// `hash[:16]` sin guarda, así que cualquier cadena corta la hacía paniquear.
+// TestGenerateImageID_ShortHash: the function is exported, and an unguarded
+// `hash[:16]` panics on any short string.
 func TestGenerateImageID_ShortHash(t *testing.T) {
 	tests := []struct {
 		name string

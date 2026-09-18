@@ -53,10 +53,8 @@ type ListResponse struct {
 	Files       []ListItem      `json:"files,omitempty"`
 	Directories []DirectoryInfo `json:"directories,omitempty"`
 
-	// Truncated says there is more beyond what Files holds. It used to be
-	// absent, and jay's backend answered at most 1000 keys and dropped the
-	// truncation flag, so a listing of a large prefix came back short and
-	// silent. Delete already reported this; list did not.
+	// Truncated says there is more beyond what Files holds: a short listing
+	// without this flag is indistinguishable from a complete one.
 	Truncated bool `json:"truncated"`
 	// NextCursor is passed back as ?cursor= to continue. Empty means this is
 	// the last page.

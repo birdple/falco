@@ -16,10 +16,7 @@ import (
 )
 
 // GetQueryParam returns the first non-empty value from multiple parameter names.
-//
-// Parses the query ONCE: the previous version called r.URL.Query() inside the
-// loop, so GetQueryParam(r, "p", "prefix", "d", "dir", "directory") reparsed
-// RawQuery up to five times per call.
+// It parses the query once: r.URL.Query() reparses RawQuery on every call.
 func GetQueryParam(r *http.Request, names ...string) string {
 	return QueryParam(r.URL.Query(), names...)
 }

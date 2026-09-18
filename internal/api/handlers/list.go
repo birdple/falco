@@ -37,9 +37,8 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Paginated mode is opt-in: a request with neither limit nor cursor keeps
-	// the original behaviour of returning the whole prefix, so existing
-	// consumers see no change.
+	// Pagination is opt-in: with neither limit nor cursor the whole prefix is
+	// returned.
 	limit, limErr := parseListLimit(query.Get("limit"))
 	if limErr != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_LIMIT", limErr.Error())
@@ -55,10 +54,9 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	results, err := storageBackend.List(ctx, prefix)
 	if err != nil {
 		if storage.IsListingTooLarge(err) {
-			// The prefix outgrew the whole-listing mode. Saying which knob
-			// answers it beats a 500 that reads like a broken backend — and
-			// beats the alternative this endpoint used to ship, a page of
-			// results wearing `success: true`.
+			// The prefix does not fit a whole listing. Name the knob that
+			// answers it: a 500 reads like a broken backend, and a partial page
+			// wearing `success: true` would be a lie.
 			logger.Warn().Err(err).Str("prefix", prefix).Msg("Prefix too large to list at once")
 			h.sendError(w, http.StatusBadRequest, "LISTING_TOO_LARGE",
 				fmt.Sprintf("More than %d objects under this prefix; page through it with ?limit= and ?cursor=", storage.MaxFullListingObjects))

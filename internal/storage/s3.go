@@ -51,8 +51,8 @@ func NewS3Storage(cfg *S3Config) (*S3Storage, error) {
 
 	// Override endpoint if provided (for MinIO, LocalStack, etc.).
 	//
-	// Via BaseEndpoint rather than EndpointResolverWithOptions: that resolver is
-	// deprecated in aws-sdk-go-v2. r2.go already used the newer form.
+	// Via BaseEndpoint rather than EndpointResolverWithOptions, which is
+	// deprecated in aws-sdk-go-v2.
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
@@ -234,9 +234,9 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 
 // List returns every object under prefix, following S3 pagination.
 //
-// The prefix is matched verbatim. This used to append a trailing slash, which
-// made the same prefix list differently on S3 than on jay; directory semantics
-// are the caller's to ask for.
+// The prefix is matched verbatim, with no trailing slash added: directory
+// semantics are the caller's to ask for, and the same prefix lists the same
+// on S3 and on jay.
 func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var results []ListResult
 

@@ -24,13 +24,9 @@ type deleteRequest struct {
 	Keys   []string `json:"keys"`
 }
 
-// DeleteObjects deletes one or more objects.
-//
-// The old panel issued `hx-delete=/api/v1/delete?id=…&b=…`, but that handler
-// reads a strict JSON body and ignores the query string entirely, so every
-// single click answered 400 INVALID_JSON — and the client only handled 401, so
-// nothing was shown. The user confirmed a permanent delete and absolutely
-// nothing happened.
+// DeleteObjects deletes one or more objects. The API handler reads a strict
+// JSON body and ignores the query string, so the browser's request is
+// rewritten into that shape before being delegated.
 func (h *Handler) DeleteObjects(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessionFrom(r)
 

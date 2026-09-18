@@ -105,8 +105,6 @@ func TestAuthPostIssuesSessionAndNeverReturnsTheKey(t *testing.T) {
 	if !cookie.HttpOnly {
 		t.Error("the session cookie must be HttpOnly")
 	}
-	// The old panel stored the API key itself in the cookie AND in
-	// localStorage, which made HttpOnly meaningless.
 	if strings.Contains(cookie.Value, "admin-key") {
 		t.Error("the API key leaked into the session cookie")
 	}
@@ -116,10 +114,8 @@ func TestAuthPostIssuesSessionAndNeverReturnsTheKey(t *testing.T) {
 }
 
 func TestAuthCookieIsNotSecureOverPlainHTTP(t *testing.T) {
-	// Secure was set unconditionally, so over plain HTTP the browser dropped
-	// the cookie: /ui/auth answered {"ok":true}, the page redirected to the
-	// dashboard, and the dashboard bounced back to the login. An endless loop
-	// with no error anywhere.
+	// With Secure over plain HTTP the browser drops the cookie and the login
+	// bounces to the dashboard and back, with no visible error.
 	h := newTestHandler(t)
 	defer h.Close()
 
@@ -217,10 +213,8 @@ func TestMutationsRequireCSRFToken(t *testing.T) {
 // --- scope enforcement ---
 
 func TestScopedKeyCannotReachAnotherBucket(t *testing.T) {
-	// The leak this guards: the dashboard checked bucket scope, and
-	// /ui/content — the HTMX partial rendering the same data — did not. A key
-	// scoped to one bucket got another bucket's full listing by changing the
-	// query string.
+	// The HTMX partial (/ui/content) renders the same data as the dashboard
+	// and has to enforce the same scope.
 	h := newTestHandler(t)
 	defer h.Close()
 
@@ -266,9 +260,6 @@ func TestScopedKeyOnlySeesItsOwnBuckets(t *testing.T) {
 // --- the panel refuses to run unconfigured ---
 
 func TestPanelRefusesWhenNoKeyIsConfigured(t *testing.T) {
-	// With API_KEY_REQUIRED=false and no key, the old panel invented an admin
-	// scope on the spot, so anyone who could reach the port had full access to
-	// every bucket. An unconfigured feature refuses; it does not open.
 	h := newTestHandler(t)
 	defer h.Close()
 
@@ -296,12 +287,8 @@ func TestPanelRefusesWhenNoKeyIsConfigured(t *testing.T) {
 // --- signed thumbnails ---
 
 func TestThumbnailURLsCarryAVerifiableSignature(t *testing.T) {
-	// This is the defect that made the panel useless in the deployment it
-	// ships in: thumbnails were rendered as plain /api/v1/images/<id>?b=<x>
-	// while the stack runs HMAC_REQUIRED=true, so every single one was a 403.
-	//
-	// The assertion is that the real verifier accepts the URL — not that the
-	// markup contains an <img> tag.
+	// The assertion is that the real verifier accepts the URL, not that the
+	// markup contains an <img>.
 	h := newTestHandler(t)
 	defer h.Close()
 
@@ -363,9 +350,6 @@ func TestSigningDisabledFallsBackToAnUnsignedPath(t *testing.T) {
 // --- navigation helpers ---
 
 func TestBreadcrumbsReachEveryDepth(t *testing.T) {
-	// The old dashboard only ever looked at the first path segment, so
-	// "avatars/2024/x.webp" had no folder to click and no row in the grid: it
-	// was unreachable through the UI entirely.
 	crumbs := breadcrumbs("avatars/2024/summer/")
 
 	if len(crumbs) != 3 {
@@ -411,8 +395,6 @@ func TestDOMIDIsAValidCSSSelector(t *testing.T) {
 }
 
 func TestFormatLabelReadsContentTypeNotTheKey(t *testing.T) {
-	// falco stores content-hashed keys with no extension, so the old badge —
-	// which switched on the file extension — could only ever answer "IMG".
 	cases := map[string]string{
 		"image/webp":              "WEBP",
 		"image/jpeg":              "JPG",

@@ -66,9 +66,8 @@ func (b *fastBackend) GetStats(context.Context) (*StorageStats, error) {
 }
 func (b *fastBackend) List(context.Context, string) ([]ListResult, error) { return nil, nil }
 
-// TestReplicatedStorage_CloseWaitsForAsyncStore es la prueba de que el apagado
-// espera de verdad. Antes esto se "resolvía" con un time.Sleep(100ms) en main:
-// un sleep no sabe si la réplica terminó, sólo espera un rato y sigue.
+// TestReplicatedStorage_CloseWaitsForAsyncStore: shutdown really waits for
+// the in-flight replica; a fixed sleep does not know whether it finished.
 func TestReplicatedStorage_CloseWaitsForAsyncStore(t *testing.T) {
 	primary := &fastBackend{}
 	backup := newSlowBackend()

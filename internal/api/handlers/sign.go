@@ -44,10 +44,9 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SignURLRequest
-	// The decode error is reported separately from validation: collapsing them
-	// made an unknown field, or a capitalisation that does not match the tag,
-	// come back as "path is required" even when the caller did send path.
-	// json/v2 is case-sensitive, so that case is now reachable.
+	// The decode error is reported separately from validation: json/v2 is
+	// case-sensitive and rejects unknown fields, and collapsing the two would
+	// answer "path is required" to a caller that did send path.
 	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload")
 		return

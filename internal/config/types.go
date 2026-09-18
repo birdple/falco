@@ -25,9 +25,9 @@ type ServerConfig struct {
 	// the stdlib allows 1 MB, which for a public image CDN is far more than
 	// any legitimate client needs.
 	MaxHeaderBytes int `mapstructure:"max_header_bytes"`
-	// MaxHeaderValueCount caps the NUMBER of header values
-	// (net/http, Go 1.27). Complementa a MaxHeaderBytes: miles de cabeceras
-	// tiny headers weigh almost nothing in bytes but are expensive to parse.
+	// MaxHeaderValueCount caps the number of header values (net/http, Go
+	// 1.27). It complements MaxHeaderBytes: thousands of tiny headers weigh
+	// almost nothing in bytes but are expensive to parse.
 	MaxHeaderValueCount int `mapstructure:"max_header_value_count"`
 }
 

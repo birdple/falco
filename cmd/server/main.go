@@ -216,11 +216,8 @@ func buildCache(cfg *config.Config) processor.Cache {
 		return nil
 	}
 
-	// The second argument is the background sweep frequency, NOT the per-entry
-	// TTL — those are different knobs, and conflating them here is what once
-	// made CACHE_TTL_HOURS a no-op: it only ever reached this parameter and
-	// never the expiry actually used when writing an entry. The per-entry TTL
-	// is set by VipsProcessor.SetCacheTTL.
+	// The second argument is the background sweep frequency, not the per-entry
+	// TTL: that one is set by VipsProcessor.SetCacheTTL from CACHE_TTL_HOURS.
 	shardedCache := cache.NewShardedCache(cacheSize, cfg.Cache.CleanupInterval)
 	logger.Info().
 		Int("cache_size_mb", cfg.Cache.SizeMB).
@@ -295,11 +292,9 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 	return shutdown
 }
 
-// cleanupResources performs cleanup of application resources.
-//
-// Actually waits on in-flight async replications via Registry.CloseAll, instead
-// of the fixed time.Sleep(100ms) this replaced: a sleep does not know whether
-// the work finished, it only pretends it did.
+// cleanupResources releases the process's resources. It waits on in-flight
+// async replications via Registry.CloseAll: a fixed sleep does not know
+// whether the work finished.
 func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCache processor.Cache) {
 	if appCache != nil {
 		logger.Info().Msg("Stopping cache...")

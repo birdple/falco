@@ -34,10 +34,9 @@ func TestLRUCache_GetNonExistent(t *testing.T) {
 }
 
 func TestLRUCache_TTLExpiration(t *testing.T) {
-	// Bubble de synctest: el reloj es falso, así que la expiración ocurre al
-	// instante. Ojo con el Stop: el bubble no termina hasta que salgan todas
-	// sus goroutines, y la de limpieza es una de ellas — el `Clear` que había
-	// antes la dejaba viva.
+	// synctest bubble: the clock is fake, so expiry happens instantly. Stop is
+	// required: the bubble does not finish until every goroutine in it exits,
+	// and the cleanup one is one of them.
 	synctest.Test(t, func(t *testing.T) {
 		c := cache.NewLRUCache(1024*1024, 100*time.Millisecond)
 		defer c.Stop()

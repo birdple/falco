@@ -11,20 +11,16 @@ import (
 // RealIP rewrites r.RemoteAddr based on X-Forwarded-For / X-Real-IP headers,
 // but only when the direct peer is in the httputil trusted-proxy allowlist.
 //
-// This replaces chi's middleware.RealIP, which trusts those headers
-// unconditionally. Trusting them unconditionally lets any client spoof
-// X-Forwarded-For to a random IP and defeat per-IP rate limiting.
+// chi's middleware.RealIP does not fit here: it trusts those headers
+// unconditionally, so any client could spoof X-Forwarded-For and defeat per-IP
+// rate limiting.
 //
-// Behavior:
 //   - Untrusted peer: RemoteAddr is left untouched.
-//   - Trusted peer: the leftmost non-empty, valid IP from X-Forwarded-For
-//     wins. If X-Forwarded-For is missing, X-Real-IP is used. The rewritten
-//     value preserves the original source port when possible so that
-//     downstream middleware parsing RemoteAddr with net.SplitHostPort keeps
-//     working.
+//   - Trusted peer: the leftmost valid IP from X-Forwarded-For wins, or
+//     X-Real-IP if it is missing. The source port is preserved so that
+//     net.SplitHostPort keeps working downstream.
 //
-// See internal/pkg/httputil/client.go for the IsTrustedProxy logic and the
-// loopback-only fail-closed default.
+// IsTrustedProxy and the fail-closed default (loopback only) live in httputil.
 func RealIP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rewritten := realIPFor(r); rewritten != "" {

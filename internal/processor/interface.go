@@ -137,12 +137,9 @@ type ImageProcessor interface {
 	// returns how many entries were removed.
 	//
 	// One object can be cached under as many variants as there are parameter
-	// combinations, and they all share the `sha256(storageKey)` prefix.
-	//
-	// Without this, deleting or replacing an image had no effect on what was
-	// being served: the deleted photo kept coming out of RAM for up to 24 hours
-	// — a privacy problem, not just a consistency one — and an update looked
-	// like it had never applied.
+	// combinations, and they all share the `sha256(storageKey)` prefix. Without
+	// this, a deleted or replaced image keeps being served from RAM until its
+	// TTL expires: a privacy problem, not just a consistency one.
 	InvalidateCacheForKey(storageKey string) int
 
 	// PurgeCache drops every cached variant and returns how many entries were

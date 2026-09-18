@@ -260,10 +260,8 @@ func TestGetCurrentBucket_NonBucketAware(t *testing.T) {
 	assert.Equal(t, "", cb.GetCurrentBucket())
 }
 
-// Un objeto que no existe no es una avería del backend, y contarlo como tal
-// tumbaba el bucket entero: cinco lecturas seguidas de imágenes cuyas filas
-// sobrevivieron a sus bytes abrían el breaker, y la siguiente **subida** moría
-// con "circuit breaker is open" durante los 30 s del timeout.
+// A missing object is not a backend failure: counting it would open the
+// breaker over a few reads and take down uploads for the whole bucket.
 func TestNotFoundDoesNotTripTheBreaker(t *testing.T) {
 	mb := new(mockBackend)
 	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, storage.ErrImageNotFound)

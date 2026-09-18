@@ -37,11 +37,9 @@ func themeFrom(r *http.Request) string {
 	return "light"
 }
 
-// RequireSession guards every authenticated panel route.
-//
-// This replaces the per-handler guards the panel used to have. Those drifted:
-// the dashboard checked the bucket scope and the HTMX partial that rendered the
-// very same data did not.
+// RequireSession guards every authenticated panel route. It is one guard, not
+// one per handler: two guards over the same data (page and HTMX partial) end
+// up checking different things.
 func (h *Handler) RequireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !h.enabled() {
@@ -100,11 +98,10 @@ func (h *Handler) deny(w http.ResponseWriter, r *http.Request, status int, messa
 // wantsHTML reports whether the caller is a navigation rather than a
 // programmatic call, so a denial can be a redirect instead of a JSON body.
 //
-// The test is what the caller ASKED FOR, not what it merely tolerates: a
-// browser navigating sends "text/html" in Accept, while fetch() from the panel
-// sends "application/json". Treating the wildcard "*/*" as HTML matters — that
-// is what curl and most HTTP clients send by default, and answering them with
-// a bare 401 body made a plain `curl /dashboard` look broken.
+// The test is what the caller asked for, not what it merely tolerates: a
+// browser sends "text/html" in Accept and the panel's fetch() sends
+// "application/json". The wildcard "*/*" counts as HTML because it is what
+// curl and most HTTP clients send by default.
 func wantsHTML(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -182,9 +179,8 @@ func (h *Handler) LogoutPost(w http.ResponseWriter, r *http.Request) {
 
 // ThemePost remembers the light/dark choice server-side.
 //
-// The theme is applied during server rendering, which is what removes the
-// first-paint flash: the old panel did it from an inline script that the
-// panel's own CSP blocked.
+// The theme is applied during server rendering: an inline script is blocked
+// by the panel's own CSP, and applying it late paints the first frame white.
 func (h *Handler) ThemePost(w http.ResponseWriter, r *http.Request) {
 	theme := r.URL.Query().Get("theme")
 	if theme != "light" {

@@ -42,11 +42,9 @@ type Handler struct {
 	startTime       time.Time
 	httpClient      *http.Client
 
-	// sf deduplicates concurrent fetch-and-process work that shares the same
-	// cache key (proxy external-CDN fetches and delivery storage retrievals).
-	// Without this, N concurrent requests for the same cold image each pay
-	// their own network fetch, decode, and encode — measured as the
-	// dominant cost of a crawler burst hitting an uncached image.
+	// sf deduplicates concurrent fetch-and-process work that shares a cache
+	// key (proxy and delivery): N requests for the same cold image pay for one
+	// fetch, decode and encode.
 	sf singleflight.Group
 
 	// negativeCache remembers recent upstream fetch failures (dead links,
@@ -341,13 +339,8 @@ func (h *Handler) canonicalBucket(name string) string {
 }
 
 // sendStorageBackendError maps a getStorageBackendScoped failure onto the right
-// response.
-//
-// The two failures are genuinely different and used to collapse into the same
-// 403: a bucket the key may not touch is an authorization answer, while a
-// bucket that does not exist is a bad request. Reporting the second as
-// ACCESS_DENIED sent an operator looking at API-key scopes for a name that was
-// simply misspelt.
+// response: a bucket the key may not touch is a 403; a bucket that does not
+// exist is a 400, not a scope problem.
 func (h *Handler) sendStorageBackendError(w http.ResponseWriter, err error) {
 	if errors.Is(err, storage.ErrBucketNotHonoured) || errors.Is(err, storage.ErrBackendNotFound) {
 		h.sendError(w, http.StatusBadRequest, "UNKNOWN_BUCKET", err.Error())
@@ -430,10 +423,8 @@ func (h *Handler) defaultStorageType() string {
 	return "unknown"
 }
 
-// getStorageBackendWithScope is the internal resolver.
-//
-// It answers one question — which backend do the bytes of THIS request go to —
-// and it answers it in three steps, in this order:
+// getStorageBackendWithScope is the internal resolver. It answers which backend
+// the bytes of this request go to, in three steps, in this order:
 //
 //  1. The name is a registered bucket (or a declared alias for one): use that
 //     backend. This is what `?b=` means to a caller, and it is exact.
@@ -442,18 +433,13 @@ func (h *Handler) defaultStorageType() string {
 //     the switch actually happened.
 //  3. Neither: refuse with storage.ErrBucketNotHonoured.
 //
-// Step 3 is the whole point. WithBucket returns a backend rather than an error,
-// and the circuit-breaker wrapper implements it for EVERY backend by handing
-// back itself when the one underneath cannot switch — so the type assertion in
-// step 2 always succeeds and used to hide the failure. An upload naming a
-// bucket falco cannot reach was written into the default bucket, answered 201,
-// and even reported a URL carrying the bucket it never went to.
-//
-// Falling back to the default bucket is not an option that can be made safe:
-// the caller named a destination, and answering success from another one is a
-// lie whether or not the reader happens to land in the same place. A name that
-// has to keep working without being a bucket is declared as an alias — see
-// Registry.RegisterAlias.
+// Step 3 is the one that matters. WithBucket returns a backend, not an error,
+// and the circuit-breaker wrapper implements it for every backend by handing
+// back itself when the one underneath cannot switch: the type assertion in
+// step 2 always passes, so the switch has to be checked for real. Falling back
+// to the default bucket is not an option: a caller that named a destination
+// cannot get a 201 from another one. A name that has to keep working without
+// being a bucket is declared as an alias (Registry.RegisterAlias).
 func (h *Handler) getStorageBackendWithScope(scope *apimw.APIScope, storageName, bucket string) (storage.StorageBackend, error) {
 	var backend storage.StorageBackend
 

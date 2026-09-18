@@ -51,24 +51,16 @@ const (
 // MaxFullListingObjects bounds Lister.List, which walks every page of a prefix
 // and accumulates the result in memory.
 //
-// Without a bound, one request could pull an entire bucket into RAM, and the
-// only thing standing between that and the process dying would be how many
-// objects somebody happened to upload. The value is 100 pages of
-// DefaultListPageSize: a ListResult costs roughly 150 bytes once its key and
-// content type are counted, so a listing sitting at the cap is on the order of
-// 15 MB — far more than any prefix falco serves today, and far less than what
-// would take the container down.
-//
-// A listing that reaches it fails with ErrListingTooLarge instead of coming
-// back short: the caller is told to page through it with ListPage.
+// Without a bound, one request could pull an entire bucket into RAM. A listing
+// that reaches it fails with ErrListingTooLarge instead of coming back short:
+// the caller has to page through it with ListPage.
 const MaxFullListingObjects = 100 * DefaultListPageSize
 
 // ListOptions controls one page of a paginated listing.
 type ListOptions struct {
-	// Prefix filters keys. It is matched verbatim: a caller that wants
-	// directory semantics passes the trailing slash itself. Backends must not
-	// add one — s3 used to and jay did not, so the same prefix listed
-	// differently depending on the backend.
+	// Prefix filters keys and is matched verbatim: a caller that wants
+	// directory semantics passes the trailing slash itself. No backend adds
+	// one, or the same prefix would list differently depending on the backend.
 	Prefix string
 	// Delimiter rolls up every key that shares a prefix up to the next
 	// occurrence of it into CommonPrefixes, instead of returning them one by
@@ -93,11 +85,9 @@ type ListPage struct {
 // PagedLister lists one page at a time.
 //
 // It is separate from Lister because Lister's signature has nowhere to say
-// "there is more": jay answered with at most 1000 keys and dropped the
-// truncation flag, so a bucket with more than that listed short and silently.
-// Every backend falco ships implements this. The interface stays optional so
-// that a backend which genuinely cannot paginate is detected with a type
-// assertion and reported, rather than faking pagination.
+// "there is more". Every backend falco ships implements it; the interface
+// stays optional so that a backend which genuinely cannot paginate is detected
+// with a type assertion and reported, rather than faking pagination.
 type PagedLister interface {
 	ListPage(ctx context.Context, opts ListOptions) (*ListPage, error)
 }
