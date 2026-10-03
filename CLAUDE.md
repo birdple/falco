@@ -97,7 +97,7 @@ Lo que hay que saber antes de tocarla:
 ## El panel
 
 Vive en `internal/api/handlers/ui/` (handlers) y `internal/api/views/templ/`
-(plantillas). Cinco pantallas: login, explorador de storage, detalle de objeto,
+(plantillas). Seis pantallas: login, explorador de storage, detalle de objeto,
 playground de transformaciones, firmador de URLs y operaciones.
 
 **El panel no concede nada por su cuenta.** Resuelve la sesión, publica el scope
@@ -161,8 +161,8 @@ entera y el siguiente request paga jay + decode + encode; nunca pierde datos,
 porque los originales están en jay, pero un redeploy en hora pico se nota.
 `CACHE_SIZE_MB` es el techo (256 por default) y en `0` desactiva la cache por
 completo. `CACHE_TTL_HOURS` es el TTL por entrada y `CACHE_CLEANUP_INTERVAL` la
-frecuencia del barrido: son knobs distintos y confundirlos ya volvió a
-`CACHE_TTL_HOURS` un no-op una vez.
+frecuencia del barrido: son knobs distintos y confundirlos deja
+`CACHE_TTL_HOURS` como no-op.
 
 ## Quién consume falco
 
@@ -193,9 +193,10 @@ byte. Si falla, se ajusta el tag, nunca el test.
 
 ## Reglas del repo
 
-- Los comentarios del código van en **inglés** (el proyecto es público) — por
-  eso `misspell` está en el gate de lint. Es la excepción local a la regla del
-  monorepo.
+- Lo que se publica va en **inglés** (el proyecto es público): comentarios del
+  código, `README.md`, `site/` y mensajes de commit. Por eso `misspell` está en
+  el gate de lint. Es la excepción local a la regla de idioma del monorepo;
+  este `CLAUDE.md` sigue en español.
 - Los mocks de `tests/mocks/` los genera mockery a partir de `.mockery.yml`; no
   los edites a mano.
 - Después de un tag nuevo de jay:
@@ -220,28 +221,30 @@ byte. Si falla, se ajusta el tag, nunca el test.
 
 ## Trampas conocidas
 
-- **`falco/.env` local está viejo.** No está versionado y trae variables que ya
-  no existen (`STORAGE_PRIMARY`) más `PORT=8080`. godotenv no
+- **Un `falco/.env` local con `STORAGE_PRIMARY` o `PORT=8080` está viejo.** No
+  está versionado y nada lo actualiza. godotenv no
   pisa lo que ya está en el entorno, pero si dependes de él para arrancar vas a
   levantar un falco filesystem en 8080 creyendo que es el del stack.
 - **Sin `API_KEY_REQUIRED` ni `HMAC_REQUIRED`, la API arranca abierta.** Ninguna
   de las dos tiene default en viper, así que ausente vale `false` y la
   validación no las exige. Esto contradice la regla del raíz sobre features
   opcionales sin configurar; en el stack lo tapa el docker-compose, que pone
-  ambas en `"true"`. **El panel ya no cae en esto**: sin ninguna key configurada
+  ambas en `"true"`. **El panel no cae en esto**: sin ninguna key configurada
   se niega a servir en vez de abrirse con scope admin.
-- **Un `?b=` que no se puede honrar ahora es un `400 UNKNOWN_BUCKET`, y el
+- **Un `?b=` que no se puede honrar es un `400 UNKNOWN_BUCKET`, y el
   puente son los alias.** El orden de resolución es: nombre del registry (o
   alias declarado) → cambio real de bucket remoto (sólo S3/R2, que son los
-  únicos `BucketAware`) → rechazo. Ya NO hay caída al bucket por defecto: eso
-  respondía 201 con el objeto en otro lado (PND-0196).
+  únicos `BucketAware`) → rechazo. Nunca cae al bucket por defecto: eso
+  respondería 201 con el objeto en otro lado.
 
   El nombre del bucket sale del sufijo de `STORAGE_BUCKET_<NAME>_*`, así que no
   puede llevar guion y nunca va a coincidir con lo que mandan los clientes.
   Por eso existe `STORAGE_BUCKET_ALIASES` (`alias=bucket`, separados por coma):
-  el `docker-compose.yml` de la raíz declara `birdple-dev=jay,birdple=jay`
-  porque birdple-api manda `?b=birdple-dev` (`IMAGE_DEFAULT_BUCKET`) y la web
-  manda `?b=birdple` (`VITE_IMAGE_API_DEFAULT_BUCKET` y `ICON_UPLOAD_BUCKET`).
+  la lista canónica está en el bloque `falco` del `docker-compose.yml` de la
+  raíz, y su comentario dice de dónde sale cada alias: `birdple-dev`
+  (`IMAGE_DEFAULT_BUCKET` de birdple-api), `birdple`
+  (`VITE_IMAGE_API_DEFAULT_BUCKET` de la web), y `avatars`/`birdple-uploads`,
+  que ya nada escribe pero siguen embebidos en URLs guardadas.
   **Un falco de prod sin esa variable rechaza todas las imágenes**: un alias
   que apunta a nada, que pisa un bucket, o sin `=` no arranca el servicio.
 
@@ -252,12 +255,12 @@ byte. Si falla, se ajusta el tag, nunca el test.
 - **`docs/` no es fuente de verdad; `site/` sí.** La documentación viva es el
   sitio Astro Starlight de `site/` (publicado en https://birdple.github.io/falco/
   por `.github/workflows/pages.yml`), escrito verificando contra el código. El
-  README quedó en ~110 líneas y apunta ahí.
+  README es corto y apunta ahí.
   `docs/ARCHITECTURE.md`, `TECHNICAL_SPEC.md`, `IMPLEMENTATION_ROADMAP.md` y
   `DEPLOYMENT_GUIDE.md` son documentos previos a la implementación actual (no
   mencionan jay, ni HMAC, ni el proxy externo, y siguen usando `STORAGE_PRIMARY`),
   y `REVIEW_GUIDE.md` es una auditoría con hallazgos ya arreglados. `openapi.yaml`
-  sí se sirve en `/docs/openapi.yaml`, pero le faltan `/sign` y `/proxy`.
+  sí se sirve en `/docs/openapi.yaml`, pero le falta `/proxy`.
   Verifica contra el código antes de creerles.
 
 ## Release y CI
