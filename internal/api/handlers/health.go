@@ -23,6 +23,7 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	health := map[string]any{
 		"status":  overallStatus,
 		"version": version.Version,
+		"commit":  version.Commit,
 		"uptime":  time.Since(h.startTime).String(),
 	}
 

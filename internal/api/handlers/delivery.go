@@ -301,16 +301,35 @@ type paramError struct {
 //
 // Two classes of parameter, and the difference is intentional:
 //
-//   - the ones that change the image geometry or encoding (w, h, q, f, fit)
-//     reject the request when malformed — silently ignoring a typo would serve
-//     an image that is not the one asked for;
-//   - the cosmetic and caching ones (maxage, gravity, padding, wm_scale) fall
-//     back to their default when malformed, because the useful response is
-//     still the image.
+//   - the ones that change the image geometry or encoding (w, h, q, f, fit,
+//     crop_*, rotate, flip, and the watermark source) reject the request when
+//     malformed — silently ignoring a typo would serve an image that is not the
+//     one asked for;
+//   - the cosmetic and caching ones (maxage, smaxage, gravity, colour, trim,
+//     padding, the watermark's placement) fall back to their default when
+//     malformed, because the useful response is still the image.
 //
 // extFormat is the format taken from a path extension (/images/abc.webp) and
 // acts as the default when no ?f= is given.
 func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*processor.ProcessingParams, *paramError) {
+	params, perr := h.parseSizeAndEncoding(query, extFormat)
+	if perr != nil {
+		return nil, perr
+	}
+	if perr := parseGeometry(query, params); perr != nil {
+		return nil, perr
+	}
+	if perr := parseWatermark(query, params); perr != nil {
+		return nil, perr
+	}
+	h.parseCosmetics(query, params)
+	return params, nil
+}
+
+// parseSizeAndEncoding reads the parameters delivery and the proxy share —
+// w, h, q, f and fit — all of which reject a malformed value. The path
+// extension, when there is one, is the format default.
+func (h *Handler) parseSizeAndEncoding(query url.Values, extFormat string) (*processor.ProcessingParams, *paramError) {
 	params := &processor.ProcessingParams{}
 
 	if raw := utils.QueryParam(query, "w", "width"); raw != "" {
@@ -356,12 +375,22 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 		params.Fit = raw
 	}
 
+	// Both default to on, so the query string opts *out* rather than in.
+	params.SkipAutoOrient = query.Get("orient") == "0"
+	params.KeepMetadata = query.Get("meta") == "1"
+
+	return params, nil
+}
+
+// parseGeometry reads crop, rotate and flip. Like size and encoding, a
+// malformed value is a 400: guessing would serve a different image.
+func parseGeometry(query url.Values, params *processor.ProcessingParams) *paramError {
 	// Manual crop is all-or-nothing: an origin without a size is a request the
 	// caller did not mean, and guessing a size for it would serve a different
 	// image than the one asked for.
 	cropX, cropY, cropW, cropH, cropErr := parseCrop(query)
 	if cropErr != nil {
-		return nil, cropErr
+		return cropErr
 	}
 	params.CropX, params.CropY, params.CropW, params.CropH = cropX, cropY, cropW, cropH
 
@@ -369,46 +398,31 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 		angle, err := strconv.ParseFloat(raw, 64)
 		// NaN passes every range comparison, so it is rejected explicitly.
 		if err != nil || !isFinite(angle) || angle < -maxRotateDegrees || angle > maxRotateDegrees {
-			return nil, &paramError{"INVALID_ROTATE", "rotate must be between -360 and 360 degrees"}
+			return &paramError{"INVALID_ROTATE", "rotate must be between -360 and 360 degrees"}
 		}
 		params.Rotate = angle
 	}
 
 	if raw := query.Get("flip"); raw != "" {
 		if raw != FlipHorizontal && raw != FlipVertical {
-			return nil, &paramError{"INVALID_FLIP", "flip must be horizontal or vertical"}
+			return &paramError{"INVALID_FLIP", "flip must be horizontal or vertical"}
 		}
 		params.Flip = raw
 	}
+	return nil
+}
 
-	// From here down every parameter is best-effort: a malformed value leaves
-	// the default in place instead of failing the request.
-	params.MaxAge = nonNegativeInt(query.Get("maxage"), params.MaxAge)
-	params.SMaxAge = nonNegativeInt(query.Get("smaxage"), params.SMaxAge)
-
-	if raw := query.Get("gravity"); validGravities[raw] {
-		params.Gravity = raw
-	}
-
-	// Colour and effects. Out of range counts as malformed, so it falls back to
-	// "not requested" rather than being clamped: a silently clamped value is
-	// indistinguishable from one that worked.
-	params.Brightness = floatInRange(query.Get("brightness"), -100, 100, params.Brightness)
-	params.Contrast = floatInRange(query.Get("contrast"), -100, 100, params.Contrast)
-	params.Gamma = floatInRange(query.Get("gamma"), 0, 3, params.Gamma)
-	params.Saturation = floatInRange(query.Get("saturation"), -100, 500, params.Saturation)
-	params.Hue = int(floatInRange(query.Get("hue"), -180, 180, float64(params.Hue)))
-	params.Blur = floatInRange(query.Get("blur"), 0, 100, params.Blur)
-	params.Sharpen = floatInRange(query.Get("sharpen"), 0, 100, params.Sharpen)
-
-	// The watermark source is only recorded here — resolving it reaches storage
-	// or the network, which this function deliberately does not do. What it
-	// does decide is that naming both is a contradiction rather than a
-	// precedence rule nobody would remember.
+// parseWatermark reads wm / wm_url and the overlay's placement. Naming both
+// sources, or a stored id that is not a valid id, is a 400; the placement
+// parameters are cosmetic and fall back to their defaults.
+//
+// The source is only recorded here — resolving it reaches storage or the
+// network, which parsing deliberately does not do.
+func parseWatermark(query url.Values, params *processor.ProcessingParams) *paramError {
 	wmID, wmURL := query.Get("wm"), query.Get("wm_url")
 	switch {
 	case wmID != "" && wmURL != "":
-		return nil, &paramError{"INVALID_WATERMARK", "wm and wm_url are mutually exclusive"}
+		return &paramError{"INVALID_WATERMARK", "wm and wm_url are mutually exclusive"}
 	case wmID != "":
 		// The same shape the image id itself takes: an optional directory plus
 		// a final segment, validated the same way, so a watermark cannot be the
@@ -416,10 +430,10 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 		wmDir, wmFinal := utils.SplitDirectoryAndID(wmID)
 		wmDir = utils.NormalizeDirectoryPath(wmDir)
 		if err := utils.ValidateDirectoryPath(wmDir); err != nil {
-			return nil, &paramError{"INVALID_WATERMARK", "wm has an invalid directory"}
+			return &paramError{"INVALID_WATERMARK", "wm has an invalid directory"}
 		}
 		if !utils.IsValidImageID(wmFinal) {
-			return nil, &paramError{"INVALID_WATERMARK", "wm is not a valid image id"}
+			return &paramError{"INVALID_WATERMARK", "wm is not a valid image id"}
 		}
 		params.WatermarkSource = watermarkStoredPrefix + utils.BuildStorageKey(wmDir, wmFinal)
 	case wmURL != "":
@@ -427,16 +441,37 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 	}
 
 	params.WatermarkOpacity = floatInRange(query.Get("wm_opacity"), 0, 1, params.WatermarkOpacity)
-
 	if raw := query.Get("wm_position"); processor.IsValidWatermarkPosition(raw) {
 		params.WatermarkPosition = raw
 	}
-
 	if raw := query.Get("wm_scale"); raw != "" {
 		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 && v <= 1 {
 			params.WatermarkScale = v
 		}
 	}
+	return nil
+}
+
+// parseCosmetics reads the best-effort parameters: caching directives,
+// gravity, colour and effects, trim and padding. A malformed value leaves the
+// default in place instead of failing the request — out of range counts as
+// malformed, and is not clamped: a silently clamped value is indistinguishable
+// from one that worked.
+func (h *Handler) parseCosmetics(query url.Values, params *processor.ProcessingParams) {
+	params.MaxAge = nonNegativeInt(query.Get("maxage"), params.MaxAge)
+	params.SMaxAge = nonNegativeInt(query.Get("smaxage"), params.SMaxAge)
+
+	if raw := query.Get("gravity"); validGravities[raw] {
+		params.Gravity = raw
+	}
+
+	params.Brightness = floatInRange(query.Get("brightness"), -100, 100, params.Brightness)
+	params.Contrast = floatInRange(query.Get("contrast"), -100, 100, params.Contrast)
+	params.Gamma = floatInRange(query.Get("gamma"), 0, 3, params.Gamma)
+	params.Saturation = floatInRange(query.Get("saturation"), -100, 500, params.Saturation)
+	params.Hue = int(floatInRange(query.Get("hue"), -180, 180, float64(params.Hue)))
+	params.Blur = floatInRange(query.Get("blur"), 0, 100, params.Blur)
+	params.Sharpen = floatInRange(query.Get("sharpen"), 0, 100, params.Sharpen)
 
 	if query.Get("trim") == "1" {
 		params.TrimEnabled = true
@@ -458,12 +493,6 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 	// Normalised here so equivalent spellings share a cache entry; anything
 	// that is not six hex digits falls back to the default white.
 	params.PaddingColor, _ = processor.NormalizeHexColor(query.Get("pad_color"))
-
-	// Both default to on, so the query string opts *out* rather than in.
-	params.SkipAutoOrient = query.Get("orient") == "0"
-	params.KeepMetadata = query.Get("meta") == "1"
-
-	return params, nil
 }
 
 // parseFormat validates ?f=. It accepts the same spellings as a path

@@ -154,12 +154,14 @@ func writeJSON(w http.ResponseWriter, statusCode int, v any) {
 	}
 }
 
-// fetchError carries enough context to reproduce the right HTTP response
-// after a singleflight.Do call returns. When several requests block on the
-// same in-flight key, only one goroutine actually runs the closure and logs
-// the failure; every other caller gets this error back and must still send
-// its own response to its own ResponseWriter — sendError is deliberately
-// NOT called from inside the closure.
+// fetchError is a failure with the HTTP response it maps to: status, API code
+// and message. Helpers that do I/O return it instead of writing the response
+// themselves.
+//
+// That matters most inside a singleflight closure: when several requests block
+// on the same in-flight key, only one goroutine runs the closure; every caller
+// gets this error back and sends its own response to its own ResponseWriter —
+// sendError is deliberately NOT called from inside the closure.
 type fetchError struct {
 	status  int
 	code    string

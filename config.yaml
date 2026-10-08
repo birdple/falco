@@ -85,7 +85,7 @@ processing:
   default_quality: 85
   default_format: "webp"
   concurrent_workers: 4
-  supported_formats: ["jpeg", "png", "webp"]
+  max_megapixels: 100
   max_dimensions:
     width: 4000
     height: 4000
@@ -108,6 +108,5 @@ logging:
   enable_caller: false
 
 development:
-  debug: true
   enable_pprof: false
   enable_metrics: false

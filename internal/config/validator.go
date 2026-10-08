@@ -442,6 +442,9 @@ func (v *validator) validateCache(config *Config) error {
 	return nil
 }
 
+// encoderFormats are the output formats the image processor can encode.
+var encoderFormats = map[string]bool{"jpeg": true, "png": true, "webp": true, "avif": true, "heic": true}
+
 // validateProcessing validates processing configuration
 func (v *validator) validateProcessing(config *Config) error {
 	if config.Processing.MaxFileSizeMB < 1 {
@@ -456,12 +459,11 @@ func (v *validator) validateProcessing(config *Config) error {
 		return fmt.Errorf("invalid quality: %d (must be 1-100)", config.Processing.DefaultQuality)
 	}
 
-	// Validate supported formats
-	validFormats := map[string]bool{"jpeg": true, "png": true, "webp": true}
-	for _, format := range config.Processing.SupportedFormats {
-		if !validFormats[format] {
-			return fmt.Errorf("unsupported format: %s", format)
-		}
+	// DEFAULT_FORMAT is what every upload is re-encoded to and every
+	// transformation without ?f= produces; a value the encoder does not know
+	// would only fail on the first request.
+	if f := config.Processing.DefaultFormat; f != "" && !encoderFormats[f] {
+		return fmt.Errorf("unsupported default format: %s (must be jpeg, png, webp, avif or heic)", f)
 	}
 
 	return nil

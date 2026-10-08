@@ -35,8 +35,8 @@ func TestSetEnvValue_BoolKeys(t *testing.T) {
 	require.NoError(t, l.setEnvValue(v, "security.api_key_required", "true"))
 	assert.True(t, v.GetBool("security.api_key_required"))
 
-	require.NoError(t, l.setEnvValue(v, "development.debug", "false"))
-	assert.False(t, v.GetBool("development.debug"))
+	require.NoError(t, l.setEnvValue(v, "development.enable_metrics", "false"))
+	assert.False(t, v.GetBool("development.enable_metrics"))
 
 	// An invalid bool is an error: API_KEY_REQUIRED=yes must not boot with
 	// auth silently off.

@@ -192,7 +192,6 @@ func (l *loader) getEnvMappings() map[string]string {
 		"LOG_LEVEL":               "logging.level",
 		"LOG_FORMAT":              "logging.format",
 		"LOG_OUTPUT":              "logging.output",
-		"DEBUG":                   "development.debug",
 		"ENABLE_PPROF":            "development.enable_pprof",
 		"ENABLE_METRICS":          "development.enable_metrics",
 	}
@@ -576,7 +575,6 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) error {
 
 	boolKeys := map[string]bool{
 		"security.api_key_required":  true,
-		"development.debug":          true,
 		"development.enable_pprof":   true,
 		"development.enable_metrics": true,
 		"cache.enable_redis":         true,

@@ -24,9 +24,8 @@ func validConfig() *Config {
 			SizeMB: 256,
 		},
 		Processing: ProcessingConfig{
-			MaxFileSizeMB:    10,
-			DefaultQuality:   85,
-			SupportedFormats: []string{"jpeg", "png", "webp"},
+			MaxFileSizeMB:  10,
+			DefaultQuality: 85,
 		},
 	}
 }
@@ -248,13 +247,16 @@ func TestValidator_InvalidQuality(t *testing.T) {
 	}
 }
 
-func TestValidator_InvalidFormat(t *testing.T) {
+func TestValidator_InvalidDefaultFormat(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Processing.SupportedFormats = []string{"jpeg", "bmp"}
+	cfg.Processing.DefaultFormat = "bmp"
 	err := v.Validate(cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported format")
+	assert.Contains(t, err.Error(), "unsupported default format")
+
+	cfg.Processing.DefaultFormat = "avif"
+	assert.NoError(t, v.Validate(cfg))
 }
 
 func BenchmarkValidator_ValidConfig(b *testing.B) {

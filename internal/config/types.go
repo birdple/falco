@@ -118,7 +118,6 @@ type ProcessingConfig struct {
 	DefaultFormat     string        `mapstructure:"default_format"`
 	ConcurrentWorkers int           `mapstructure:"concurrent_workers"`
 	WebPEffort        int           `mapstructure:"webp_effort"`
-	SupportedFormats  []string      `mapstructure:"supported_formats"`
 	MaxDimensions     MaxDimensions `mapstructure:"max_dimensions"`
 	// MaxMegapixels caps both decoded inputs and produced outputs, in
 	// millions of pixels. libvips has no ceiling of its own for JPEG or PNG.
@@ -177,7 +176,6 @@ type LoggingConfig struct {
 
 // DevelopmentConfig holds development-specific configuration
 type DevelopmentConfig struct {
-	Debug         bool `mapstructure:"debug"`
 	EnablePprof   bool `mapstructure:"enable_pprof"`
 	EnableMetrics bool `mapstructure:"enable_metrics"`
 }

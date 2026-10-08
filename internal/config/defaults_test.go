@@ -46,7 +46,6 @@ func TestDefaultsProvider_SetDefaults(t *testing.T) {
 	assert.Equal(t, "stdout", v.GetString("logging.output"))
 
 	// Development defaults
-	assert.Equal(t, false, v.GetBool("development.debug"))
 	assert.Equal(t, false, v.GetBool("development.enable_pprof"))
 	assert.Equal(t, false, v.GetBool("development.enable_metrics"))
 }

@@ -195,7 +195,7 @@ type uploadPayload struct {
 // Anything else is rejected rather than guessed at.
 func (h *Handler) parseUploadPayload(
 	ctx context.Context, r *http.Request, query url.Values, maxBytes int64,
-) (uploadPayload, *proxyError) {
+) (uploadPayload, *fetchError) {
 	contentType := r.Header.Get("Content-Type")
 
 	switch {
@@ -206,15 +206,15 @@ func (h *Handler) parseUploadPayload(
 	case contentType == "application/json":
 		return h.downloadFromJSONBody(ctx, r)
 	default:
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "UNSUPPORTED_CONTENT_TYPE", "Unsupported content type"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "UNSUPPORTED_CONTENT_TYPE", "Unsupported content type"}
 	}
 }
 
 // readRawBody handles an upload whose body is the image itself.
-func readRawBody(r *http.Request, query url.Values, contentType string) (uploadPayload, *proxyError) {
+func readRawBody(r *http.Request, query url.Values, contentType string) (uploadPayload, *fetchError) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
 	}
 
 	payload := uploadPayload{
@@ -226,7 +226,7 @@ func readRawBody(r *http.Request, query url.Values, contentType string) (uploadP
 	if raw := query.Get("quality"); raw != "" {
 		quality, err := strconv.Atoi(raw)
 		if err != nil {
-			return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
+			return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
 		}
 		payload.quality = quality
 	}
@@ -234,24 +234,24 @@ func readRawBody(r *http.Request, query url.Values, contentType string) (uploadP
 }
 
 // readMultipartBody handles a browser file upload.
-func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *proxyError) {
+func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *fetchError) {
 	maxFormBytes := maxBytes
 	if maxFormBytes <= 0 {
 		maxFormBytes = defaultMaxFormBytes
 	}
 	if err := r.ParseMultipartForm(maxFormBytes); err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse multipart form"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse multipart form"}
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "MISSING_FILE", "No file uploaded"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "MISSING_FILE", "No file uploaded"}
 	}
 	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
 	}
 
 	payload := uploadPayload{
@@ -263,7 +263,7 @@ func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *proxyEr
 	if raw := r.FormValue("quality"); raw != "" {
 		quality, err := strconv.Atoi(raw)
 		if err != nil {
-			return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
+			return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
 		}
 		payload.quality = quality
 	}
@@ -278,7 +278,7 @@ func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *proxyEr
 }
 
 // downloadFromJSONBody handles an upload that names a URL for falco to fetch.
-func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (uploadPayload, *proxyError) {
+func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (uploadPayload, *fetchError) {
 	var req struct {
 		URL     string `json:"url"`
 		Quality int    `json:"quality,omitzero"`
@@ -287,20 +287,20 @@ func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (up
 	}
 
 	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload"}
 	}
 	if req.URL == "" {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "MISSING_URL", "URL is required"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "MISSING_URL", "URL is required"}
 	}
 
 	parsedURL, err := url.Parse(req.URL)
 	switch {
 	case err != nil:
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_URL", "Invalid URL format"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_URL", "Invalid URL format"}
 	case parsedURL.Scheme != "https" && parsedURL.Scheme != "http":
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol"}
 	case len(req.URL) > MaxURLLength:
-		return uploadPayload{}, &proxyError{
+		return uploadPayload{}, &fetchError{
 			http.StatusBadRequest, "INVALID_URL",
 			fmt.Sprintf("URL too long (max %d characters)", MaxURLLength),
 		}
@@ -314,7 +314,7 @@ func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (up
 		httputil.WithAnyPublicHost(ctx), h.httpClient, req.URL, h.config.GetMaxFileSizeBytes(),
 	)
 	if err != nil {
-		return uploadPayload{}, &proxyError{
+		return uploadPayload{}, &fetchError{
 			http.StatusBadRequest, "DOWNLOAD_FAILED",
 			fmt.Sprintf("Failed to download image: %v", err),
 		}
@@ -353,12 +353,12 @@ type uploadTarget struct {
 // falco's origin would run that script with falco's origin's privileges.
 func (h *Handler) prepareForStorage(
 	ctx context.Context, imageData []byte, target uploadTarget,
-) (io.Reader, storage.ImageMetadata, *proxyError) {
+) (io.Reader, storage.ImageMetadata, *fetchError) {
 	detectedType := utils.DetectContentType(imageData)
 
 	if !utils.IsImageContentType(detectedType) {
 		if utils.IsDangerousContentType(detectedType) {
-			return nil, storage.ImageMetadata{}, &proxyError{
+			return nil, storage.ImageMetadata{}, &fetchError{
 				http.StatusUnsupportedMediaType, "DANGEROUS_CONTENT_TYPE",
 				fmt.Sprintf("Content type %q is not allowed; SVG, HTML, and XML uploads are rejected for security", detectedType),
 			}
@@ -382,7 +382,7 @@ func (h *Handler) prepareForStorage(
 		Format:  target.format,
 	}, "")
 	if err != nil {
-		return nil, storage.ImageMetadata{}, &proxyError{
+		return nil, storage.ImageMetadata{}, &fetchError{
 			http.StatusUnprocessableEntity, "PROCESSING_FAILED",
 			fmt.Sprintf("Failed to process image: %v", err),
 		}

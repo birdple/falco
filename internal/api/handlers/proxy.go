@@ -184,31 +184,14 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := res.Val.(*proxyResult)
+	result := res.Val.(*deliveryResult)
 	h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
-}
-
-// proxyResult is the singleflight.Do payload shared across every request
-// waiting on the same cacheKey — must be safe to read concurrently, hence
-// plain bytes rather than the one-shot io.ReadCloser Process() returns.
-type proxyResult struct {
-	data []byte
-	meta *storage.ImageMetadata
 }
 
 // proxyTarget is a proxy request whose destination has been validated.
 type proxyTarget struct {
 	rawURL    string
 	extFormat string
-}
-
-// proxyError is a rejected proxy request, with the HTTP status it maps to.
-// Unlike paramError, the status varies: a disallowed host is a 403, a malformed
-// URL a 400.
-type proxyError struct {
-	status  int
-	code    string
-	message string
 }
 
 // resolveProxyTarget validates everything about where the request points before
@@ -226,34 +209,34 @@ type proxyError struct {
 // (which also defeats DNS rebinding), and only on a cache miss. A lookup here
 // ran on every request, cache hits included, and turned a resolver hiccup into
 // 403s for images already in cache.
-func (h *Handler) resolveProxyTarget(r *http.Request, query url.Values) (proxyTarget, *proxyError) {
+func (h *Handler) resolveProxyTarget(r *http.Request, query url.Values) (proxyTarget, *fetchError) {
 	segment := chi.URLParam(r, "*")
 	if segment == "" {
-		return proxyTarget{}, &proxyError{http.StatusBadRequest, "MISSING_SEGMENT", "Missing path segment"}
+		return proxyTarget{}, &fetchError{http.StatusBadRequest, "MISSING_SEGMENT", "Missing path segment"}
 	}
 
 	_, extFormat := proxyExtFromSegment(segment, h.resolveOutputFormat(""))
 	if extFormat == "" {
-		return proxyTarget{}, &proxyError{http.StatusBadRequest, "INVALID_EXTENSION", "Unknown or missing image extension"}
+		return proxyTarget{}, &fetchError{http.StatusBadRequest, "INVALID_EXTENSION", "Unknown or missing image extension"}
 	}
 
 	rawURL := query.Get("url")
 	switch {
 	case rawURL == "":
-		return proxyTarget{}, &proxyError{http.StatusBadRequest, "MISSING_URL", "url query parameter is required"}
+		return proxyTarget{}, &fetchError{http.StatusBadRequest, "MISSING_URL", "url query parameter is required"}
 	case len(rawURL) > MaxURLLength:
-		return proxyTarget{}, &proxyError{http.StatusBadRequest, "URL_TOO_LONG", "url exceeds maximum allowed length"}
+		return proxyTarget{}, &fetchError{http.StatusBadRequest, "URL_TOO_LONG", "url exceeds maximum allowed length"}
 	}
 
 	parsed, err := url.ParseRequestURI(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return proxyTarget{}, &proxyError{http.StatusBadRequest, "INVALID_URL", "url must be an absolute http/https URL"}
+		return proxyTarget{}, &fetchError{http.StatusBadRequest, "INVALID_URL", "url must be an absolute http/https URL"}
 	}
 	hostname := parsed.Hostname()
 
 	if _, ok := cachedProxyAllowedHosts()[strings.ToLower(hostname)]; !ok {
 		logger.Warn().Str("host", hostname).Msg("Proxy request to disallowed host")
-		return proxyTarget{}, &proxyError{http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not in the proxy allowlist"}
+		return proxyTarget{}, &fetchError{http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not in the proxy allowlist"}
 	}
 
 	return proxyTarget{rawURL: rawURL, extFormat: extFormat}, nil
@@ -273,52 +256,10 @@ func (h *Handler) resolveProxyTarget(r *http.Request, query url.Values) (proxyTa
 //   - quality defaults lower than delivery's, because these images come from
 //     external CDNs and are not archival.
 func (h *Handler) parseProxyParams(query url.Values, extFormat string) (*processor.ProcessingParams, *paramError) {
-	params := &processor.ProcessingParams{}
-
-	if raw := utils.QueryParam(query, "w", "width"); raw != "" {
-		width, err := parseDimension(raw, h.config.Processing.MaxDimensions.Width)
-		if err != nil {
-			return nil, &paramError{"INVALID_WIDTH", err.Error()}
-		}
-		params.Width = width
+	params, perr := h.parseSizeAndEncoding(query, extFormat)
+	if perr != nil {
+		return nil, perr
 	}
-
-	if raw := utils.QueryParam(query, "h", "height"); raw != "" {
-		height, err := parseDimension(raw, h.config.Processing.MaxDimensions.Height)
-		if err != nil {
-			return nil, &paramError{"INVALID_HEIGHT", err.Error()}
-		}
-		params.Height = height
-	}
-
-	if raw := utils.QueryParam(query, "q", "quality"); raw != "" {
-		quality, err := strconv.Atoi(raw)
-		if err != nil || quality <= 0 || quality > maxQuality {
-			return nil, &paramError{"INVALID_QUALITY", "Invalid quality parameter"}
-		}
-		params.Quality = quality
-	}
-
-	if raw := query.Get("fit"); raw != "" {
-		if raw != FitCover && raw != FitContain && raw != FitFill {
-			return nil, &paramError{"INVALID_FIT", "Invalid fit parameter"}
-		}
-		params.Fit = raw
-	}
-
-	// An explicit ?f= wins over the path extension; the extension is the default.
-	format, ok := h.parseFormat(utils.QueryParam(query, "f", "format"))
-	switch {
-	case !ok:
-		return nil, &paramError{"INVALID_FORMAT", "Unsupported format"}
-	case format != "":
-		params.Format = format
-	default:
-		params.Format = extFormat
-	}
-
-	params.SkipAutoOrient = query.Get("orient") == "0"
-	params.KeepMetadata = query.Get("meta") == "1"
 
 	if params.Width == 0 && params.Height == 0 {
 		params.Width = envPositiveInt("PROXY_MAX_WIDTH", defaultProxyMaxWidth, 0)
@@ -377,11 +318,11 @@ func (h *Handler) buildProxyCachedMetadata(cacheKey, format string, size int) *s
 // cost a fetch every time. Timeouts, connection errors, upstream 5xx/429 and
 // processing failures are NOT remembered: they can be transient, and caching
 // them would keep serving an error after the cause is gone.
-func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *processor.ProcessingParams) (*proxyResult, error) {
+func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *processor.ProcessingParams) (*deliveryResult, error) {
 	// Re-check both caches: a sibling request may have just populated
 	// them while this goroutine was queued behind sf.Do's internal lock.
 	if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
-		return &proxyResult{
+		return &deliveryResult{
 			data: cachedData,
 			meta: h.buildProxyCachedMetadata(cacheKey, params.Format, len(cachedData)),
 		}, nil
@@ -495,7 +436,7 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 	if meta.ContentType == "" {
 		meta.ContentType = h.imageProcessor.GetContentType(meta.Format)
 	}
-	return &proxyResult{data: data, meta: meta}, nil
+	return &deliveryResult{data: data, meta: meta}, nil
 }
 
 // proxyInputLabel maps an upstream Content-Type onto a bounded metric label.
