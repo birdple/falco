@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	apimw "github.com/birdple/falco/internal/api/middleware"
+	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/storage"
 	"github.com/birdple/falco/internal/version"
@@ -178,8 +179,12 @@ func (h *Handler) HandleCachePurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if key := strings.TrimSpace(r.URL.Query().Get("key")); key != "" {
-		removed := h.imageProcessor.InvalidateCacheForKey(key)
+	query := r.URL.Query()
+	if key := strings.TrimSpace(query.Get("key")); key != "" {
+		// Cache entries belong to a backend, so a per-key purge names one
+		// too: ?b= / ?storage=, the default bucket when neither is given.
+		namespace := h.backendNamespace(query.Get("storage"), utils.QueryParam(query, "b", "bucket"))
+		removed := h.imageProcessor.InvalidateCache(cacheObjectKey(namespace, key))
 		logger.Info().Str("key", key).Int("purged", removed).Msg("Cache purged for key")
 		writeJSON(w, http.StatusOK, PurgeResponse{Success: true, Purged: removed, Scope: "key", Key: key})
 		return

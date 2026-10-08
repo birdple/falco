@@ -31,7 +31,7 @@ import (
 // Additional Upload tests
 func TestHandleUpload_MultipartWithFile(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -80,7 +80,7 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 
 func TestHandleUpload_JSONWithURL(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -113,7 +113,7 @@ func TestHandleUpload_JSONWithURL(t *testing.T) {
 
 func TestHandleUpload_InvalidQuality(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -139,7 +139,7 @@ func TestHandleUpload_InvalidQuality(t *testing.T) {
 // Additional Delivery tests
 func TestHandleDelivery_WithTransformations(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 
@@ -192,7 +192,7 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 
 func TestHandleDelivery_InvalidWidth(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 
@@ -214,7 +214,7 @@ func TestHandleDelivery_InvalidWidth(t *testing.T) {
 
 func TestHandleDelivery_InvalidFormat(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 
@@ -239,7 +239,7 @@ func TestHandleDelivery_InvalidFormat(t *testing.T) {
 // Additional Delete tests
 func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -263,15 +263,13 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockStorage.On("Delete", mock.Anything, "images/2024/img1.jpg").Return(nil)
 	mockStorage.On("Delete", mock.Anything, "images/2024/img2.jpg").Return(nil)
 
-	// Borrar el original tiene que tirar también sus variantes cacheadas, o la
-	// imagen se sigue sirviendo desde RAM hasta 24 h después de "borrada".
-	mockProcessor.On("InvalidateCacheForKey", "images/2024/img1.jpg").Return(0)
-	mockProcessor.On("InvalidateCacheForKey", "images/2024/img2.jpg").Return(0)
-
 	w := httptest.NewRecorder()
 	h.HandleDelete(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	// Deleting the originals has to drop their cached variants too, in one
+	// pass, or the images keep being served from RAM for up to a TTL.
+	mockProcessor.AssertCalled(t, "InvalidateCache", []string{"\x00images/2024/img1.jpg", "\x00images/2024/img2.jpg"})
 
 	var response types.DeleteResponse
 	json.Unmarshal(w.Body.Bytes(), &response)
@@ -282,7 +280,7 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 
 func TestHandleDelete_MissingParameters(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -305,7 +303,7 @@ func TestHandleDelete_MissingParameters(t *testing.T) {
 // Additional List tests
 func TestHandleList_WithPrefix(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -337,7 +335,7 @@ func TestHandleList_WithPrefix(t *testing.T) {
 func TestHandleDelete_RootPrefixIsRejected(t *testing.T) {
 	for _, prefix := range []string{"/", "//", "///"} {
 		mockStorage := new(mocks.MockStorageBackend)
-		h := handlers.NewHandler(&config.Config{}, mockStorage, new(mocks.MockImageProcessor), time.Now())
+		h := handlers.NewHandler(&config.Config{}, mockStorage, newProcessorMock(), time.Now())
 
 		req := httptest.NewRequest(http.MethodDelete, "/delete", strings.NewReader(`{"prefix":"`+prefix+`"}`))
 		w := httptest.NewRecorder()
@@ -351,7 +349,7 @@ func TestHandleDelete_RootPrefixIsRejected(t *testing.T) {
 
 func TestHandleList_StorageError(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -374,7 +372,7 @@ func TestHandleList_StorageError(t *testing.T) {
 // listing: the caller is told to page through it.
 func TestHandleList_ListingTooLarge(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	h := handlers.NewHandler(&config.Config{}, mockStorage, mockProcessor, time.Now())
 
@@ -400,7 +398,7 @@ func TestHandleList_ListingTooLarge(t *testing.T) {
 // fits and reporting success is the exact failure this endpoint exists to avoid.
 func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	h := handlers.NewHandler(&config.Config{}, mockStorage, mockProcessor, time.Now())
 
@@ -429,7 +427,7 @@ func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
 // Additional Health tests
 func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -452,7 +450,7 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 // Tests for HandleUpdate
 func TestHandleUpdate_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -498,7 +496,7 @@ func TestHandleUpdate_Success(t *testing.T) {
 
 func TestHandleUpdate_InvalidJSON(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -518,7 +516,7 @@ func TestHandleUpdate_InvalidJSON(t *testing.T) {
 
 func TestHandleUpdate_MissingURL(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -544,7 +542,7 @@ func TestHandleUpdate_MissingURL(t *testing.T) {
 
 func TestHandleUpdate_MissingBucket(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -570,7 +568,7 @@ func TestHandleUpdate_MissingBucket(t *testing.T) {
 
 func TestHandleUpdate_MissingKey(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -596,7 +594,7 @@ func TestHandleUpdate_MissingKey(t *testing.T) {
 
 func TestHandleUpdate_InvalidQuality(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -623,7 +621,7 @@ func TestHandleUpdate_InvalidQuality(t *testing.T) {
 
 func TestHandleUpdate_InvalidFormat(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -654,7 +652,7 @@ func TestHandleUpdate_InvalidFormat(t *testing.T) {
 // Test HandleDocs
 func TestHandleDocs(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -741,7 +739,7 @@ func TestHandleUpload_CustomID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockStorage := new(mocks.MockStorageBackend)
-			mockProcessor := new(mocks.MockImageProcessor)
+			mockProcessor := newProcessorMock()
 
 			cfg := &config.Config{
 				Processing: config.ProcessingConfig{

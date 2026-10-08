@@ -36,7 +36,7 @@ func makeDeliveryHandler(t *testing.T, mockStorage *mocks.MockStorageBackend, mo
 // extension and uses "webp" as the format default.
 func TestHandleDelivery_ExtWebp(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "abc123"
@@ -75,7 +75,7 @@ func TestHandleDelivery_ExtWebp(t *testing.T) {
 // TestHandleDelivery_ExtJpg checks that /images/abc123.jpg maps to "jpeg".
 func TestHandleDelivery_ExtJpg(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "abc123"
@@ -114,7 +114,7 @@ func TestHandleDelivery_ExtJpg(t *testing.T) {
 // TestHandleDelivery_ExtInvalid checks that /images/abc123.pdf returns 400.
 func TestHandleDelivery_ExtInvalid(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	router := makeDeliveryHandler(t, mockStorage, mockProcessor)
 
@@ -131,7 +131,7 @@ func TestHandleDelivery_ExtInvalid(t *testing.T) {
 // from the path.
 func TestHandleDelivery_NoExt(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "abc123"
@@ -178,7 +178,7 @@ func TestHandleDelivery_NoExt(t *testing.T) {
 // resolverse contra la clave "fotos/abc123", sin la extensión.
 func TestHandleDelivery_ExtWithDirectory(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "fotos/abc123"
@@ -220,7 +220,7 @@ func TestHandleDelivery_ExtWithDirectory(t *testing.T) {
 // en vez de sobre el último segmento rompe justo este caso.
 func TestHandleDelivery_DotInDirectoryOnly(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "v1.2/abc123"

@@ -130,7 +130,15 @@ func configureTrustedProxies(cfg *config.Config) {
 // Config below matches nil's other defaults — the operation cache stays off,
 // which is right here because every proxied image is distinct — and flips
 // VectorEnabled on, which is the whole point of passing one.
+//
+// VIPS_BLOCK_UNTRUSTED is set before startup unless the operator set it: it
+// makes libvips refuse the loaders it marks as untrusted (ImageMagick, PDF,
+// matrix and friends), which falco never needs and which are the usual parser
+// attack surface. Process also has its own allowlist of input formats.
 func startVips() {
+	if _, set := os.LookupEnv("VIPS_BLOCK_UNTRUSTED"); !set {
+		_ = os.Setenv("VIPS_BLOCK_UNTRUSTED", "1")
+	}
 	vips.Startup(&vips.Config{
 		ConcurrencyLevel: 1,    // 1 thread per pipeline; CONCURRENT_WORKERS governs real parallelism
 		MaxCacheFiles:    0,    // operation cache off (unchanged from nil default)
@@ -197,6 +205,7 @@ func buildImageProcessor(cfg *config.Config) processor.ImageProcessor {
 		vp.SetMaxConcurrency(cfg.Processing.ConcurrentWorkers)
 		logger.Info().Int("max_concurrent", cfg.Processing.ConcurrentWorkers).Msg("Processing concurrency limit set")
 	}
+	vp.SetMaxPixels(int64(cfg.Processing.MaxMegapixels) * 1_000_000)
 	vp.SetWebPEffort(cfg.Processing.WebPEffort)
 	logger.Info().Int("webp_effort", cfg.Processing.WebPEffort).Msg("WebP encode effort set")
 	vp.SetCacheTTL(cfg.GetCacheTTL())

@@ -52,6 +52,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	// down reports success and the caller has nothing left to retry from.
 	var tally deleteTally
 	var truncated bool
+	var touched []string
 
 	if req.Prefix != "" {
 		prefix := utils.NormalizeDirectoryPath(req.Prefix)
@@ -90,11 +91,19 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			listedKeys = append(listedKeys, item.Key)
 		}
 		h.deleteKeysParallel(ctx, r, storageBackend, listedKeys, &tally)
+		touched = append(touched, listedKeys...)
 	}
 
 	for _, key := range req.Keys {
 		h.deleteKey(ctx, r, storageBackend, key, &tally)
 	}
+	touched = append(touched, req.Keys...)
+
+	// Every key touched is invalidated, in one pass over the cache, whether it
+	// was deleted, already gone, or failed: a stale variant of a missing
+	// object is exactly what must not be served, and a needless invalidation
+	// only costs one re-render.
+	h.invalidateCache(h.backendNamespace(req.Storage, req.Bucket), touched...)
 
 	deletedKeys, failedKeys := tally.results()
 
@@ -120,15 +129,20 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, response)
 }
 
-// invalidateCache drops every cached variant of a key that no longer exists or
+// invalidateCache drops every cached variant of keys that no longer exist or
 // whose bytes changed; otherwise the deleted image keeps being served from RAM
 // until its TTL expires.
-func (h *Handler) invalidateCache(key string) {
-	if h.imageProcessor == nil {
+func (h *Handler) invalidateCache(namespace string, keys ...string) {
+	if h.imageProcessor == nil || len(keys) == 0 {
 		return
 	}
-	if n := h.imageProcessor.InvalidateCacheForKey(key); n > 0 {
-		logger.Debug().Str("key", key).Int("variants", n).Msg("Invalidated cached variants")
+	objects := make([]string, len(keys))
+	for i, key := range keys {
+		objects[i] = cacheObjectKey(namespace, key)
+	}
+	if n := h.imageProcessor.InvalidateCache(objects...); n > 0 {
+		logger.Debug().Str("namespace", namespace).Int("keys", len(keys)).Int("variants", n).
+			Msg("Invalidated cached variants")
 	}
 }
 
@@ -214,6 +228,5 @@ func (h *Handler) deleteKey(
 		return
 	}
 
-	h.invalidateCache(key)
 	tally.recordDeleted(key)
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -90,6 +91,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storageKey := utils.BuildStorageKey(directory, imageID)
+	namespace := h.backendNamespace(storageName, bucket)
 
 	storageBackend, err := h.getStorageBackendScoped(r, storageName, bucket)
 	if err != nil {
@@ -112,6 +114,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 	if hasTransformations || params.Format != "" {
 		h.deliverProcessed(w, r, deliveryRequest{
 			storageBackend:     storageBackend,
+			namespace:          namespace,
 			storageKey:         storageKey,
 			imageID:            imageID,
 			params:             params,
@@ -123,6 +126,7 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 
 	h.deliverRaw(w, r, deliveryRequest{
 		storageBackend:     storageBackend,
+		namespace:          namespace,
 		storageKey:         storageKey,
 		params:             params,
 		hasTransformations: hasTransformations,
@@ -133,7 +137,10 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 // deliveryRequest bundles what both delivery paths need, so neither ends up
 // with a nine-parameter signature.
 type deliveryRequest struct {
-	storageBackend     storage.StorageBackend
+	storageBackend storage.StorageBackend
+	// namespace is the backend the request resolved to; with storageKey it
+	// names the original for every cache and singleflight key.
+	namespace          string
 	storageKey         string
 	imageID            string
 	params             *processor.ProcessingParams
@@ -151,12 +158,12 @@ type deliveryRequest struct {
 // The result is buffered rather than streamed precisely because it is shared:
 // siblings waiting on the same key all get the same bytes.
 func (h *Handler) deliverProcessed(w http.ResponseWriter, r *http.Request, req deliveryRequest) {
-	storageKey, imageID, params := req.storageKey, req.imageID, req.params
+	imageID, params := req.imageID, req.params
 
 	// Resolve the output format now so the cache key is deterministic.
 	params.Format = h.resolveOutputFormat(params.Format)
 
-	cacheKey := h.imageProcessor.GenerateCacheKey(storageKey, params)
+	cacheKey := h.imageProcessor.GenerateCacheKey(cacheObjectKey(req.namespace, req.storageKey), params)
 	if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
 		h.serveImage(w, r, bytes.NewReader(cachedData), h.buildCachedMetadata(imageID, params, len(cachedData)))
 		return
@@ -178,7 +185,12 @@ func (h *Handler) deliverProcessed(w http.ResponseWriter, r *http.Request, req d
 		return
 	}
 	result := v.(*deliveryResult)
-	h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
+	// The result is shared with every request that collapsed onto this key,
+	// but the caching directives are not part of the key: each caller gets its
+	// own maxage/smaxage rather than the leader's.
+	meta := *result.meta
+	meta.MaxAge, meta.SMaxAge = params.MaxAge, params.SMaxAge
+	h.serveImage(w, r, bytes.NewReader(result.data), &meta)
 }
 
 // deliverRaw streams the stored object straight through.
@@ -232,7 +244,7 @@ func (h *Handler) deliverRaw(w http.ResponseWriter, r *http.Request, req deliver
 	// needed. Not deduplicated: cacheKey could not be known before the retrieve.
 	params.Format = h.resolveOutputFormat(params.Format)
 	if cacheKey == "" {
-		cacheKey = h.imageProcessor.GenerateCacheKey(storageKey, params)
+		cacheKey = h.imageProcessor.GenerateCacheKey(cacheObjectKey(req.namespace, storageKey), params)
 	}
 
 	// Duration (semaphore_wait + transform) is recorded by Process(); only the
@@ -342,7 +354,8 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 
 	if raw := query.Get("rotate"); raw != "" {
 		angle, err := strconv.ParseFloat(raw, 64)
-		if err != nil || angle < -maxRotateDegrees || angle > maxRotateDegrees {
+		// NaN passes every range comparison, so it is rejected explicitly.
+		if err != nil || !isFinite(angle) || angle < -maxRotateDegrees || angle > maxRotateDegrees {
 			return nil, &paramError{"INVALID_ROTATE", "rotate must be between -360 and 360 degrees"}
 		}
 		params.Rotate = angle
@@ -421,11 +434,17 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 		}
 	}
 
-	params.PaddingTop = nonNegativeInt(query.Get("pad_top"), params.PaddingTop)
-	params.PaddingRight = nonNegativeInt(query.Get("pad_right"), params.PaddingRight)
-	params.PaddingBottom = nonNegativeInt(query.Get("pad_bottom"), params.PaddingBottom)
-	params.PaddingLeft = nonNegativeInt(query.Get("pad_left"), params.PaddingLeft)
-	params.PaddingColor = query.Get("pad_color")
+	// Padding is capped per side at the configured maximum dimension: it is
+	// applied after every resize limit, so an uncapped pad_top=30000 built a
+	// canvas of gigabytes. The processor also checks the final pixel count.
+	maxPadX, maxPadY := h.config.Processing.MaxDimensions.Width, h.config.Processing.MaxDimensions.Height
+	params.PaddingTop = boundedInt(query.Get("pad_top"), maxPadY, params.PaddingTop)
+	params.PaddingRight = boundedInt(query.Get("pad_right"), maxPadX, params.PaddingRight)
+	params.PaddingBottom = boundedInt(query.Get("pad_bottom"), maxPadY, params.PaddingBottom)
+	params.PaddingLeft = boundedInt(query.Get("pad_left"), maxPadX, params.PaddingLeft)
+	// Normalised here so equivalent spellings share a cache entry; anything
+	// that is not six hex digits falls back to the default white.
+	params.PaddingColor, _ = processor.NormalizeHexColor(query.Get("pad_color"))
 
 	// Both default to on, so the query string opts *out* rather than in.
 	params.SkipAutoOrient = query.Get("orient") == "0"
@@ -518,7 +537,23 @@ func floatInRange(raw string, low, high, fallback float64) float64 {
 		return fallback
 	}
 	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil || v < low || v > high {
+	if err != nil || !isFinite(v) || v < low || v > high {
+		return fallback
+	}
+	return v
+}
+
+// isFinite reports whether v is neither NaN nor ±Inf. strconv.ParseFloat
+// accepts "NaN" and "Inf", and NaN slips through every < and > check.
+func isFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+// boundedInt parses an optional integer in [0, upper], returning fallback when
+// it is absent, malformed or out of range. A non-positive upper means no cap.
+func boundedInt(raw string, upper, fallback int) int {
+	v := nonNegativeInt(raw, -1)
+	if v < 0 || (upper > 0 && v > upper) {
 		return fallback
 	}
 	return v
@@ -784,7 +819,7 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 	// path, so a request answered from cache never pays for it. A failure is
 	// returned rather than swallowed — an image served without the watermark it
 	// was asked for looks exactly like one that worked.
-	if wmErr := h.resolveWatermark(processCtx, storageBackend, params); wmErr != nil {
+	if wmErr := h.resolveWatermark(processCtx, storageBackend, req.namespace, params); wmErr != nil {
 		return nil, wmErr
 	}
 

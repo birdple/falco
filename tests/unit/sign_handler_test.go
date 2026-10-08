@@ -21,7 +21,7 @@ func signHandler(t *testing.T) *handlers.Handler {
 	// cualquiera de los dos mal, SignURL devuelve 500 y el test no probaría nada.
 	cfg.Security.HMACKey = "6465616462656566303132333435363738396162636465663031323334353637"
 	cfg.Security.HMACSignatureSize = 32
-	return handlers.NewHandler(cfg, new(mocks.MockStorageBackend), new(mocks.MockImageProcessor), time.Now())
+	return handlers.NewHandler(cfg, new(mocks.MockStorageBackend), newProcessorMock(), time.Now())
 }
 
 func postSign(t *testing.T, body string) *httptest.ResponseRecorder {

@@ -93,7 +93,7 @@ func newRoutingHandler(t *testing.T, aliases map[string]string) (*handlers.Handl
 // storage are the bytes that were posted. libvips is not what these tests are
 // about.
 func passthroughProcessor() *mocks.MockImageProcessor {
-	p := new(mocks.MockImageProcessor)
+	p := newProcessorMock()
 	p.On("Process", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(func(_ context.Context, r io.Reader, _ *processor.ProcessingParams, _ string) *processor.ProcessedImage {
 			data, _ := io.ReadAll(r)

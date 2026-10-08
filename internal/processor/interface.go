@@ -128,25 +128,27 @@ type ImageProcessor interface {
 	// skip caching (e.g. upload/update paths).
 	Process(ctx context.Context, input io.Reader, params *ProcessingParams, cacheKey string) (*ProcessedImage, error)
 
-	// GenerateCacheKey builds a deterministic cache key from a storage key
-	// and processing parameters. The key is derivable from the URL alone,
+	// GenerateCacheKey builds a deterministic cache key from an object key
+	// (the backend plus the storage key of the original) and processing
+	// parameters. The key is derivable from the URL alone,
 	// so the caller can check the cache BEFORE fetching the original from
 	// the storage backend.
-	GenerateCacheKey(storageKey string, params *ProcessingParams) string
+	GenerateCacheKey(objectKey string, params *ProcessingParams) string
 
 	// GetFromCache returns the cached processed image bytes for the given
 	// key, or (nil, false) on miss. Callers should use GenerateCacheKey to
 	// obtain the key.
 	GetFromCache(key string) ([]byte, bool)
 
-	// InvalidateCacheForKey drops every cached variant of a storage key and
-	// returns how many entries were removed.
+	// InvalidateCache drops every cached variant of the given objects and
+	// returns how many entries were removed. Object keys are the same ones
+	// passed to GenerateCacheKey.
 	//
 	// One object can be cached under as many variants as there are parameter
-	// combinations, and they all share the `sha256(storageKey)` prefix. Without
-	// this, a deleted or replaced image keeps being served from RAM until its
-	// TTL expires: a privacy problem, not just a consistency one.
-	InvalidateCacheForKey(storageKey string) int
+	// combinations, and they all share a prefix derived from its object key.
+	// Without this, a deleted or replaced image keeps being served from RAM
+	// until its TTL expires: a privacy problem, not just a consistency one.
+	InvalidateCache(objectKeys ...string) int
 
 	// PurgeCache drops every cached variant and returns how many entries were
 	// removed.

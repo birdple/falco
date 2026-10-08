@@ -3,11 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -79,35 +76,6 @@ func cachedProxyAllowedHosts() map[string]struct{} {
 	return proxyAllowlistCache
 }
 
-// isPrivateHost is an early-rejection guard before the authoritative
-// dial-time SSRF check in httputil.NewSafeHTTPClient. Both must pass —
-// this function provides a fast path for obvious private hostnames and
-// rejects all resolved IPs including unspecified (0.0.0.0/::) which the
-// safe client also blocks, but having both ensures defence in depth.
-func isPrivateHost(hostname string) bool {
-	lower := strings.ToLower(strings.TrimSpace(hostname))
-	if lower == "localhost" ||
-		strings.HasSuffix(lower, ".local") ||
-		strings.HasSuffix(lower, ".internal") ||
-		strings.HasSuffix(lower, ".svc.cluster.local") {
-		return true
-	}
-	ips, err := net.LookupHost(hostname)
-	if err != nil {
-		return true // fail-closed
-	}
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return true
-		}
-	}
-	return false
-}
-
 // proxyExtFromSegment extracts the known image extension from a path segment
 // like "a1b2c3.webp" and returns (strippedSegment, mappedFormat).
 // If the segment has no dot, returns (segment, defaultFormat).
@@ -125,11 +93,24 @@ func proxyExtFromSegment(segment, defaultFormat string) (id, format string) {
 	return base, mapped
 }
 
-// proxyCacheKey generates a deterministic cache key for a proxy request.
-func proxyCacheKey(rawURL, ext, w, h, q, fit string) string {
-	h256 := sha256.New()
-	_, _ = fmt.Fprintf(h256, "%s|%s|%s|%s|%s|%s", rawURL, ext, w, h, q, fit)
-	return fmt.Sprintf("proxy:%x", h256.Sum(nil))
+// proxyNamespace is the cache namespace for proxied URLs. It cannot collide
+// with a bucket name: those come from environment variable suffixes and
+// aliases, and this one is reserved here.
+const proxyNamespace = "proxy:"
+
+// proxyCacheKey is the transform cache key for a proxied URL. It goes through
+// the same generateCacheKey as delivery, so every parameter that changes the
+// bytes — orient and meta included, which the old hand-rolled key left out —
+// is part of it.
+func (h *Handler) proxyCacheKey(rawURL string, params *processor.ProcessingParams) string {
+	return h.imageProcessor.GenerateCacheKey(cacheObjectKey(proxyNamespace, rawURL), params)
+}
+
+// proxyFailureKey is the negative-cache key for a URL. Failures are a property
+// of the URL, not of the requested size, so varying ?w= must not get around
+// them.
+func proxyFailureKey(rawURL string) string {
+	return cacheObjectKey(proxyNamespace+"fail", rawURL)
 }
 
 // HandleProxy fetches an image from an external URL, processes it with
@@ -154,33 +135,23 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── 6. Cache key + LRU hit ────────────────────────────────────────
-	cacheKey := proxyCacheKey(
-		rawURL,
-		params.Format,
-		strconv.Itoa(params.Width),
-		strconv.Itoa(params.Height),
-		strconv.Itoa(params.Quality),
-		params.Fit,
-	)
+	// Same fallback chain as delivery: requested, then configured, then webp.
+	// Resolved before the key is built, so the key is deterministic.
+	params.Format = h.resolveOutputFormat(params.Format)
 
+	cacheKey := h.proxyCacheKey(rawURL, params)
 	if cachedData, found := h.imageProcessor.GetFromCache(cacheKey); found {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		h.serveImage(w, r, bytes.NewReader(cachedData), h.buildProxyCachedMetadata(cacheKey, params.Format, len(cachedData)))
 		return
 	}
 
-	if fe, found := h.recallFailure(cacheKey); found {
+	if fe, found := h.recallFailure(proxyFailureKey(rawURL)); found {
 		h.sendError(w, fe.status, fe.code, fe.message)
 		return
 	}
 
-	// Same fallback chain as delivery: requested, then configured, then webp.
-	params.Format = h.resolveOutputFormat(params.Format)
-
-	// ── 7-8. Fetch + process, deduplicated by cacheKey ─────────────────
-	// sf.Do collapses N concurrent requests for the same (url, format, w,
-	// h, q, fit) into a single fetch+decode+encode.
+	// Fetch + process, deduplicated by cacheKey: sf.Do collapses N concurrent
+	// requests for the same URL and parameters into one fetch+decode+encode.
 	v, err, _ := h.sf.Do(cacheKey, func() (any, error) {
 		return h.fetchAndProcessRemote(rawURL, cacheKey, params)
 	})
@@ -196,7 +167,6 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := v.(*proxyResult)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
 }
 
@@ -211,7 +181,6 @@ type proxyResult struct {
 // proxyTarget is a proxy request whose destination has been validated.
 type proxyTarget struct {
 	rawURL    string
-	hostname  string
 	extFormat string
 }
 
@@ -227,17 +196,18 @@ type proxyError struct {
 // resolveProxyTarget validates everything about where the request points before
 // a single byte is fetched.
 //
-// The order of the checks is a security property, not a style choice:
+// The checks run before any network activity:
 //
 //  1. the path extension has to name a known image format;
 //  2. the url parameter has to be an absolute http/https URL within the length
 //     cap;
-//  3. its host has to be on the allowlist; and only then
-//  4. the SSRF guard resolves it.
+//  3. its host has to be on the allowlist.
 //
-// Step 4 performs DNS resolution, so it comes last on purpose — resolving a
-// hostname is itself an outbound request, and doing it before the allowlist
-// check would let anyone make falco resolve arbitrary names.
+// There is deliberately no DNS lookup here. The SSRF guard that matters runs at
+// dial time in httputil.NewSafeHTTPClient, on the addresses actually dialled
+// (which also defeats DNS rebinding), and only on a cache miss. A lookup here
+// ran on every request, cache hits included, and turned a resolver hiccup into
+// 403s for images already in cache.
 func (h *Handler) resolveProxyTarget(r *http.Request, query url.Values) (proxyTarget, *proxyError) {
 	segment := chi.URLParam(r, "*")
 	if segment == "" {
@@ -268,12 +238,7 @@ func (h *Handler) resolveProxyTarget(r *http.Request, query url.Values) (proxyTa
 		return proxyTarget{}, &proxyError{http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not in the proxy allowlist"}
 	}
 
-	if isPrivateHost(hostname) {
-		logger.Warn().Str("host", hostname).Msg("Proxy SSRF guard triggered")
-		return proxyTarget{}, &proxyError{http.StatusForbidden, "HOST_NOT_ALLOWED", "host is not allowed"}
-	}
-
-	return proxyTarget{rawURL: rawURL, hostname: hostname, extFormat: extFormat}, nil
+	return proxyTarget{rawURL: rawURL, extFormat: extFormat}, nil
 }
 
 // parseProxyParams turns the proxy query string into processing parameters.
@@ -387,11 +352,12 @@ func (h *Handler) buildProxyCachedMetadata(cacheKey, format string, size int) *s
 // shared, so one client hanging up must not cancel the fetch the others are
 // still waiting on.
 //
-// Which failures get negative-cached is a deliberate distinction. A dead link, a
-// non-image response or an oversized body are stable properties of the URL and
-// are remembered, so a crawler hammering the same bad URL does not cost a fetch
-// every time. A processing failure is NOT remembered: it can be transient, and
-// caching it would keep serving an error after the cause is gone.
+// Which failures get negative-cached is a deliberate distinction. A dead link
+// (404/410), a non-image response or an oversized body are stable properties of
+// the URL and are remembered, so a crawler hammering the same bad URL does not
+// cost a fetch every time. Timeouts, connection errors, upstream 5xx/429 and
+// processing failures are NOT remembered: they can be transient, and caching
+// them would keep serving an error after the cause is gone.
 func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *processor.ProcessingParams) (*proxyResult, error) {
 	// Re-check both caches: a sibling request may have just populated
 	// them while this goroutine was queued behind sf.Do's internal lock.
@@ -401,7 +367,8 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 			meta: h.buildProxyCachedMetadata(cacheKey, params.Format, len(cachedData)),
 		}, nil
 	}
-	if fe, found := h.recallFailure(cacheKey); found {
+	failureKey := proxyFailureKey(rawURL)
+	if fe, found := h.recallFailure(failureKey); found {
 		return nil, fe
 	}
 
@@ -433,40 +400,39 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 	resp, err := h.httpClient.Do(fetchReq)
 	if err != nil {
 		logger.Warn().Err(err).Str("url", rawURL).Msg("Proxy fetch failed")
-		fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image"}
-		h.rememberFailure(cacheKey, fe)
-		return nil, fe
+		return nil, &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image"}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Warn().Int("status", resp.StatusCode).Str("url", rawURL).Msg("Proxy upstream non-2xx")
 		fe := &fetchError{http.StatusBadGateway, "UPSTREAM_ERROR", "Upstream returned a non-2xx status"}
-		h.rememberFailure(cacheKey, fe)
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			h.rememberFailure(failureKey, fe)
+		}
 		return nil, fe
 	}
 
-	// Validate Content-Type is image/*
+	// A raster image only: SVG is image/* too, and is script-capable.
 	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(strings.ToLower(ct), "image/") {
+	if !utils.IsImageContentType(ct) {
 		logger.Warn().Str("content_type", ct).Str("url", rawURL).Msg("Proxy upstream returned non-image content type")
 		fe := &fetchError{http.StatusUnsupportedMediaType, "NOT_AN_IMAGE", "Upstream did not return an image"}
-		h.rememberFailure(cacheKey, fe)
+		h.rememberFailure(failureKey, fe)
 		return nil, fe
 	}
+	inputLabel := proxyInputLabel(ct)
 
 	limitedBody := io.LimitReader(resp.Body, proxyMaxBodyBytes+1)
 	bodyBytes, err := io.ReadAll(limitedBody)
 	if err != nil {
 		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read proxy response body")
-		fe := &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to read external image"}
-		h.rememberFailure(cacheKey, fe)
-		return nil, fe
+		return nil, &fetchError{http.StatusBadGateway, "FETCH_FAILED", "Failed to read external image"}
 	}
 	m.ImageProcessingDuration.WithLabelValues("fetch").Observe(time.Since(fetchStart).Seconds())
 	if int64(len(bodyBytes)) > proxyMaxBodyBytes {
 		fe := &fetchError{http.StatusRequestEntityTooLarge, "IMAGE_TOO_LARGE", "External image exceeds maximum allowed size"}
-		h.rememberFailure(cacheKey, fe)
+		h.rememberFailure(failureKey, fe)
 		return nil, fe
 	}
 
@@ -479,11 +445,11 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 	defer processCancel()
 	processedImage, err := h.imageProcessor.Process(processCtx, bytes.NewReader(bodyBytes), params, cacheKey)
 	if err != nil {
-		m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "error").Inc()
+		m.ImageProcessingTotal.WithLabelValues(inputLabel, params.Format, "error").Inc()
 		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
 		return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
 	}
-	m.ImageProcessingTotal.WithLabelValues(ct, params.Format, "success").Inc()
+	m.ImageProcessingTotal.WithLabelValues(inputLabel, params.Format, "success").Inc()
 	defer func() { _ = processedImage.Data.Close() }()
 	data, err := io.ReadAll(processedImage.Data)
 	if err != nil {
@@ -511,4 +477,27 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 		meta.ContentType = h.imageProcessor.GetContentType(meta.Format)
 	}
 	return &proxyResult{data: data, meta: meta}, nil
+}
+
+// proxyInputLabel maps an upstream Content-Type onto a bounded metric label.
+// The header is chosen by a third party, and using it raw as a Prometheus label
+// would let any allowlisted host mint a new time series per response.
+func proxyInputLabel(contentType string) string {
+	mediaType, _, _ := strings.Cut(strings.ToLower(contentType), ";")
+	switch strings.TrimSpace(mediaType) {
+	case "image/jpeg", "image/jpg":
+		return "jpeg"
+	case "image/png":
+		return "png"
+	case "image/webp":
+		return "webp"
+	case "image/gif":
+		return "gif"
+	case "image/avif":
+		return "avif"
+	case "image/heic", "image/heif":
+		return "heic"
+	default:
+		return "other"
+	}
 }

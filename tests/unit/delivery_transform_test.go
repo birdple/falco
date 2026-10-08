@@ -30,7 +30,7 @@ func transformRouter(t *testing.T, captured *processor.ProcessingParams) (*chi.M
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	// A fresh reader per call: the watermark path retrieves a second object,
 	// and handing both calls the same already-drained reader would make the

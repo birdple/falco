@@ -120,6 +120,9 @@ type ProcessingConfig struct {
 	WebPEffort        int           `mapstructure:"webp_effort"`
 	SupportedFormats  []string      `mapstructure:"supported_formats"`
 	MaxDimensions     MaxDimensions `mapstructure:"max_dimensions"`
+	// MaxMegapixels caps both decoded inputs and produced outputs, in
+	// millions of pixels. libvips has no ceiling of its own for JPEG or PNG.
+	MaxMegapixels int `mapstructure:"max_megapixels"`
 }
 
 // MaxDimensions caps the output size. It is a named type rather than an

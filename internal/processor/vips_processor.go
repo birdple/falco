@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,35 @@ const defaultWebPEffort = 4
 // a non-positive value.
 const defaultCacheTTL = 24 * time.Hour
 
+// defaultMaxPixels bounds both the decoded input and the produced output, in
+// pixels. libvips puts no ceiling on JPEG or PNG dimensions, so without one a
+// 2 MB PNG declaring 30000×30000 decodes to gigabytes, and a request padding
+// an image by tens of thousands of pixels builds a canvas just as large.
+// 100 MP covers every camera short of the 200 MP phone modes.
+const defaultMaxPixels = 100_000_000
+
+// ErrImageTooLarge is returned when an input or an output exceeds the pixel
+// ceiling.
+var ErrImageTooLarge = errors.New("image exceeds the pixel limit")
+
+// ErrUnsupportedInput is returned when libvips recognises the input but it is
+// not one of the raster formats falco serves.
+var ErrUnsupportedInput = errors.New("unsupported input format")
+
+// allowedLoaders are the input formats Process decodes. Everything else that
+// libvips could open — SVG, PDF, the matrix/CSV/raw loaders, its own .v
+// format — is refused: they are either script-capable, a parser surface falco
+// has no use for, or a way to declare huge images in a few bytes.
+var allowedLoaders = map[vips.ImageType]bool{
+	vips.ImageTypeJpeg: true,
+	vips.ImageTypePng:  true,
+	vips.ImageTypeWebp: true,
+	vips.ImageTypeGif:  true,
+	vips.ImageTypeHeif: true,
+	vips.ImageTypeAvif: true,
+	vips.ImageTypeTiff: true,
+}
+
 // VipsProcessor implements ImageProcessor using libvips
 type VipsProcessor struct {
 	maxFileSizeMB    int
@@ -48,6 +79,12 @@ type VipsProcessor struct {
 	sem              chan struct{} // semaphore limiting concurrent processing
 	webpEffort       int           // libwebp encode effort (0-6); see SetWebPEffort
 	cacheTTL         time.Duration // per-entry LRU TTL; see SetCacheTTL
+	maxPixels        int64         // input and output pixel ceiling; see SetMaxPixels
+
+	// invalidatedAt records recent invalidations by object prefix; see
+	// staleFillWindow.
+	invalidatedMu sync.Mutex
+	invalidatedAt map[string]time.Time
 }
 
 // NewVipsProcessor creates a new vips-based image processor
@@ -60,7 +97,25 @@ func NewVipsProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageForm
 		maxDimensions:    struct{ width, height int }{width: maxWidth, height: maxHeight},
 		webpEffort:       defaultWebPEffort,
 		cacheTTL:         defaultCacheTTL,
+		maxPixels:        defaultMaxPixels,
 	}
+}
+
+// SetMaxPixels sets the pixel ceiling for decoded inputs and produced outputs.
+// A non-positive value keeps defaultMaxPixels.
+func (p *VipsProcessor) SetMaxPixels(n int64) {
+	if n > 0 {
+		p.maxPixels = n
+	}
+}
+
+// checkPixels refuses an image whose raster would exceed the ceiling. Width and
+// height come from the header, so this costs nothing before the decode.
+func (p *VipsProcessor) checkPixels(img *vips.Image, what string) error {
+	if px := int64(img.Width()) * int64(img.Height()); px > p.maxPixels {
+		return fmt.Errorf("%w: %s is %dx%d", ErrImageTooLarge, what, img.Width(), img.Height())
+	}
+	return nil
 }
 
 // SetMaxConcurrency sets the maximum number of concurrent processing operations.
@@ -129,12 +184,24 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	}
 	defer img.Close()
 
+	if !allowedLoaders[img.Format()] {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedInput, img.Format())
+	}
+	if err := p.checkPixels(img, "input"); err != nil {
+		return nil, err
+	}
+
 	// Detect format before releasing input buffer
 	format := p.detectFormat(inputData)
 
 	// Apply transformations
 	if err := p.applyTransformations(img, params); err != nil {
 		return nil, fmt.Errorf("failed to apply transformations: %w", err)
+	}
+	// Padding grows the canvas after every resize limit has been applied, so
+	// the output is checked on its own.
+	if err := p.checkPixels(img, "output"); err != nil {
+		return nil, err
 	}
 
 	// Determine output format
@@ -144,6 +211,12 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	processedData, actualFormat, err := p.encodeImage(img, outputFormat, params.Quality, keepMode(params))
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode image: %w", err)
+	}
+	// A fallback encode is not cached: the key names the requested format, and
+	// a hit describes itself from that key, so a cached fallback would be WebP
+	// bytes served as image/avif.
+	if actualFormat != outputFormat {
+		cacheKey = ""
 	}
 	outputFormat = actualFormat
 
@@ -155,8 +228,9 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	m.ImageProcessingSize.WithLabelValues("input").Observe(float64(inputSize))
 	m.ImageProcessingSize.WithLabelValues("output").Observe(float64(len(processedData)))
 
-	// Cache result under the caller-provided key (skip if empty)
-	if p.cache != nil && cacheKey != "" {
+	// Cache result under the caller-provided key (skip if empty, and skip a
+	// fill that may be racing an invalidation of the same object).
+	if p.cache != nil && cacheKey != "" && !p.recentlyInvalidated(cacheKey) {
 		_ = p.cache.Set(cacheKey, processedData, p.cacheTTL)
 		m.CacheSize.Set(float64(p.cache.Size()))
 		m.CacheItemCount.Set(float64(p.cache.Len()))
@@ -631,38 +705,15 @@ func applyPadding(img *vips.Image, params *ProcessingParams) error {
 	return nil
 }
 
-// parseHexColor parses a hex color string (e.g. "FF0000") into RGB float64 slice
-func parseHexColor(hex string) []float64 {
-	if hex == "" {
-		return []float64{255, 255, 255} // default white
-	}
-	// Remove leading # if present
-	if len(hex) > 0 && hex[0] == '#' {
-		hex = hex[1:]
-	}
-	if len(hex) != 6 {
+// parseHexColor parses a hex colour ("FF0000" or "#FF0000") into RGB bands.
+// Anything that is not six hex digits is the default white.
+func parseHexColor(raw string) []float64 {
+	c, _ := NormalizeHexColor(raw)
+	rgb, err := hex.DecodeString(c)
+	if err != nil || len(rgb) != 3 {
 		return []float64{255, 255, 255}
 	}
-	r := hexToByte(hex[0:2])
-	g := hexToByte(hex[2:4])
-	b := hexToByte(hex[4:6])
-	return []float64{float64(r), float64(g), float64(b)}
-}
-
-func hexToByte(s string) byte {
-	var val byte
-	for _, c := range s {
-		val <<= 4
-		switch {
-		case c >= '0' && c <= '9':
-			val |= byte(c - '0')
-		case c >= 'a' && c <= 'f':
-			val |= byte(c-'a') + 10
-		case c >= 'A' && c <= 'F':
-			val |= byte(c-'A') + 10
-		}
-	}
-	return val
+	return []float64{float64(rgb[0]), float64(rgb[1]), float64(rgb[2])}
 }
 
 // resizeImage handles different resize modes
@@ -766,12 +817,12 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 		if quality < 100 {
 			compression = min(max(9-(quality*9/100), 0), 9)
 		}
+		// Not interlaced: libvips' interlaced PNG writer holds the whole
+		// image in memory, and Adam7 makes the file larger for a progressive
+		// display browsers barely use.
 		err = img.PngsaveTarget(target, &vips.PngsaveTargetOptions{
 			Compression: compression,
 			Keep:        keep,
-			Interlace:   true, // Interlaced PNG for progressive loading
-			// Filter option to try all PNG filters for best compression
-			// Note: Using default filter (adaptive) which works well for most cases
 		})
 	case FormatWebP:
 		// WebP. Effort is configurable (SetWebPEffort) rather than libwebp's
@@ -959,36 +1010,80 @@ func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams, inputFor
 	return p.defaultFormat
 }
 
-// GenerateCacheKey builds a deterministic cache key from a storage key and
-// processing parameters. The storage key (bucket:dir/filename) uniquely
-// identifies the original image without requiring a round-trip to the storage
-// backend, so the cache can be checked before any I/O.
-func (p *VipsProcessor) GenerateCacheKey(storageKey string, params *ProcessingParams) string {
-	return generateCacheKey(storageKey, params)
+// GenerateCacheKey builds a deterministic cache key from an object key and
+// processing parameters. The object key names the original — the caller
+// includes the backend it lives in, not just its storage key — so the cache
+// can be checked before any I/O.
+func (p *VipsProcessor) GenerateCacheKey(objectKey string, params *ProcessingParams) string {
+	return generateCacheKey(objectKey, params)
 }
 
-// InvalidateCacheForKey drops every cached variant of a storage key.
+// staleFillWindow is how long after an invalidation a cache fill for the same
+// object is refused. A request that read the original just before a delete or
+// update finishes its encode after the invalidation ran; without this it would
+// put the old bytes back for a whole TTL. It covers the longest a fetch plus a
+// process can take on the delivery path.
+const staleFillWindow = time.Minute
+
+// InvalidateCache drops every cached variant of the given objects and returns
+// how many entries were removed.
 //
-// Every variant of the same object shares the `sha256(storageKey)[:32]` prefix
-// that generateCacheKey builds, so sweeping the keys by that prefix is enough.
-// It is O(n) over the cache's keys, but it only runs on delete and update, which
-// are rare next to reads.
-func (p *VipsProcessor) InvalidateCacheForKey(storageKey string) int {
+// Every variant of an object shares the prefix generateCacheKey derives from
+// its object key, so one pass over the cache's keys handles any number of
+// objects — a prefix delete of thousands of keys costs one walk, not one per
+// key (on Redis, one SCAN rather than thousands).
+func (p *VipsProcessor) InvalidateCache(objectKeys ...string) int {
+	if len(objectKeys) == 0 {
+		return 0
+	}
+	prefixes := make(map[string]bool, len(objectKeys))
+	for _, k := range objectKeys {
+		prefixes[objectKeyPrefix(k)] = true
+	}
+	p.markInvalidated(prefixes)
+
 	if p.cache == nil {
 		return 0
 	}
-
-	prefix := fmt.Sprintf("%x", sha256.Sum256([]byte(storageKey)))[:32]
-
 	removed := 0
 	for _, key := range p.cache.Keys() {
-		if strings.HasPrefix(key, prefix) {
+		if len(key) >= objectPrefixLen && prefixes[key[:objectPrefixLen]] {
 			p.cache.Delete(key)
 			removed++
 		}
 	}
-
 	return removed
+}
+
+// markInvalidated records when each prefix was last invalidated, pruning
+// records that have aged out of the window.
+func (p *VipsProcessor) markInvalidated(prefixes map[string]bool) {
+	now := time.Now()
+	p.invalidatedMu.Lock()
+	defer p.invalidatedMu.Unlock()
+	if p.invalidatedAt == nil {
+		p.invalidatedAt = make(map[string]time.Time)
+	}
+	for prefix, at := range p.invalidatedAt {
+		if now.Sub(at) > staleFillWindow {
+			delete(p.invalidatedAt, prefix)
+		}
+	}
+	for prefix := range prefixes {
+		p.invalidatedAt[prefix] = now
+	}
+}
+
+// recentlyInvalidated reports whether a cache key's object was invalidated
+// within staleFillWindow.
+func (p *VipsProcessor) recentlyInvalidated(cacheKey string) bool {
+	if len(cacheKey) < objectPrefixLen {
+		return false
+	}
+	p.invalidatedMu.Lock()
+	defer p.invalidatedMu.Unlock()
+	at, ok := p.invalidatedAt[cacheKey[:objectPrefixLen]]
+	return ok && time.Since(at) <= staleFillWindow
 }
 
 // PurgeCache drops every cached variant and returns how many entries were
@@ -1022,20 +1117,38 @@ func (p *VipsProcessor) GetFromCache(key string) ([]byte, bool) {
 	return data, found
 }
 
-// generateCacheKey builds a cache key from storageKey + all transformation
-// parameters. The storageKey is hashed (SHA-256, truncated) to keep key
-// length bounded while avoiding collisions.
-func generateCacheKey(storageKey string, params *ProcessingParams) string {
-	keyHash := fmt.Sprintf("%x", sha256.Sum256([]byte(storageKey)))[:32]
+// objectPrefixLen is the length of the object part of every cache key.
+const objectPrefixLen = 32
 
-	var parts []string
-	parts = append(parts, keyHash)
+// objectKeyPrefix is the part of a cache key that names the original: a
+// truncated SHA-256 of the object key, so the key length stays bounded and the
+// object key can carry any characters.
+func objectKeyPrefix(objectKey string) string {
+	sum := sha256.Sum256([]byte(objectKey))
+	return hex.EncodeToString(sum[:])[:objectPrefixLen]
+}
+
+// generateCacheKey builds a cache key from an object key plus every parameter
+// that changes the output bytes.
+//
+// Two different requests must never share a key — the first one rendered would
+// be served for both — so the encoding is unambiguous:
+//
+//   - floats are written at full precision (rotate=45.4 and rotate=45 used to
+//     share "rot45");
+//   - enum-like fields are written only when they are plain tokens, and hashed
+//     otherwise, so no value can contain the "_" separator;
+//   - free-form fields (the padding colour, the watermark source) are
+//     normalised or hashed, so a crafted pad_color could no longer forge the
+//     segments of a watermarked key and plant an unwatermarked image under it.
+func generateCacheKey(objectKey string, params *ProcessingParams) string {
+	parts := []string{objectKeyPrefix(objectKey)}
 
 	// Size parameters
 	if params.Width > 0 || params.Height > 0 {
 		parts = append(parts, fmt.Sprintf("w%d_h%d", params.Width, params.Height))
 		if params.Fit != "" {
-			parts = append(parts, "f"+params.Fit)
+			parts = append(parts, "f"+keyToken(params.Fit))
 		}
 	}
 
@@ -1044,7 +1157,7 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 		parts = append(parts, fmt.Sprintf("q%d", params.Quality))
 	}
 	if params.Format != "" {
-		parts = append(parts, "fmt"+params.Format)
+		parts = append(parts, "fmt"+keyToken(params.Format))
 	}
 
 	// Crop parameters
@@ -1054,24 +1167,24 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 
 	// Rotation and flip
 	if params.Rotate != 0 {
-		parts = append(parts, fmt.Sprintf("rot%.0f", params.Rotate))
+		parts = append(parts, "rot"+keyFloat(params.Rotate))
 	}
 	if params.Flip != "" {
-		parts = append(parts, "flip"+params.Flip)
+		parts = append(parts, "flip"+keyToken(params.Flip))
 	}
 
 	// Color adjustments
 	if params.Brightness != 0 {
-		parts = append(parts, fmt.Sprintf("br%.0f", params.Brightness))
+		parts = append(parts, "br"+keyFloat(params.Brightness))
 	}
 	if params.Contrast != 0 {
-		parts = append(parts, fmt.Sprintf("con%.0f", params.Contrast))
+		parts = append(parts, "con"+keyFloat(params.Contrast))
 	}
 	if params.Gamma != 0 {
-		parts = append(parts, fmt.Sprintf("gam%.1f", params.Gamma))
+		parts = append(parts, "gam"+keyFloat(params.Gamma))
 	}
 	if params.Saturation != 0 {
-		parts = append(parts, fmt.Sprintf("sat%.0f", params.Saturation))
+		parts = append(parts, "sat"+keyFloat(params.Saturation))
 	}
 	if params.Hue != 0 {
 		parts = append(parts, fmt.Sprintf("hue%d", params.Hue))
@@ -1079,43 +1192,82 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 
 	// Effects
 	if params.Blur > 0 {
-		parts = append(parts, fmt.Sprintf("blur%.1f", params.Blur))
+		parts = append(parts, "blur"+keyFloat(params.Blur))
 	}
 	if params.Sharpen > 0 {
-		parts = append(parts, fmt.Sprintf("sharp%.1f", params.Sharpen))
+		parts = append(parts, "sharp"+keyFloat(params.Sharpen))
 	}
 
 	// Extended parameters
 	if params.Gravity != "" {
-		parts = append(parts, "grav"+params.Gravity)
+		parts = append(parts, "grav"+keyToken(params.Gravity))
 	}
 	if params.TrimEnabled {
-		parts = append(parts, fmt.Sprintf("trim%.0f", params.TrimThreshold))
+		parts = append(parts, "trim"+keyFloat(params.TrimThreshold))
 	}
 	if params.PaddingTop > 0 || params.PaddingRight > 0 || params.PaddingBottom > 0 || params.PaddingLeft > 0 {
-		parts = append(parts, fmt.Sprintf("pad%d_%d_%d_%d_%s", params.PaddingTop, params.PaddingRight, params.PaddingBottom, params.PaddingLeft, params.PaddingColor))
+		color, _ := NormalizeHexColor(params.PaddingColor)
+		parts = append(parts, fmt.Sprintf("pad%d_%d_%d_%d_%s",
+			params.PaddingTop, params.PaddingRight, params.PaddingBottom, params.PaddingLeft, color))
 	}
 	if !params.SkipAutoOrient {
 		parts = append(parts, "orient")
 	}
 	// Keeping metadata produces different bytes, so it has to be part of the
-	// key. Stripping is the default, so only the opposite is recorded — this
-	// leaves every already-cached key unchanged.
+	// key. Stripping is the default, so only the opposite is recorded.
 	if params.KeepMetadata {
 		parts = append(parts, "meta")
 	}
 
 	// The watermark keys on its source, never on its bytes: two requests for
 	// different overlays must not collide, and hashing the overlay on every
-	// request to find that out would cost more than the composite does.
+	// request to find that out would cost more than the composite does. The
+	// source itself is hashed because it is free-form text.
 	if params.WatermarkSource != "" {
-		parts = append(parts, fmt.Sprintf("wm%s_%.2f_%s_%.2f",
-			params.WatermarkSource, params.WatermarkOpacity,
-			params.WatermarkPosition, params.WatermarkScale))
+		sum := sha256.Sum256([]byte(params.WatermarkSource))
+		parts = append(parts, "wm"+hex.EncodeToString(sum[:8]),
+			keyFloat(params.WatermarkOpacity), keyToken(params.WatermarkPosition), keyFloat(params.WatermarkScale))
 	}
 
 	return strings.Join(parts, "_")
 }
+
+// keyFloat formats a float for a cache key at full precision.
+func keyFloat(v float64) string {
+	return strconv.FormatFloat(v, 'g', -1, 64)
+}
+
+// keyToken returns s when it is a plain lowercase token, and a short hash of it
+// otherwise. Callers validate these fields against fixed sets, so the hash only
+// matters if a value slips past them — and then it still cannot inject "_".
+func keyToken(s string) string {
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			sum := sha256.Sum256([]byte(s))
+			return "x" + hex.EncodeToString(sum[:6])
+		}
+	}
+	return s
+}
+
+// NormalizeHexColor validates a six-digit hex colour, with or without a
+// leading "#", and returns it upper-cased without the "#". An empty or invalid
+// value returns the default white and false.
+func NormalizeHexColor(raw string) (string, bool) {
+	c := strings.TrimPrefix(raw, "#")
+	if len(c) != 6 {
+		return defaultPadColor, false
+	}
+	for _, r := range c {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return defaultPadColor, false
+		}
+	}
+	return strings.ToUpper(c), true
+}
+
+// defaultPadColor is the padding colour when none (or an invalid one) is given.
+const defaultPadColor = "FFFFFF"
 
 // nopWriteCloser wraps a writer to add a no-op Close method
 type nopWriteCloser struct {
