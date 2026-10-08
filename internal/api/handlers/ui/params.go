@@ -130,7 +130,7 @@ func (h *Handler) featureStates() []views.FeatureState {
 		},
 		{
 			Name:    "Transform cache",
-			Enabled: h.cfg.Cache.SizeMB > 0,
+			Enabled: h.cfg.CacheEnabled(),
 			Reason:  "CACHE_SIZE_MB is 0, so every transformation is recomputed on each request.",
 		},
 		{

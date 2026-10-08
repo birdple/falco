@@ -2,6 +2,7 @@ package httputil
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -419,5 +420,22 @@ func BenchmarkIsPrivateOrReservedIP_Public(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		isPrivateOrReservedIP(ip)
+	}
+}
+
+// A refusal by the SSRF guard is a property of the destination: retrying it
+// with backoff only delays the same answer by 1.5s.
+func TestDownloadURL_DoesNotRetryBlockedDestinations(t *testing.T) {
+	client := NewSafeHTTPClient(5 * time.Second)
+	start := time.Now()
+	_, _, err := DownloadURL(WithAnyPublicHost(context.Background()), client, "http://127.0.0.1:1/x.png", 1024)
+	if err == nil {
+		t.Fatal("a loopback fetch was allowed")
+	}
+	if !errors.Is(err, errBlocked) {
+		t.Fatalf("got %v, want a blocked-destination error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+		t.Fatalf("took %v: the refusal was retried", elapsed)
 	}
 }

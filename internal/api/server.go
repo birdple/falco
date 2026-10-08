@@ -198,9 +198,14 @@ func (s *Server) mountOperationalRoutes(r chi.Router) {
 	// /health/ready answers "what exactly is wrong": every registered backend,
 	// its circuit breaker, the cache, and which features are off for lack of
 	// configuration. That is the question actually asked when uploads fail
-	// while delivery still works.
-	r.Get("/health/ready", s.handler.HandleReady)
-	r.Head("/health/ready", s.handler.HandleReady)
+	// while delivery still works — and also a map of the deployment plus raw
+	// backend errors, and a probe of every backend per request, so it sits
+	// behind the admin key like /metrics. Orchestrators poll /health.
+	r.Group(func(r chi.Router) {
+		s.useAPIKeyAuth(r)
+		r.Get("/health/ready", s.handler.HandleReady)
+		r.Head("/health/ready", s.handler.HandleReady)
+	})
 
 	// Disallow all crawlers. Falco is a CDN origin for images, not indexable
 	// content.
@@ -221,15 +226,26 @@ func (s *Server) mountOperationalRoutes(r chi.Router) {
 		_, _ = w.Write(data)
 	})
 
+	// Metrics and profiles describe the process from the inside. Without an
+	// API key to put them behind they are not mounted at all, rather than
+	// mounted in the open with a warning in the log.
 	if s.config.Development.EnableMetrics {
-		r.Group(func(r chi.Router) {
-			s.useAPIKeyAuth(r)
-			r.Handle("/metrics", promhttp.Handler())
-		})
+		if s.config.Security.APIKeyRequired {
+			r.Group(func(r chi.Router) {
+				s.useAPIKeyAuth(r)
+				r.Handle("/metrics", promhttp.Handler())
+			})
+		} else {
+			logger.Error().Msg("ENABLE_METRICS is set but API_KEY_REQUIRED is not: /metrics is NOT mounted")
+		}
 	}
 
 	if s.config.Development.EnablePprof {
-		s.mountPprof(r)
+		if s.config.Security.APIKeyRequired {
+			s.mountPprof(r)
+		} else {
+			logger.Error().Msg("ENABLE_PPROF is set but API_KEY_REQUIRED is not: /debug/pprof is NOT mounted")
+		}
 	}
 }
 
@@ -257,7 +273,7 @@ func (s *Server) mountPprof(r chi.Router) {
 		// goroutineleak included — once the route hangs off /debug/pprof/.
 		r.Get("/debug/pprof/{profile}", pprof.Index)
 	})
-	logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ — do not enable in production without an API key")
+	logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ (behind the API key)")
 }
 
 // mountAPIRoutes mounts /api/v1.

@@ -139,7 +139,7 @@ func (h *Handler) HandleCacheStats(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, CacheResponse{
 		Success:         true,
-		Enabled:         h.config.Cache.SizeMB > 0,
+		Enabled:         h.config.CacheEnabled(),
 		Backend:         stats.Backend,
 		Hits:            stats.Hits,
 		Misses:          stats.Misses,
@@ -243,7 +243,7 @@ func (h *Handler) HandleReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cacheStats := h.imageProcessor.GetCacheStats()
-	resp.Cache.Enabled = h.config.Cache.SizeMB > 0
+	resp.Cache.Enabled = h.config.CacheEnabled()
 	resp.Cache.ItemCount = cacheStats.ItemCount
 
 	resp.Disabled = h.disabledFeatures()
@@ -309,14 +309,17 @@ func (h *Handler) disabledFeatures() []string {
 	if h.config.Security.HMACKey == "" {
 		off = append(off, "url_signing: HMAC_KEY is unset (POST /api/v1/sign answers 501)")
 	}
-	if watermarkAllowedHosts() == nil {
+	if len(watermarkAllowedHosts()) == 0 {
 		off = append(off, "watermark_url: WATERMARK_ALLOWED_HOSTS is unset (?wm_url= answers 403)")
 	}
-	if !h.config.Development.EnableMetrics {
+	switch {
+	case !h.config.Development.EnableMetrics:
 		off = append(off, "metrics: ENABLE_METRICS is off (/metrics is not mounted)")
+	case !h.config.Security.APIKeyRequired:
+		off = append(off, "metrics: API_KEY_REQUIRED is off, so /metrics is not mounted")
 	}
-	if h.config.Cache.SizeMB <= 0 {
-		off = append(off, "cache: CACHE_SIZE_MB is 0 (every transform is recomputed)")
+	if !h.config.CacheEnabled() {
+		off = append(off, "cache: CACHE_SIZE_MB is 0 and Redis is not configured (every transform is recomputed)")
 	}
 	return off
 }

@@ -25,9 +25,10 @@ func (c *Config) GetCacheTTL() time.Duration {
 	return time.Duration(c.Cache.TTLHrs) * time.Hour
 }
 
-// IsDevelopment returns true if running in development mode
-func (c *Config) IsDevelopment() bool {
-	return c.Development.Debug
+// CacheEnabled reports whether transformed images are cached at all: in Redis
+// when it is configured, otherwise in the in-process LRU when it has a size.
+func (c *Config) CacheEnabled() bool {
+	return (c.Cache.EnableRedis && c.Cache.RedisURL != "") || c.Cache.SizeMB > 0
 }
 
 // GetBucketConfig returns the bucket configuration for the given name.

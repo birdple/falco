@@ -28,6 +28,11 @@ const (
 	sessionTTL     = 12 * time.Hour
 	sessionSweep   = 15 * time.Minute
 	sessionIDBytes = 32
+
+	// maxSessionsPerKey bounds how many live sessions one API key may hold.
+	// Past it the oldest is dropped, so a script logging in in a loop cannot
+	// grow the in-memory store without limit.
+	maxSessionsPerKey = 20
 )
 
 // Scope is the resolved access of a signed-in session.
@@ -147,9 +152,33 @@ func (s *SessionStore) Create(apiKey string, scope *Scope) (*Session, error) {
 	}
 
 	s.mu.Lock()
+	s.evictOldestForKeyLocked(apiKey)
 	s.sessions[id] = sess
 	s.mu.Unlock()
 	return sess, nil
+}
+
+// evictOldestForKeyLocked drops the oldest sessions of apiKey until there is
+// room for one more. The caller holds s.mu.
+func (s *SessionStore) evictOldestForKeyLocked(apiKey string) {
+	for {
+		var count int
+		var oldestID string
+		var oldest time.Time
+		for id, sess := range s.sessions {
+			if sess.APIKey != apiKey {
+				continue
+			}
+			count++
+			if oldestID == "" || sess.ExpiresAt.Before(oldest) {
+				oldestID, oldest = id, sess.ExpiresAt
+			}
+		}
+		if count < maxSessionsPerKey {
+			return
+		}
+		delete(s.sessions, oldestID)
+	}
 }
 
 // Get returns a live session, or nil if it is unknown or expired.
@@ -222,14 +251,21 @@ func isSecureRequest(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
-// setSessionCookie writes the session cookie for this request's scheme.
-func setSessionCookie(w http.ResponseWriter, r *http.Request, sess *Session) {
+// secureCookies decides the Secure flag: forced by COOKIE_SECURE, otherwise
+// following the scheme the browser used. Behind a TLS proxy that is not in
+// TRUSTED_PROXIES the scheme is invisible, which is what COOKIE_SECURE is for.
+func (h *Handler) secureCookies(r *http.Request) bool {
+	return h.cfg.Security.CookieSecure || isSecureRequest(r)
+}
+
+// setSessionCookie writes the session cookie.
+func setSessionCookie(w http.ResponseWriter, sess *Session, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    sess.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isSecureRequest(r),
+		Secure:   secure,
 		// Lax rather than Strict: Strict drops the cookie when the panel is
 		// opened from a link elsewhere, which reads as a random signed-out
 		// state. CSRF is handled by the token, not by the cookie policy.
@@ -240,13 +276,13 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, sess *Session) {
 
 // clearSessionCookie expires the cookie. It has to happen server-side: the
 // cookie is HttpOnly, so scripts cannot remove it.
-func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isSecureRequest(r),
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

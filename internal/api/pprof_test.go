@@ -11,8 +11,8 @@ import (
 	"github.com/birdple/falco/internal/config"
 )
 
-// newPprofTestServer arma un Server mínimo. No hace falta storage ni processor:
-// las rutas que se ejercitan aquí son sólo las de /debug/pprof/.
+// newPprofTestServer builds a minimal Server. No storage or processor is needed:
+// only the /debug/pprof/ routes are exercised here.
 func newPprofTestServer(t *testing.T, enablePprof, apiKeyRequired bool) *Server {
 	t.Helper()
 
@@ -21,13 +21,13 @@ func newPprofTestServer(t *testing.T, enablePprof, apiKeyRequired bool) *Server 
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Development.EnablePprof = enablePprof
 	cfg.Security.APIKeyRequired = apiKeyRequired
-	cfg.Security.APIKey = "secreto-de-prueba"
+	cfg.Security.APIKey = "test-secret"
 
 	return NewServer(&ServerConfig{Config: cfg})
 }
 
-// TestPprof_DisabledByDefault: sin ENABLE_PPROF las rutas no existen. Es la
-// mitad que importa del flag — durante mucho tiempo no hizo absolutamente nada.
+// TestPprof_DisabledByDefault: without ENABLE_PPROF the routes do not exist.
+// That is the half of the flag that matters — for a long time it did nothing.
 func TestPprof_DisabledByDefault(t *testing.T) {
 	s := newPprofTestServer(t, false, false)
 
@@ -39,16 +39,16 @@ func TestPprof_DisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestPprof_EnabledServesProfiles: con el flag prendido las rutas responden, y
-// en particular goroutineleak, el perfil nuevo de Go 1.27.
+// TestPprof_EnabledServesProfiles: with the flag on the routes answer, and in
+// particular goroutineleak, the profile new in Go 1.27.
 func TestPprof_EnabledServesProfiles(t *testing.T) {
-	s := newPprofTestServer(t, true, false)
+	s := newPprofTestServer(t, true, true)
 
 	tests := []struct {
 		name string
 		path string
 	}{
-		{"índice", "/debug/pprof/"},
+		{"index", "/debug/pprof/"},
 		{"heap", "/debug/pprof/heap?debug=1"},
 		{"goroutine", "/debug/pprof/goroutine?debug=1"},
 		{"goroutineleak", "/debug/pprof/goroutineleak?debug=1"},
@@ -57,6 +57,7 @@ func TestPprof_EnabledServesProfiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req.Header.Set("X-API-Key", "test-secret")
 			w := httptest.NewRecorder()
 			s.Router().ServeHTTP(w, req)
 
@@ -66,8 +67,8 @@ func TestPprof_EnabledServesProfiles(t *testing.T) {
 	}
 }
 
-// TestPprof_RequiresAPIKey: un perfil expone rutas de código y estado interno
-// del proceso, así que va detrás de la misma llave que /metrics.
+// TestPprof_RequiresAPIKey: a profile exposes code paths and internal process
+// state, so it sits behind the same key as /metrics.
 func TestPprof_RequiresAPIKey(t *testing.T) {
 	s := newPprofTestServer(t, true, true)
 
@@ -77,8 +78,19 @@ func TestPprof_RequiresAPIKey(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 
 	req = httptest.NewRequest(http.MethodGet, "/debug/pprof/goroutineleak?debug=1", nil)
-	req.Header.Set("X-API-Key", "secreto-de-prueba")
+	req.Header.Set("X-API-Key", "test-secret")
 	w = httptest.NewRecorder()
 	s.Router().ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestPprof_NotMountedWithoutAPIKey: with no key to put them behind, the
+// profiles are not mounted at all rather than served in the open.
+func TestPprof_NotMountedWithoutAPIKey(t *testing.T) {
+	s := newPprofTestServer(t, true, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap?debug=1", nil)
+	w := httptest.NewRecorder()
+	s.Router().ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }

@@ -259,7 +259,10 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 		}
 	}
 
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d, immutable", maxAge, sMaxAge))
+	// Not "immutable": /api/v1/update replaces an object's bytes under the
+	// same key, and immutable tells browsers never to revalidate within
+	// max-age even on reload.
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", maxAge, sMaxAge))
 
 	// ETag set before ServeContent so it handles If-None-Match automatically.
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())
@@ -285,8 +288,9 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	w.Header().Set("Accept-Ranges", "none")
 	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
 
-	// Honor If-None-Match for the streaming path too (no body transfer on 304).
-	if match := r.Header.Get("If-None-Match"); match != "" && match == etag {
+	// Conditional requests on the streaming path too (no body transfer on 304),
+	// with the same rules ServeContent applies on the seekable one.
+	if notModified(r, etag, metadata.CreatedAt) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -302,6 +306,31 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 			Str("image_id", metadata.ID).
 			Msg("Failed to stream image body to client")
 	}
+}
+
+// notModified evaluates If-None-Match and If-Modified-Since for a response
+// with the given ETag and modification time.
+//
+// If-None-Match takes precedence when present (RFC 9110 §13.2.2) and uses weak
+// comparison: it may list several tags, carry W/ prefixes, or be "*".
+// If-Modified-Since is only consulted without it, at one-second resolution,
+// and never for the zero/epoch time that cached renders carry.
+func notModified(r *http.Request, etag string, modified time.Time) bool {
+	if inm := r.Header.Get("If-None-Match"); inm != "" {
+		want := strings.TrimPrefix(etag, "W/")
+		for candidate := range strings.SplitSeq(inm, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "*" || strings.TrimPrefix(candidate, "W/") == want {
+				return true
+			}
+		}
+		return false
+	}
+	if ims := r.Header.Get("If-Modified-Since"); ims != "" && modified.Unix() > 0 {
+		t, err := http.ParseTime(ims)
+		return err == nil && !modified.Truncate(time.Second).After(t)
+	}
+	return false
 }
 
 // getStorageBackendScoped resolves a storage backend and enforces scope from the request.

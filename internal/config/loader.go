@@ -184,6 +184,7 @@ func (l *loader) getEnvMappings() map[string]string {
 		"CORS_ORIGINS":            "security.cors.origins",
 		"RATE_LIMIT_RPM":          "security.rate_limit.requests_per_minute",
 		"TRUSTED_PROXIES":         "security.trusted_proxies",
+		"COOKIE_SECURE":           "security.cookie_secure",
 		"HMAC_KEY":                "security.hmac_key",
 		"HMAC_SALT":               "security.hmac_salt",
 		"HMAC_SIGNATURE_SIZE":     "security.hmac_signature_size",
@@ -580,6 +581,7 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) error {
 		"development.enable_metrics": true,
 		"cache.enable_redis":         true,
 		"security.hmac_required":     true,
+		"security.cookie_secure":     true,
 	}
 
 	switch {

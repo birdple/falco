@@ -844,11 +844,20 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
 	defer func() { _ = processedImage.Data.Close() }()
 
-	data, err := io.ReadAll(processedImage.Data)
+	data, err := processedBytes(processedImage)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to read processed image")
 		return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
 	}
 
 	return &deliveryResult{data: data, meta: h.buildProcessedMetadata(imageID, processedImage, params)}, nil
+}
+
+// processedBytes returns the encoded output, reusing the processor's slice
+// when it exposes one instead of copying it out of Data again.
+func processedBytes(p *processor.ProcessedImage) ([]byte, error) {
+	if p.Bytes != nil {
+		return p.Bytes, nil
+	}
+	return io.ReadAll(p.Data)
 }

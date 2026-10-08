@@ -470,7 +470,7 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 	}
 	m.ImageProcessingTotal.WithLabelValues(inputLabel, params.Format, "success").Inc()
 	defer func() { _ = processedImage.Data.Close() }()
-	data, err := io.ReadAll(processedImage.Data)
+	data, err := processedBytes(processedImage)
 	if err != nil {
 		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to read processed proxy image")
 		return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}

@@ -140,6 +140,10 @@ type SecurityConfig struct {
 	CORS           CORSConfig      `mapstructure:"cors"`
 	RateLimit      RateLimitConfig `mapstructure:"rate_limit"`
 	TrustedProxies []string        `mapstructure:"trusted_proxies"`
+	// CookieSecure forces the Secure flag on the panel's cookies. Without
+	// it the flag follows the request scheme, which falco can only see
+	// through X-Forwarded-Proto from a trusted proxy.
+	CookieSecure bool `mapstructure:"cookie_secure"`
 	// HMAC URL signing
 	HMACKey           string `mapstructure:"hmac_key"`
 	HMACKeySalt       string `mapstructure:"hmac_salt"`

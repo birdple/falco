@@ -68,6 +68,7 @@ func main() {
 	defer vips.Shutdown()
 
 	logConfiguration(cfg)
+	warnWeakKeys(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -475,4 +476,24 @@ func redactURL(raw string) string {
 		return "<unparseable>"
 	}
 	return u.Redacted()
+}
+
+// minKeyLength is the shortest API key not flagged as weak. Keys are compared
+// in constant time and sign-ins are throttled, but a short key is still within
+// reach of guessing from a botnet.
+const minKeyLength = 24
+
+// warnWeakKeys logs every configured key shorter than minKeyLength. It warns
+// instead of refusing to start so that an existing deployment keeps running
+// while its keys are rotated.
+func warnWeakKeys(cfg *config.Config) {
+	if k := cfg.Security.APIKey; k != "" && len(k) < minKeyLength {
+		logger.Warn().Int("length", len(k)).Int("recommended", minKeyLength).Msg("API_KEY is short; use a longer random key")
+	}
+	for key, scope := range cfg.CollectAllKeys() {
+		if len(key) < minKeyLength {
+			logger.Warn().Str("key_name", scope.Name).Int("length", len(key)).Int("recommended", minKeyLength).
+				Msg("Scoped API key is short; use a longer random key")
+		}
+	}
 }
