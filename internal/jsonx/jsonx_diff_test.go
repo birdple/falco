@@ -122,8 +122,9 @@ func diffCases() map[string]any {
 				ID: "i", URL: "https://x/?a=1&b=2", OriginalName: tricky,
 				Format: "webp", Size: 0, Dimensions: types.Dimensions{}, CreatedAt: stamp,
 			},
-			Error: &types.APIError{},
 		},
+		"falco/ErrorResponse-cero":   types.ErrorResponse{},
+		"falco/ErrorResponse-lleno":  types.ErrorResponse{Error: &types.APIError{Code: "C", Message: tricky}},
 		"falco/UpdateResponse-cero":  types.UpdateResponse{},
 		"falco/UpdateResponse-vacio": types.UpdateResponse{Updated: []types.UpdateResult{}},
 		"falco/UpdateResponse-lleno": types.UpdateResponse{

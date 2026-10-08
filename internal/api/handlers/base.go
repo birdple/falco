@@ -91,13 +91,16 @@ func (h *Handler) SetRegistry(r *storage.Registry) {
 // Callers should NOT log the same error before calling sendError; this is the
 // single place where the API error response is recorded.
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message string) {
-	response := types.UploadResponse{
+	response := types.ErrorResponse{
 		Success: false,
 		Error: &types.APIError{
 			Code:    code,
 			Message: message,
 		},
 	}
+	// An error is never cacheable: without this a CDN may keep a 404 for an
+	// image that is uploaded a moment later.
+	w.Header().Set("Cache-Control", "no-store")
 
 	event := logger.Info()
 	switch {

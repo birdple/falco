@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/httputil"
@@ -163,21 +164,27 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch + process, deduplicated by cacheKey: sf.Do collapses N concurrent
 	// requests for the same URL and parameters into one fetch+decode+encode.
-	v, err, _ := h.sf.Do(cacheKey, func() (any, error) {
+	ch := h.sf.DoChan(cacheKey, func() (any, error) {
 		return h.fetchAndProcessRemote(rawURL, cacheKey, params)
 	})
+	var res singleflight.Result
+	select {
+	case res = <-ch:
+	case <-r.Context().Done():
+		return
+	}
 
-	if err != nil {
-		if fe, ok := errors.AsType[*fetchError](err); ok {
+	if res.Err != nil {
+		if fe, ok := errors.AsType[*fetchError](res.Err); ok {
 			h.sendError(w, fe.status, fe.code, fe.message)
 		} else {
-			logger.Error().Err(err).Str("url", rawURL).Msg("Unexpected proxy singleflight error")
+			logger.Error().Err(res.Err).Str("url", rawURL).Msg("Unexpected proxy singleflight error")
 			h.sendError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch external image")
 		}
 		return
 	}
 
-	result := v.(*proxyResult)
+	result := res.Val.(*proxyResult)
 	h.serveImage(w, r, bytes.NewReader(result.data), result.meta)
 }
 
@@ -300,11 +307,12 @@ func (h *Handler) parseProxyParams(query url.Values, extFormat string) (*process
 	}
 
 	// An explicit ?f= wins over the path extension; the extension is the default.
-	switch raw := utils.QueryParam(query, "f", "format"); {
-	case raw != "" && h.imageProcessor.ValidateFormat(raw):
-		params.Format = raw
-	case raw != "":
+	format, ok := h.parseFormat(utils.QueryParam(query, "f", "format"))
+	switch {
+	case !ok:
 		return nil, &paramError{"INVALID_FORMAT", "Unsupported format"}
+	case format != "":
+		params.Format = format
 	default:
 		params.Format = extFormat
 	}
@@ -457,8 +465,8 @@ func (h *Handler) fetchAndProcessRemote(rawURL, cacheKey string, params *process
 	processedImage, err := h.imageProcessor.Process(processCtx, bytes.NewReader(bodyBytes), params, cacheKey)
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(inputLabel, params.Format, "error").Inc()
-		logger.Error().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
-		return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+		logger.Warn().Err(err).Str("url", rawURL).Msg("Failed to process proxy image")
+		return nil, processFailure(err)
 	}
 	m.ImageProcessingTotal.WithLabelValues(inputLabel, params.Format, "success").Inc()
 	defer func() { _ = processedImage.Data.Close() }()

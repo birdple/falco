@@ -41,6 +41,13 @@ const (
 	// caller is waiting on it inside an image request.
 	watermarkFetchTimeout = 5 * time.Second
 
+	// deliveryRetrieveTimeout and deliveryProcessTimeout bound the shared
+	// cache-miss work. They run on their own contexts (see fetchAndProcess),
+	// so they, not the request, decide when it is abandoned; together they
+	// stay under the router's 30s request timeout plus a margin.
+	deliveryRetrieveTimeout = 30 * time.Second
+	deliveryProcessTimeout  = 20 * time.Second
+
 	// watermarkStoredPrefix marks a watermark source that names an image in
 	// Falco's own storage rather than an external URL, so the two can never
 	// collide in a cache key.

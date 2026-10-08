@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 
-	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/pkg/metrics"
@@ -24,28 +24,6 @@ import (
 	"github.com/birdple/falco/internal/security"
 	"github.com/birdple/falco/internal/storage"
 )
-
-// authenticateAndScope authenticates a delivery request via X-API-Key /
-// Authorization when HMAC is not gating the route. Returns the resolved
-// APIScope (possibly admin) and true on success; false on any auth failure.
-//
-// It honours scoped API keys (bucket/group/subgroup keys from scoped_auth.go)
-// when they exist and falls back to the admin key otherwise: multi-tenant
-// deployments keep working and /api/v1/images/ is never left unauthenticated.
-func (h *Handler) authenticateAndScope(r *http.Request) (*apimw.APIScope, bool) {
-	// Prefer scoped auth when any scoped keys are configured.
-	scopedAuth := apimw.NewScopedAPIKeyAuth(h.config.Security.APIKey, h.config)
-	if scopedAuth.HasScopedKeys() {
-		return scopedAuth.AuthenticateRequest(r)
-	}
-	// No scoped keys — the birdple-v2 simple case. Validate the admin key
-	// directly and yield an admin scope (unrestricted).
-	simple := apimw.NewAPIKeyAuth(h.config.Security.APIKey)
-	if !simple.AuthenticateRequest(r) {
-		return nil, false
-	}
-	return &apimw.APIScope{IsAdmin: true}, true
-}
 
 // hmacRequireExpiry reads HMAC_REQUIRE_EXPIRY from the environment. It has no
 // default: when missing or unparseable it returns an error, and the caller
@@ -105,33 +83,23 @@ func (h *Handler) HandleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m := metrics.Default()
-	hasTransformations := wantsTransformation(params)
-
-	// When the request carries transformations or an explicit format, the cache
-	// key is computable from (storageKey, params) alone — no storage round-trip
-	// needed — so that path gets to answer from cache before touching Jay.
-	if hasTransformations || params.Format != "" {
-		h.deliverProcessed(w, r, deliveryRequest{
-			storageBackend:     storageBackend,
-			namespace:          namespace,
-			storageKey:         storageKey,
-			imageID:            imageID,
-			params:             params,
-			hasTransformations: hasTransformations,
-			metrics:            m,
-		})
-		return
+	req := deliveryRequest{
+		storageBackend: storageBackend,
+		namespace:      namespace,
+		storageKey:     storageKey,
+		imageID:        imageID,
+		params:         params,
+		metrics:        metrics.Default(),
 	}
 
-	h.deliverRaw(w, r, deliveryRequest{
-		storageBackend:     storageBackend,
-		namespace:          namespace,
-		storageKey:         storageKey,
-		params:             params,
-		hasTransformations: hasTransformations,
-		metrics:            m,
-	})
+	// A transformation is CPU worth sharing, so it goes through the cache and
+	// the singleflight. Everything else — the original as stored, or the
+	// original in another encoding — starts by streaming from storage.
+	if wantsTransformation(params) {
+		h.deliverProcessed(w, r, req)
+		return
+	}
+	h.deliverRaw(w, r, req)
 }
 
 // deliveryRequest bundles what both delivery paths need, so neither ends up
@@ -140,15 +108,14 @@ type deliveryRequest struct {
 	storageBackend storage.StorageBackend
 	// namespace is the backend the request resolved to; with storageKey it
 	// names the original for every cache and singleflight key.
-	namespace          string
-	storageKey         string
-	imageID            string
-	params             *processor.ProcessingParams
-	hasTransformations bool
-	metrics            *metrics.Metrics
+	namespace  string
+	storageKey string
+	imageID    string
+	params     *processor.ProcessingParams
+	metrics    *metrics.Metrics
 }
 
-// deliverProcessed serves a request that needs work done on the image.
+// deliverProcessed serves a request that transforms the image.
 //
 // The cache is consulted first, before any storage round-trip. On a miss, the
 // retrieve-and-process work is deduplicated with singleflight so that N
@@ -169,22 +136,29 @@ func (h *Handler) deliverProcessed(w http.ResponseWriter, r *http.Request, req d
 		return
 	}
 
-	// Cache miss with an explicit transform: cacheKey is already known, so the
-	// retrieve+process work is deduplicated by (storageKey, params).
-	v, sfErr, _ := h.sf.Do(cacheKey, func() (any, error) {
+	// DoChan rather than Do: the shared work runs on its own context, but a
+	// caller that hangs up stops waiting for it instead of holding a
+	// goroutine (and a connection slot) until the slowest sibling finishes.
+	ch := h.sf.DoChan(cacheKey, func() (any, error) {
 		return h.fetchAndProcess(req, cacheKey)
 	})
+	var res singleflight.Result
+	select {
+	case res = <-ch:
+	case <-r.Context().Done():
+		return
+	}
 
-	if sfErr != nil {
-		if fe, ok := errors.AsType[*fetchError](sfErr); ok {
+	if res.Err != nil {
+		if fe, ok := errors.AsType[*fetchError](res.Err); ok {
 			h.sendError(w, fe.status, fe.code, fe.message)
 		} else {
-			logger.Error().Err(sfErr).Msg("Unexpected delivery singleflight error")
+			logger.Error().Err(res.Err).Msg("Unexpected delivery singleflight error")
 			h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to deliver image")
 		}
 		return
 	}
-	result := v.(*deliveryResult)
+	result := res.Val.(*deliveryResult)
 	// The result is shared with every request that collapsed onto this key,
 	// but the caching directives are not part of the key: each caller gets its
 	// own maxage/smaxage rather than the leader's.
@@ -193,75 +167,113 @@ func (h *Handler) deliverProcessed(w http.ResponseWriter, r *http.Request, req d
 	h.serveImage(w, r, bytes.NewReader(result.data), &meta)
 }
 
-// deliverRaw streams the stored object straight through.
+// deliverRaw serves the stored object without transforming it: as stored, or
+// re-encoded when the request names another format (?f= or a path extension
+// such as /images/abc.webp).
 //
-// No deduplication here on purpose: there is no CPU-heavy work worth sharing,
-// and streaming keeps memory flat no matter how large the file is — which is
-// what the common "download the original as-is" case needs.
+// The common case — the stored format already matches — streams straight
+// through: no deduplication, no buffering, memory flat however large the file.
+// A format conversion is CPU work, so it is answered from cache when it can be
+// (the key is computable from the query alone) and cached when it is not.
 func (h *Handler) deliverRaw(w http.ResponseWriter, r *http.Request, req deliveryRequest) {
 	ctx := r.Context()
-	storageBackend, storageKey := req.storageBackend, req.storageKey
-	params, hasTransformations, m := req.params, req.hasTransformations, req.metrics
-	var cacheKey string
+	params, m := req.params, req.metrics
+	object := cacheObjectKey(req.namespace, req.storageKey)
 
-	storageStart := time.Now()
-	reader, metadata, err := storageBackend.Retrieve(ctx, storageKey)
-	storageDuration := time.Since(storageStart).Seconds()
-
-	if err != nil {
-		m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "error").Inc()
-		if storage.IsNotFound(err) {
-			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
+	if params.Format != "" {
+		if cachedData, found := h.imageProcessor.GetFromCache(h.imageProcessor.GenerateCacheKey(object, params)); found {
+			h.serveImage(w, r, bytes.NewReader(cachedData), h.buildCachedMetadata(req.imageID, params, len(cachedData)))
 			return
 		}
-		logger.Error().Err(err).Msg("Failed to retrieve image")
-		h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image")
+	}
+
+	reader, metadata, fe := h.retrieveOriginal(ctx, req)
+	if fe != nil {
+		h.sendError(w, fe.status, fe.code, fe.message)
 		return
 	}
-	m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "success").Inc()
-	m.StorageOperationDuration.WithLabelValues("retrieve", h.defaultStorageType()).Observe(storageDuration)
 	defer func() { _ = reader.Close() }()
 
-	// Non-image files: serve directly without any processing
-	isImage := utils.IsImageContentType(metadata.ContentType)
-	if !isImage {
+	if !utils.IsImageContentType(metadata.ContentType) || !needsReencode(params, metadata) {
 		h.serveImage(w, r, reader, metadata)
 		return
 	}
 
-	// Re-evaluate processing need now that we have storage metadata
-	// (handles edge cases like unknown format in storage).
-	needsProcessing := hasTransformations ||
-		(params.Format != "" && params.Format != metadata.Format) ||
-		(metadata.Format == "" || metadata.ContentType == "" || metadata.ContentType == "application/octet-stream")
-
-	if !needsProcessing {
-		h.serveImage(w, r, reader, metadata)
-		return
-	}
-
-	// Rare case: wantsProcessing was false but the metadata says processing is
-	// needed. Not deduplicated: cacheKey could not be known before the retrieve.
 	params.Format = h.resolveOutputFormat(params.Format)
-	if cacheKey == "" {
-		cacheKey = h.imageProcessor.GenerateCacheKey(cacheObjectKey(req.namespace, storageKey), params)
-	}
+	cacheKey := h.imageProcessor.GenerateCacheKey(object, params)
 
 	// Duration (semaphore_wait + transform) is recorded by Process(); only the
 	// pass/fail counter, which needs the format labels, stays here.
 	processedImage, err := h.imageProcessor.Process(ctx, reader, params, cacheKey)
-
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
-		logger.Error().Err(err).Msg("Failed to process image")
-		h.sendError(w, http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image")
+		fe := processFailure(err)
+		h.sendError(w, fe.status, fe.code, fe.message)
 		return
 	}
 	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
-
 	defer func() { _ = processedImage.Data.Close() }()
 
-	h.serveImage(w, r, processedImage.Data, h.buildProcessedMetadata(processedImage, params))
+	h.serveImage(w, r, processedImage.Data, h.buildProcessedMetadata(req.imageID, processedImage, params))
+}
+
+// needsReencode reports whether an untransformed image still has to go through
+// the encoder: another format was asked for, or the stored metadata is too
+// incomplete to serve the bytes with an honest Content-Type.
+func needsReencode(params *processor.ProcessingParams, metadata *storage.ImageMetadata) bool {
+	return (params.Format != "" && params.Format != metadata.Format) ||
+		metadata.Format == "" || metadata.ContentType == "" ||
+		metadata.ContentType == "application/octet-stream"
+}
+
+// retrieveOriginal reads the original from storage, recording the storage
+// metrics, and maps a failure onto the response it deserves.
+func (h *Handler) retrieveOriginal(ctx context.Context, req deliveryRequest) (io.ReadCloser, *storage.ImageMetadata, *fetchError) {
+	m := req.metrics
+	storageStart := time.Now()
+	reader, metadata, err := req.storageBackend.Retrieve(ctx, req.storageKey)
+	if err != nil {
+		m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "error").Inc()
+		return nil, nil, retrieveFailure(err)
+	}
+	m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "success").Inc()
+	m.StorageOperationDuration.WithLabelValues("retrieve", h.defaultStorageType()).Observe(time.Since(storageStart).Seconds())
+	return reader, metadata, nil
+}
+
+// retrieveFailure maps a storage error onto the response it deserves: a
+// missing original is a 404, a backend the breaker has given up on is a 503 —
+// a client should retry later, not report a server bug — and anything else is
+// a 500.
+func retrieveFailure(err error) *fetchError {
+	switch {
+	case storage.IsNotFound(err):
+		return &fetchError{http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found"}
+	case storage.IsUnavailable(err):
+		logger.Warn().Err(err).Msg("Storage unavailable")
+		return &fetchError{http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", "Storage is temporarily unavailable"}
+	default:
+		logger.Error().Err(err).Msg("Failed to retrieve image")
+		return &fetchError{http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image"}
+	}
+}
+
+// processFailure maps a Process error onto a response. Running out of time —
+// usually waiting for a processing slot under load — is a 503 to retry, not a
+// verdict on the image; an oversized or unsupported input is the caller's.
+func processFailure(err error) *fetchError {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+		logger.Warn().Err(err).Msg("Image processing timed out")
+		return &fetchError{http.StatusServiceUnavailable, "PROCESSING_BUSY", "Image processing is busy, retry later"}
+	case errors.Is(err, processor.ErrImageTooLarge):
+		return &fetchError{http.StatusUnprocessableEntity, "IMAGE_TOO_LARGE", "Image exceeds the pixel limit"}
+	case errors.Is(err, processor.ErrUnsupportedInput):
+		return &fetchError{http.StatusUnsupportedMediaType, "UNSUPPORTED_IMAGE", "Image format is not supported"}
+	default:
+		logger.Error().Err(err).Msg("Failed to process image")
+		return &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+	}
 }
 
 // deliveryResult is the singleflight.Do payload shared across every request
@@ -325,11 +337,12 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 		params.Quality = quality
 	}
 
-	switch raw := utils.QueryParam(query, "f", "format"); {
-	case raw != "" && h.imageProcessor.ValidateFormat(raw):
-		params.Format = raw
-	case raw != "":
+	format, ok := h.parseFormat(utils.QueryParam(query, "f", "format"))
+	switch {
+	case !ok:
 		return nil, &paramError{"INVALID_FORMAT", "Unsupported format"}
+	case format != "":
+		params.Format = format
 	default:
 		// A known extension in the path acts as the format default. This is
 		// what lets a CDN cache by file extension with no query-string tricks.
@@ -451,6 +464,22 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 	params.KeepMetadata = query.Get("meta") == "1"
 
 	return params, nil
+}
+
+// parseFormat validates ?f=. It accepts the same spellings as a path
+// extension — "jpg" included — and returns the canonical format name. An empty
+// value is valid and returns "".
+func (h *Handler) parseFormat(raw string) (string, bool) {
+	if raw == "" {
+		return "", true
+	}
+	if mapped, ok := AllowedImageExtensions[strings.ToLower(raw)]; ok {
+		raw = mapped
+	}
+	if !h.imageProcessor.ValidateFormat(raw) {
+		return "", false
+	}
+	return raw, true
 }
 
 // parseDimension parses a width or height and checks it against the configured
@@ -596,6 +625,11 @@ func resolveImageID(r *http.Request) (imageID, extFormat string, err *paramError
 
 	dirPrefix, finalSegment := "", imageID
 	if before, after, ok := strings.CutLast(imageID, "/"); ok {
+		// The directory part of the path is held to the same rules as ?d=:
+		// "/images/../x/abc" must not reach storage as the key "../x/abc".
+		if utils.ValidateDirectoryPath(utils.NormalizeDirectoryPath(before)) != nil || strings.Contains(before, "//") {
+			return "", "", &paramError{"INVALID_ID", "Invalid image id"}
+		}
 		dirPrefix, finalSegment = before+"/", after
 	}
 
@@ -617,36 +651,23 @@ func resolveImageID(r *http.Request) (imageID, extFormat string, err *paramError
 	return imageID, extFormat, nil
 }
 
-// authorizeDelivery enforces access control on the delivery route and returns
-// the request to carry on with — it may have gained an auth scope in its
-// context.
+// authorizeDelivery enforces access control on the delivery and proxy routes.
 //
-// Two regimes, and which one applies is a deployment decision:
+// With HMAC_REQUIRED=true they are public-by-signature: the URL signature
+// authorizes that exact path plus query, so no API key is needed — a browser
+// cannot attach one to an <img> URL anyway.
 //
-//   - HMAC_REQUIRED=true: delivery is public-by-signature. The URL signature
-//     authorizes that exact path plus query, so no API key is needed — a
-//     browser cannot attach one to an <img> URL anyway.
-//   - HMAC_REQUIRED=false: fall back to API key plus scope, so delivery is not
-//     left wide open on a dev or misconfigured deployment.
+// With HMAC_REQUIRED=false the route is open. There is no "API key instead"
+// regime: validateSecurity refuses API_KEY_REQUIRED without HMAC_REQUIRED (and
+// the converse), so the only deployment that reaches this branch is one with
+// auth switched off altogether — a local or development setup.
 //
 // Returns false once it has already written the error response.
 func (h *Handler) authorizeDelivery(w http.ResponseWriter, r *http.Request, query url.Values) (bool, *http.Request) {
 	if h.config.Security.HMACRequired {
 		return h.verifyDeliverySignature(w, r, query), r
 	}
-
-	if !h.config.Security.APIKeyRequired {
-		return true, r
-	}
-
-	// Scope is honoured here too, so a key limited to one bucket cannot be
-	// used to read another one through the delivery route.
-	scope, ok := h.authenticateAndScope(r)
-	if !ok {
-		h.sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "API key required")
-		return false, r
-	}
-	return true, r.WithContext(apimw.WithScope(r.Context(), scope))
+	return true, r
 }
 
 // verifyDeliverySignature checks the HMAC signature covering path and query.
@@ -721,16 +742,20 @@ func (h *Handler) resolveOutputFormat(requested string) string {
 // buildProcessedMetadata converts processor output into the storage metadata
 // shape that serveImage expects, carrying over the caching directives that came
 // from the query string.
-func (h *Handler) buildProcessedMetadata(processed *processor.ProcessedImage, params *processor.ProcessingParams) *storage.ImageMetadata {
+//
+// ID and CreatedAt are the same ones buildCachedMetadata uses, so the ETag and
+// Last-Modified of a fresh render match those of the cache hit that follows it;
+// otherwise no conditional request could ever match across the two.
+func (h *Handler) buildProcessedMetadata(imageID string, processed *processor.ProcessedImage, params *processor.ProcessingParams) *storage.ImageMetadata {
 	meta := &storage.ImageMetadata{
-		ID:           processed.Metadata.ID,
+		ID:           imageID,
 		OriginalName: processed.Metadata.OriginalName,
 		Format:       processed.Metadata.Format,
 		Size:         processed.Metadata.Size,
 		Width:        processed.Metadata.Width,
 		Height:       processed.Metadata.Height,
 		ContentType:  processed.Metadata.ContentType,
-		CreatedAt:    processed.Metadata.CreatedAt,
+		CreatedAt:    time.Unix(0, 0),
 		MaxAge:       params.MaxAge,
 		SMaxAge:      params.SMaxAge,
 	}
@@ -765,8 +790,7 @@ func (h *Handler) buildCachedMetadata(imageID string, params *processor.Processi
 // that is deliberate: this work is shared, so one client hanging up must not
 // cancel it for the siblings still waiting on the result.
 func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*deliveryResult, error) {
-	storageBackend, storageKey, imageID := req.storageBackend, req.storageKey, req.imageID
-	params, hasTransformations, m := req.params, req.hasTransformations, req.metrics
+	imageID, params, m := req.imageID, req.params, req.metrics
 
 	// Re-check: another goroutine may have filled the cache while this
 	// one waited for its turn at the key.
@@ -777,33 +801,18 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 		}, nil
 	}
 
-	retrieveCtx, retrieveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	retrieveCtx, retrieveCancel := context.WithTimeout(context.Background(), deliveryRetrieveTimeout)
 	defer retrieveCancel()
-	storageStart := time.Now()
-	reader, metadata, err := storageBackend.Retrieve(retrieveCtx, storageKey)
-	storageDuration := time.Since(storageStart).Seconds()
-	if err != nil {
-		m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "error").Inc()
-		if storage.IsNotFound(err) {
-			return nil, &fetchError{http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found"}
-		}
-		logger.Error().Err(err).Msg("Failed to retrieve image")
-		return nil, &fetchError{http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to retrieve image"}
+	reader, metadata, fe := h.retrieveOriginal(retrieveCtx, req)
+	if fe != nil {
+		return nil, fe
 	}
-	m.StorageOperationsTotal.WithLabelValues("retrieve", h.defaultStorageType(), "success").Inc()
-	m.StorageOperationDuration.WithLabelValues("retrieve", h.defaultStorageType()).Observe(storageDuration)
 	defer func() { _ = reader.Close() }()
 
-	// Non-image, or metadata reveals no processing is actually
-	// needed (mirrors the top-level needsProcessing re-check):
-	// buffer and serve as-is. Buffering (unlike the raw-delivery
-	// path below) is required here because this result may be
-	// shared with sibling callers waiting on sf.Do.
-	isImage := utils.IsImageContentType(metadata.ContentType)
-	needsProcessing := hasTransformations ||
-		(params.Format != "" && params.Format != metadata.Format) ||
-		(metadata.Format == "" || metadata.ContentType == "" || metadata.ContentType == "application/octet-stream")
-	if !isImage || !needsProcessing {
+	// A non-image cannot be transformed: buffer and serve it as-is. Buffering
+	// (unlike deliverRaw) is required because the result may be shared with
+	// sibling callers waiting on the singleflight.
+	if !utils.IsImageContentType(metadata.ContentType) {
 		data, err := io.ReadAll(reader)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to read raw image body")
@@ -812,14 +821,16 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 		return &deliveryResult{data: data, meta: metadata}, nil
 	}
 
-	processCtx, processCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	processCtx, processCancel := context.WithTimeout(context.Background(), deliveryProcessTimeout)
 	defer processCancel()
 
 	// The overlay is loaded here and not at parse time: this is the cache-miss
 	// path, so a request answered from cache never pays for it. A failure is
 	// returned rather than swallowed — an image served without the watermark it
-	// was asked for looks exactly like one that worked.
-	if wmErr := h.resolveWatermark(processCtx, storageBackend, req.namespace, params); wmErr != nil {
+	// was asked for looks exactly like one that worked. It is resolved before
+	// the original is read into the processor, so a slow overlay fetch does
+	// not hold the storage stream open any longer than needed.
+	if wmErr := h.resolveWatermark(processCtx, req.storageBackend, req.namespace, params); wmErr != nil {
 		return nil, wmErr
 	}
 
@@ -828,8 +839,7 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 	processedImage, err := h.imageProcessor.Process(processCtx, reader, params, cacheKey)
 	if err != nil {
 		m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "error").Inc()
-		logger.Error().Err(err).Msg("Failed to process image")
-		return nil, &fetchError{http.StatusUnprocessableEntity, "PROCESSING_FAILED", "Failed to process image"}
+		return nil, processFailure(err)
 	}
 	m.ImageProcessingTotal.WithLabelValues(metadata.Format, params.Format, "success").Inc()
 	defer func() { _ = processedImage.Data.Close() }()
@@ -840,5 +850,5 @@ func (h *Handler) fetchAndProcess(req deliveryRequest, cacheKey string) (*delive
 		return nil, &fetchError{http.StatusInternalServerError, "PROCESSING_FAILED", "Failed to read processed image"}
 	}
 
-	return &deliveryResult{data: data, meta: h.buildProcessedMetadata(processedImage, params)}, nil
+	return &deliveryResult{data: data, meta: h.buildProcessedMetadata(imageID, processedImage, params)}, nil
 }

@@ -373,7 +373,11 @@ func wrapRotateErr(err error) error {
 // applyResize scales the image, then enforces the configured ceiling.
 func (p *VipsProcessor) applyResize(img *vips.Image, params *ProcessingParams) error {
 	switch {
-	case (params.Width > 0 || params.Height > 0) && params.Gravity != "":
+	// Gravity only means something for a box: with one dimension there is
+	// nothing to crop away, and filling the missing side with the source's
+	// full size returned a 200×2000 strip for ?w=200 on a 1000×2000 image.
+	// One dimension plus gravity is a plain proportional resize.
+	case params.Width > 0 && params.Height > 0 && params.Gravity != "":
 		if err := smartResize(img, params); err != nil {
 			return err
 		}
@@ -398,14 +402,10 @@ func (p *VipsProcessor) applyResize(img *vips.Image, params *ProcessingParams) e
 //     libvips' Crop enum cannot express — it only offers low/centre/high on
 //     both axes at once. So the image is scaled to cover the box and then the
 //     region is extracted by hand.
+//
+// It is only called with both dimensions set.
 func smartResize(img *vips.Image, params *ProcessingParams) error {
 	width, height := params.Width, params.Height
-	if width == 0 {
-		width = img.Width()
-	}
-	if height == 0 {
-		height = img.Height()
-	}
 
 	if anchor, ok := gravityAnchor(params.Gravity); ok {
 		return positionalCrop(img, width, height, anchor)

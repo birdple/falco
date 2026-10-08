@@ -93,27 +93,42 @@ func GetClientIP(r *http.Request) string {
 	if err != nil {
 		remoteIP = r.RemoteAddr
 	}
+	return ClientIP(remoteIP, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP"))
+}
 
-	if IsTrustedProxy(remoteIP) {
-		xff := r.Header.Get("X-Forwarded-For")
-		if xff != "" {
-			ips := strings.Split(xff, ",")
-			if len(ips) > 0 {
-				ip := strings.TrimSpace(ips[0])
-				if net.ParseIP(ip) != nil {
-					return ip
-				}
+// ClientIP resolves the client address behind a chain of proxies.
+//
+// Forwarded headers count only when the direct peer is a trusted proxy. Then
+// X-Forwarded-For is walked from the RIGHT, skipping trusted proxies, and the
+// first address that is not one of them is the client. Taking the leftmost
+// entry, as this used to, believes whatever the client wrote: every common
+// proxy (nginx's $proxy_add_x_forwarded_for, Cloudflare, Traefik) appends to
+// the header it received, so the leftmost entry is attacker-controlled and
+// rotating it defeated the per-IP rate limiter. X-Real-IP is the fallback when
+// X-Forwarded-For names nothing usable.
+func ClientIP(remoteIP, xff, xRealIP string) string {
+	if !IsTrustedProxy(remoteIP) {
+		return remoteIP
+	}
+
+	if xff != "" {
+		entries := strings.Split(xff, ",")
+		for i := len(entries) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(entries[i])
+			if net.ParseIP(candidate) == nil {
+				// A malformed hop means the chain cannot be trusted past
+				// this point; stop rather than skip over it.
+				break
 			}
-		}
-
-		xri := r.Header.Get("X-Real-IP")
-		if xri != "" {
-			if net.ParseIP(xri) != nil {
-				return xri
+			if !IsTrustedProxy(candidate) {
+				return candidate
 			}
 		}
 	}
 
+	if xri := strings.TrimSpace(xRealIP); net.ParseIP(xri) != nil {
+		return xri
+	}
 	return remoteIP
 }
 
