@@ -41,17 +41,36 @@ func (m *MetricsMiddleware) Handler(next http.Handler) http.Handler {
 		// Get route pattern for cleaner metrics (not the actual path with IDs)
 		routePattern := chi.RouteContext(r.Context()).RoutePattern()
 		if routePattern == "" {
-			routePattern = r.URL.Path
+			// NOT r.URL.Path: every distinct path a scanner probes would
+			// become its own time series, and Prometheus keeps them all.
+			routePattern = unmatchedRouteLabel
 		}
+		method := methodLabel(r.Method)
 
 		// Record metrics
 		duration := time.Since(start).Seconds()
 		status := strconv.Itoa(wrapped.statusCode)
 
-		m.metrics.HTTPRequestsTotal.WithLabelValues(r.Method, routePattern, status).Inc()
-		m.metrics.HTTPRequestDuration.WithLabelValues(r.Method, routePattern).Observe(duration)
-		m.metrics.HTTPResponseSize.WithLabelValues(r.Method, routePattern).Observe(float64(wrapped.size))
+		m.metrics.HTTPRequestsTotal.WithLabelValues(method, routePattern, status).Inc()
+		m.metrics.HTTPRequestDuration.WithLabelValues(method, routePattern).Observe(duration)
+		m.metrics.HTTPResponseSize.WithLabelValues(method, routePattern).Observe(float64(wrapped.size))
 	})
+}
+
+// unmatchedRouteLabel is the path label of a request no route matched.
+const unmatchedRouteLabel = "unmatched"
+
+// methodLabel bounds the method label to the standard methods. The method is
+// client-chosen text, so passing it through let anyone mint a new series per
+// request with a made-up verb.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+		return method
+	default:
+		return "OTHER"
+	}
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code and response size
