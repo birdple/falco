@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -190,10 +191,29 @@ func TestValidator_SubgroupBucketNotInParent(t *testing.T) {
 func TestValidator_InvalidCacheSize(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Cache.SizeMB = 0
+	cfg.Cache.SizeMB = -1
 	err := v.Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid cache size")
+}
+
+// CACHE_SIZE_MB=0 is the documented way to disable the cache, and buildCache
+// honours it — but the validator used to demand >= 1 and refuse to boot.
+func TestValidator_ZeroCacheSizeDisablesTheCache(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cache.SizeMB = 0
+	assert.NoError(t, NewValidator().Validate(cfg))
+}
+
+func TestValidator_CacheCleanupInterval(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cache.CleanupInterval = 0 // the cache falls back to its default
+	assert.NoError(t, NewValidator().Validate(cfg))
+
+	cfg.Cache.CleanupInterval = -time.Second
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cleanup interval")
 }
 
 func TestValidator_InvalidMaxFileSize(t *testing.T) {
