@@ -26,8 +26,8 @@ type ObjectMeta struct {
 	ContentType string `json:"content_type,omitempty"`
 
 	Size   int64 `json:"size_bytes"`
-	Width  int   `json:"width,omitempty"`
-	Height int   `json:"height,omitempty"`
+	Width  int   `json:"width,omitzero"`
+	Height int   `json:"height,omitzero"`
 
 	OriginalName string    `json:"original_name,omitempty"`
 	OwnerID      string    `json:"owner_id,omitempty"`
