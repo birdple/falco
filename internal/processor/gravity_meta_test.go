@@ -156,3 +156,18 @@ func TestGenerateCacheKeySeparatesMetadataVariants(t *testing.T) {
 		t.Fatal("the meta variant is not marked in its cache key")
 	}
 }
+
+// TestGravityWithOneDimensionKeepsAspect: with only ?w= there is no box to crop
+// to, so gravity must not turn a resize into a full-height strip.
+func TestGravityWithOneDimensionKeepsAspect(t *testing.T) {
+	p := NewVipsProcessor(10, 85, FormatWebP, 4096, 4096)
+	img := newTestImage(t, 100, 200, []float64{10, 20, 30})
+	defer img.Close()
+
+	if err := p.applyResize(img, &ProcessingParams{Width: 50, Gravity: "north"}); err != nil {
+		t.Fatal(err)
+	}
+	if img.Width() != 50 || img.Height() != 100 {
+		t.Fatalf("got %dx%d, want 50x100", img.Width(), img.Height())
+	}
+}

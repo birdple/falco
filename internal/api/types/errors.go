@@ -10,3 +10,10 @@ type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
+
+// ErrorResponse is the body of every API error, from the handlers and the
+// middleware alike.
+type ErrorResponse struct {
+	Success bool      `json:"success"`
+	Error   *APIError `json:"error"`
+}

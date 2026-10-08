@@ -6,7 +6,6 @@ import "time"
 type UploadResponse struct {
 	Success bool       `json:"success"`
 	Data    UploadData `json:"data"`
-	Error   *APIError  `json:"error,omitempty"`
 }
 
 // UploadData contains information about uploaded images
@@ -30,7 +29,6 @@ type Dimensions struct {
 type UpdateResponse struct {
 	Success bool           `json:"success"`
 	Updated []UpdateResult `json:"updated,omitempty"`
-	Error   *APIError      `json:"error,omitempty"`
 }
 
 // UpdateResult represents the result of updating a single image
@@ -59,8 +57,6 @@ type ListResponse struct {
 	// NextCursor is passed back as ?cursor= to continue. Empty means this is
 	// the last page.
 	NextCursor string `json:"next_cursor,omitempty"`
-
-	Error *APIError `json:"error,omitempty"`
 }
 
 // ListItem represents a single file in a list response

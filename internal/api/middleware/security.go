@@ -2,12 +2,9 @@ package middleware
 
 import (
 	"crypto/subtle"
-	"io"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -136,294 +133,52 @@ func RestrictedFileServer(root http.FileSystem) http.Handler {
 	})
 }
 
-// APIKeyAuth provides API key authentication
+// APIKeyAuth provides API key authentication for a route group. It has no
+// exempt paths: it is only ever mounted on groups that are protected in full.
 type APIKeyAuth struct {
-	apiKey             string
-	exemptPaths        map[string]bool
-	exemptPathPrefixes []string
+	apiKey string
 }
 
 // NewAPIKeyAuth creates a new API key authentication middleware.
-//
-// The /api/v1/images/ prefix is exempt by default because delivery is gated
-// by HMAC (the URL signature authorizes the caller). Deployments that run
-// with HMAC_REQUIRED=false must call SetDeliveryExempt(false) so delivery
-// still requires a valid API key.
 func NewAPIKeyAuth(apiKey string) *APIKeyAuth {
-	exemptPaths := map[string]bool{
-		"/health":     true,
-		"/robots.txt": true,
-		"/":           true,
-	}
-
-	exemptPathPrefixes := []string{
-		"/api/v1/images/",
-	}
-
-	return &APIKeyAuth{
-		apiKey:             apiKey,
-		exemptPaths:        exemptPaths,
-		exemptPathPrefixes: exemptPathPrefixes,
-	}
+	return &APIKeyAuth{apiKey: apiKey}
 }
 
-// SetDeliveryExempt toggles whether the /api/v1/images/ prefix bypasses API
-// key auth. The default is true (HMAC gates delivery). Pass false to require
-// API keys on delivery in dev/non-HMAC deployments.
-//
-//nolint:revive // setter: the bool is the value being stored, not a control flag
-func (a *APIKeyAuth) SetDeliveryExempt(exempt bool) {
-	const deliveryPrefix = "/api/v1/images/"
-	filtered := make([]string, 0, len(a.exemptPathPrefixes))
-	seen := false
-	for _, p := range a.exemptPathPrefixes {
-		if p == deliveryPrefix {
-			seen = true
-			if exempt {
-				filtered = append(filtered, p)
-			}
-			continue
-		}
-		filtered = append(filtered, p)
+// providedAPIKey reads the key from X-API-Key, or from a Bearer token.
+func providedAPIKey(r *http.Request) string {
+	if key := r.Header.Get("X-API-Key"); key != "" {
+		return key
 	}
-	if exempt && !seen {
-		filtered = append(filtered, deliveryPrefix)
-	}
-	a.exemptPathPrefixes = filtered
+	key, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return key
 }
 
-// AuthenticateRequest returns true when the request carries a valid API key.
-// This is used by handlers (e.g. delivery) that need to enforce API-key auth
-// from inside the handler because their route is not wrapped by Handler.
-// When the middleware was constructed with an empty apiKey, authentication
-// is considered disabled and this method returns true for any request.
-func (a *APIKeyAuth) AuthenticateRequest(r *http.Request) bool {
-	if a.apiKey == "" {
-		return true
-	}
-	providedKey := r.Header.Get("X-API-Key")
-	if providedKey == "" {
-		providedKey = r.Header.Get("Authorization")
-		providedKey, _ = strings.CutPrefix(providedKey, "Bearer ")
-	}
-	if providedKey == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.apiKey)) == 1
-}
-
-// Handler returns the middleware handler
+// Handler returns the middleware handler. With an empty configured key,
+// authentication is disabled and every request passes.
 func (a *APIKeyAuth) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.exemptPaths[r.URL.Path] {
+		if a.apiKey == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		for _, prefix := range a.exemptPathPrefixes {
-			if strings.HasPrefix(r.URL.Path, prefix) {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		providedKey := r.Header.Get("X-API-Key")
-		if providedKey == "" {
-			providedKey = r.Header.Get("Authorization")
-			providedKey, _ = strings.CutPrefix(providedKey, "Bearer ")
-		}
-
-		if a.apiKey != "" {
+		providedKey := providedAPIKey(r)
+		if providedKey == "" || subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.apiKey)) != 1 {
+			msg := "Invalid API key"
 			if providedKey == "" {
-				logger.Warn().
-					Str("ip", httputil.GetClientIP(r)).
-					Str("user_agent", httputil.GetUserAgent(r)).
-					Str("path", r.URL.Path).
-					Msg("Missing API key")
-
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
+				msg = "Missing API key"
 			}
-
-			if subtle.ConstantTimeCompare([]byte(providedKey), []byte(a.apiKey)) != 1 {
-				logger.Warn().
-					Str("ip", httputil.GetClientIP(r)).
-					Str("user_agent", httputil.GetUserAgent(r)).
-					Str("path", r.URL.Path).
-					Msg("Invalid API key")
-
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// RateLimiter provides rate limiting functionality
-type RateLimiter struct {
-	requestsPerMinute int
-	burst             int
-	clients           map[string]*clientLimiter
-	mu                sync.RWMutex
-	cleanupInterval   time.Duration
-	maxClientAge      time.Duration
-	maxClients        int
-	stopCleanup       chan struct{}
-}
-
-// clientLimiter tracks requests for a specific client
-type clientLimiter struct {
-	requests    []time.Time
-	lastCleanup time.Time
-	lastSeen    time.Time
-}
-
-// NewRateLimiter creates a new rate limiter
-func NewRateLimiter(requestsPerMinute, burst int) *RateLimiter {
-	rl := &RateLimiter{
-		requestsPerMinute: requestsPerMinute,
-		burst:             burst,
-		clients:           make(map[string]*clientLimiter),
-		cleanupInterval:   5 * time.Minute,
-		maxClientAge:      15 * time.Minute,
-		maxClients:        100000,
-		stopCleanup:       make(chan struct{}),
-	}
-
-	go rl.backgroundCleanup()
-
-	return rl
-}
-
-// Stop signals the background cleanup goroutine to exit
-func (rl *RateLimiter) Stop() {
-	select {
-	case rl.stopCleanup <- struct{}{}:
-	default:
-	}
-}
-
-// backgroundCleanup periodically removes inactive clients to prevent memory leak
-func (rl *RateLimiter) backgroundCleanup() {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error().Interface("panic", r).Msg("RateLimiter cleanup panic recovered")
-			go rl.backgroundCleanup()
-		}
-	}()
-
-	ticker := time.NewTicker(rl.cleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			rl.mu.Lock()
-			now := time.Now()
-			for ip, limiter := range rl.clients {
-				if now.Sub(limiter.lastSeen) > rl.maxClientAge {
-					delete(rl.clients, ip)
-				}
-			}
-			rl.mu.Unlock()
-		case <-rl.stopCleanup:
-			return
-		}
-	}
-}
-
-// Handler returns the rate limiting middleware handler
-func (rl *RateLimiter) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientIP := httputil.GetClientIP(r)
-		now := time.Now()
-
-		rl.mu.Lock()
-		limiter, exists := rl.clients[clientIP]
-		if !exists {
-			// Evict oldest client if at capacity
-			if len(rl.clients) >= rl.maxClients {
-				rl.evictOldestClient()
-			}
-			limiter = &clientLimiter{
-				requests:    make([]time.Time, 0),
-				lastCleanup: now,
-				lastSeen:    now,
-			}
-			rl.clients[clientIP] = limiter
-		}
-		limiter.lastSeen = now
-
-		rl.cleanupOldRequests(limiter)
-
-		requestCount := len(limiter.requests)
-
-		if requestCount >= rl.requestsPerMinute+rl.burst {
-			rl.mu.Unlock()
 			logger.Warn().
-				Str("ip", clientIP).
+				Str("ip", httputil.GetClientIP(r)).
 				Str("user_agent", httputil.GetUserAgent(r)).
 				Str("path", r.URL.Path).
-				Msg("Rate limit exceeded")
-
-			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.requestsPerMinute))
-			w.Header().Set("X-RateLimit-Remaining", "0")
-			w.Header().Set("Retry-After", "60")
-
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				Msg(msg)
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "API key required")
 			return
 		}
 
-		limiter.requests = append(limiter.requests, now)
-		remaining := rl.requestsPerMinute + rl.burst - len(limiter.requests)
-		rl.mu.Unlock()
-
-		if remaining < 0 {
-			remaining = 0
-		}
-
-		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.requestsPerMinute))
-		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
-
 		next.ServeHTTP(w, r)
 	})
-}
-
-// evictOldestClient removes the least recently seen client to make room.
-// IMPORTANT: Caller MUST hold rl.mu lock before calling this function.
-func (rl *RateLimiter) evictOldestClient() {
-	var oldestIP string
-	var oldestTime time.Time
-	first := true
-	for ip, limiter := range rl.clients {
-		if first || limiter.lastSeen.Before(oldestTime) {
-			oldestIP = ip
-			oldestTime = limiter.lastSeen
-			first = false
-		}
-	}
-	if oldestIP != "" {
-		delete(rl.clients, oldestIP)
-	}
-}
-
-// cleanupOldRequests removes requests older than 1 minute.
-// IMPORTANT: Caller MUST hold rl.mu lock before calling this function.
-func (rl *RateLimiter) cleanupOldRequests(limiter *clientLimiter) {
-	now := time.Now()
-	oneMinuteAgo := now.Add(-time.Minute)
-
-	validRequests := make([]time.Time, 0)
-	for _, reqTime := range limiter.requests {
-		if reqTime.After(oneMinuteAgo) {
-			validRequests = append(validRequests, reqTime)
-		}
-	}
-
-	limiter.requests = validRequests
-	limiter.lastCleanup = now
 }
 
 // RequestSizeLimiter limits the size of incoming requests
@@ -438,7 +193,12 @@ func NewRequestSizeLimiter(maxSize int64) *RequestSizeLimiter {
 	}
 }
 
-// Handler returns the request size limiting middleware handler
+// Handler returns the request size limiting middleware handler.
+//
+// A declared Content-Length over the limit is refused up front; a body without
+// one is wrapped in http.MaxBytesReader, so reading past the limit is an error
+// the handler sees (and the connection is closed) rather than a silent EOF
+// that looks like a complete, truncated body.
 func (rsl *RequestSizeLimiter) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > rsl.maxSize {
@@ -448,49 +208,11 @@ func (rsl *RequestSizeLimiter) Handler(next http.Handler) http.Handler {
 				Int64("max_size", rsl.maxSize).
 				Msg("Request too large")
 
-			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Request body too large")
 			return
 		}
 
-		r.Body = &limitedReader{
-			reader:    r.Body,
-			remaining: rsl.maxSize,
-			ip:        httputil.GetClientIP(r),
-		}
-
+		r.Body = http.MaxBytesReader(w, r.Body, rsl.maxSize)
 		next.ServeHTTP(w, r)
 	})
-}
-
-// limitedReader wraps an io.Reader to limit the amount of data read
-type limitedReader struct {
-	reader    io.ReadCloser
-	remaining int64
-	ip        string
-	totalRead int64
-}
-
-func (lr *limitedReader) Read(p []byte) (n int, err error) {
-	if lr.remaining <= 0 {
-		logger.Warn().
-			Str("ip", lr.ip).
-			Int64("total_read", lr.totalRead).
-			Msg("Request size limit exceeded during read")
-
-		return 0, io.EOF
-	}
-
-	if int64(len(p)) > lr.remaining {
-		p = p[:lr.remaining]
-	}
-
-	n, err = lr.reader.Read(p)
-	lr.remaining -= int64(n)
-	lr.totalRead += int64(n)
-
-	return n, err
-}
-
-func (lr *limitedReader) Close() error {
-	return lr.reader.Close()
 }

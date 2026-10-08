@@ -42,9 +42,6 @@ type Server struct {
 	uiHandler *ui.Handler
 	metrics   *metrics.Metrics
 	registry  *storage.Registry
-	// rateLimiter is kept so Shutdown can stop its sweeper; nil when rate
-	// limiting is off.
-	rateLimiter *apimw.RateLimiter
 }
 
 // NewServer creates a new API server
@@ -140,11 +137,11 @@ func (s *Server) useMiddleware(r chi.Router) {
 	}
 
 	if s.config.Security.RateLimit.RequestsPerMinute > 0 {
-		s.rateLimiter = apimw.NewRateLimiter(
+		rateLimiter := apimw.NewRateLimiter(
 			s.config.Security.RateLimit.RequestsPerMinute,
 			s.config.Security.RateLimit.Burst,
 		)
-		r.Use(s.rateLimiter.Handler)
+		r.Use(rateLimiter.Handler)
 	}
 
 	r.Use(cors.Handler(cors.Options{
@@ -364,9 +361,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// in-flight requests may still be using them.
 	s.uiHandler.Close()
 	s.handler.Close()
-	if s.rateLimiter != nil {
-		s.rateLimiter.Stop()
-	}
 
 	if err != nil {
 		logger.Warn().Err(err).Msg("HTTP server shutdown completed with errors")
