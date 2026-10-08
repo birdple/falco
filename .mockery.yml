@@ -1,4 +1,4 @@
-# Los mocks de tests/mocks/ salen de aquí: `go run github.com/vektra/mockery/v3`.
+# Los mocks de tests/mocks/ salen de aquí: `go tool mockery` (fijado como tool en go.mod).
 # No se editan a mano.
 #
 # pkgname es obligatorio: sin él mockery v3 nombra el paquete como el de la

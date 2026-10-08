@@ -105,6 +105,9 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", fmt.Sprintf("Failed to store file: %v", err))
 		return
 	}
+	// A custom ?id= can overwrite an existing object under the same key, and
+	// the cache key does not change with the bytes.
+	h.invalidateCache(h.backendNamespace(storageName, bucket), storageKey)
 
 	fileURL := utils.BuildImageURL(imageID, bucket, directory)
 

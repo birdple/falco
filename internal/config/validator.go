@@ -438,6 +438,10 @@ func (v *validator) validateProcessing(config *Config) error {
 		return fmt.Errorf("invalid max file size: %d MB (must be >= 1)", config.Processing.MaxFileSizeMB)
 	}
 
+	if config.Processing.MaxMegapixels < 0 {
+		return fmt.Errorf("invalid max megapixels: %d (must be >= 0; 0 means the built-in default)", config.Processing.MaxMegapixels)
+	}
+
 	if config.Processing.DefaultQuality < 1 || config.Processing.DefaultQuality > 100 {
 		return fmt.Errorf("invalid quality: %d (must be 1-100)", config.Processing.DefaultQuality)
 	}

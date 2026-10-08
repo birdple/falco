@@ -69,6 +69,7 @@ func (d *defaultsProvider) setProcessingDefaults(v *viper.Viper) {
 	v.SetDefault("processing.supported_formats", []string{"jpeg", "png", "webp"})
 	v.SetDefault("processing.max_dimensions.width", 2048)
 	v.SetDefault("processing.max_dimensions.height", 2048)
+	v.SetDefault("processing.max_megapixels", 100)
 }
 
 // setSecurityDefaults sets security default values. api_key_required and

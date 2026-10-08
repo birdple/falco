@@ -353,6 +353,51 @@ func (h *Handler) authorizeBucket(scope *apimw.APIScope, storageName, bucket str
 	return storageName, bucket, nil
 }
 
+// backendNamespace names the backend a (storage, bucket) pair resolves to, for
+// keys that must not be shared between buckets: the transform cache, the
+// singleflight that shares fetches, and the watermark cache.
+//
+// The storage key alone is not enough. "avatar" in bucket A and "avatar" in
+// bucket B are different objects, and keying the cache (and the singleflight
+// that shares fetches) on "avatar" served one tenant's image to another and let
+// either pre-warm the other's variants.
+//
+// It mirrors getStorageBackendWithScope: a named backend, optionally switched
+// to a remote bucket; a ?b= that is a registry name; a ?b= that switches the
+// default backend's remote bucket; or the default.
+func (h *Handler) backendNamespace(storageName, bucket string) string {
+	storageName = h.canonicalBucket(storageName)
+	bucket = h.canonicalBucket(bucket)
+
+	switch {
+	case storageName != "" && bucket != "":
+		return storageName + "/" + bucket
+	case storageName != "":
+		return storageName
+	case bucket != "" && h.isRegistryBucket(bucket):
+		return bucket
+	case bucket != "":
+		return h.defaultBucketName() + "/" + bucket
+	default:
+		return h.defaultBucketName()
+	}
+}
+
+// cacheObjectKey is the object key handed to the processor's cache API for a
+// storage key in a backend namespace. NUL cannot appear in either part.
+func cacheObjectKey(namespace, storageKey string) string {
+	return namespace + "\x00" + storageKey
+}
+
+// isRegistryBucket reports whether name is a registered backend.
+func (h *Handler) isRegistryBucket(name string) bool {
+	if h.storageRegistry == nil {
+		return false
+	}
+	_, err := h.storageRegistry.Get(name)
+	return err == nil
+}
+
 // defaultBucketName is the registry name requests without ?b= or ?storage= go
 // to.
 func (h *Handler) defaultBucketName() string {

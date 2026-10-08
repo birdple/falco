@@ -108,7 +108,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	// The bytes changed but the cache key did not (it derives from key+params):
 	// without invalidating, the previous version keeps being served until its
 	// TTL expires.
-	h.invalidateCache(req.Key)
+	h.invalidateCache(h.backendNamespace(req.Storage, req.Bucket), req.Key)
 
 	newSize := processedImage.Metadata.Size
 	savedBytes := existingSize - newSize
