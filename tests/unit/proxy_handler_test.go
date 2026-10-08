@@ -126,10 +126,10 @@ func TestHandleProxy_SSRFBlocksPrivateEvenIfAllowlisted(t *testing.T) {
 	mockProcessor := newProcessorMock()
 
 	// Upstream fake image server.
-	// NewTestServer (Go 1.27) limpia solo al terminar el test y falla el test
-	// si el handler paniquea. Se arranca con Start() para quedarse en loopback:
-	// este test necesita justamente una IP privada (127.0.0.1) para comprobar
-	// que el guard SSRF dispara, y la red in-memory no daría una.
+	// NewTestServer (Go 1.27) cleans up on its own when the test ends and fails
+	// the test if the handler panics. It is started with Start() to stay on
+	// loopback: this test needs precisely a private IP (127.0.0.1) to check
+	// that the SSRF guard fires, and the in-memory network would not give one.
 	upstream := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/webp")
 		w.WriteHeader(http.StatusOK)

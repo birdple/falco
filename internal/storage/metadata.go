@@ -88,7 +88,7 @@ func (e *defaultMetadataEncoder) Decode(data map[string]string) (*ImageMetadata,
 	if widthStr, ok := data["width"]; ok {
 		width, err := strconv.Atoi(widthStr)
 		if err != nil {
-			return nil, fmt.Errorf("metadata: ancho inválido (%q): %w", widthStr, err)
+			return nil, fmt.Errorf("metadata: invalid width (%q): %w", widthStr, err)
 		}
 		metadata.Width = width
 	}
@@ -96,7 +96,7 @@ func (e *defaultMetadataEncoder) Decode(data map[string]string) (*ImageMetadata,
 	if heightStr, ok := data["height"]; ok {
 		height, err := strconv.Atoi(heightStr)
 		if err != nil {
-			return nil, fmt.Errorf("metadata: alto inválido (%q): %w", heightStr, err)
+			return nil, fmt.Errorf("metadata: invalid height (%q): %w", heightStr, err)
 		}
 		metadata.Height = height
 	}

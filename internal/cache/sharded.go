@@ -38,7 +38,7 @@ func (sc *ShardedCache) shard(key string) *LRUCache {
 	return sc.shards[maphash.String(sc.seed, key)%sc.count]
 }
 
-// forEach corre f sobre cada shard.
+// forEach runs f on every shard.
 func (sc *ShardedCache) forEach(f func(*LRUCache)) {
 	for _, s := range sc.shards {
 		f(s)

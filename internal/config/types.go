@@ -151,7 +151,7 @@ type SecurityConfig struct {
 }
 
 // CORSConfig and RateLimitConfig are named types for the same reason as
-// MaxDimensions: como structs anónimos no se podían escribir en un literal.
+// MaxDimensions: as anonymous structs they could not be written in a literal.
 
 // CORSConfig holds the CORS policy.
 type CORSConfig struct {

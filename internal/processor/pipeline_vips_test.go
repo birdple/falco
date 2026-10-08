@@ -40,12 +40,12 @@ func newTestImage(t *testing.T, width, height int, rgb []float64) *vips.Image {
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, src); err != nil {
-		t.Fatalf("no se pudo codificar el png de prueba: %v", err)
+		t.Fatalf("could not encode the test png: %v", err)
 	}
 
 	img, err := vips.NewImageFromBuffer(buf.Bytes(), nil)
 	if err != nil {
-		t.Fatalf("no se pudo cargar la imagen de prueba: %v", err)
+		t.Fatalf("could not load the test image: %v", err)
 	}
 	return img
 }
@@ -54,7 +54,7 @@ func pixel(t *testing.T, img *vips.Image, x, y int) []float64 {
 	t.Helper()
 	values, err := img.Getpoint(x, y, nil)
 	if err != nil {
-		t.Fatalf("getpoint(%d,%d) falló: %v", x, y, err)
+		t.Fatalf("getpoint(%d,%d) failed: %v", x, y, err)
 	}
 	return values
 }
@@ -65,7 +65,7 @@ func pngBytes(t *testing.T, img *vips.Image) []byte {
 	t.Helper()
 	data, err := img.PngsaveBuffer(nil)
 	if err != nil {
-		t.Fatalf("no se pudo codificar el png: %v", err)
+		t.Fatalf("could not encode the png: %v", err)
 	}
 	return data
 }
@@ -80,21 +80,21 @@ func TestApplyWatermarkCompositesPixels(t *testing.T) {
 
 	params := &ProcessingParams{WatermarkImage: pngBytes(t, overlay)}
 	if err := applyWatermark(base, params); err != nil {
-		t.Fatalf("applyWatermark falló: %v", err)
+		t.Fatalf("applyWatermark failed: %v", err)
 	}
 
 	// Default position and scale: an 80px overlay inset 8px from the bottom
 	// right of a 400x300 image.
 	corner := pixel(t, base, 360, 260)
 	if corner[0] < 250 {
-		t.Errorf("la esquina inferior derecha es %v, se esperaba el overlay blanco", corner)
+		t.Errorf("bottom-right corner is %v, expected the white overlay", corner)
 	}
 
 	// And nowhere else: a watermark that covered the image would also pass an
 	// assertion that only looked at the corner.
 	elsewhere := pixel(t, base, 20, 20)
 	if elsewhere[0] != 120 {
-		t.Errorf("la esquina superior izquierda es %v, se esperaba el fondo intacto", elsewhere)
+		t.Errorf("top-left corner is %v, expected the background untouched", elsewhere)
 	}
 }
 
@@ -110,14 +110,14 @@ func TestApplyWatermarkPosition(t *testing.T) {
 		WatermarkPosition: WatermarkTopLeft,
 	}
 	if err := applyWatermark(base, params); err != nil {
-		t.Fatalf("applyWatermark falló: %v", err)
+		t.Fatalf("applyWatermark failed: %v", err)
 	}
 
 	if corner := pixel(t, base, 40, 40); corner[0] < 250 {
-		t.Errorf("la esquina superior izquierda es %v, se esperaba el overlay", corner)
+		t.Errorf("top-left corner is %v, expected the overlay", corner)
 	}
 	if corner := pixel(t, base, 360, 260); corner[0] != 120 {
-		t.Errorf("la esquina inferior derecha es %v, se esperaba el fondo intacto", corner)
+		t.Errorf("bottom-right corner is %v, expected the background untouched", corner)
 	}
 }
 
@@ -134,12 +134,12 @@ func TestApplyWatermarkOpacity(t *testing.T) {
 		WatermarkOpacity: 0.5,
 	}
 	if err := applyWatermark(base, params); err != nil {
-		t.Fatalf("applyWatermark falló: %v", err)
+		t.Fatalf("applyWatermark failed: %v", err)
 	}
 
 	got := pixel(t, base, 360, 260)[0]
 	if got < 180 || got > 195 {
-		t.Errorf("la mezcla al 50%% dio %v, se esperaba cerca de 187", got)
+		t.Errorf("50%% blend gave %v, expected about 187", got)
 	}
 }
 
@@ -150,10 +150,10 @@ func TestApplyWatermarkNoSourceIsNoOp(t *testing.T) {
 	defer base.Close()
 
 	if err := applyWatermark(base, &ProcessingParams{}); err != nil {
-		t.Fatalf("applyWatermark sin overlay falló: %v", err)
+		t.Fatalf("applyWatermark without overlay failed: %v", err)
 	}
 	if got := pixel(t, base, 50, 50); got[0] != 120 {
-		t.Errorf("la imagen cambió sin overlay: %v", got)
+		t.Errorf("image changed without overlay: %v", got)
 	}
 }
 
@@ -164,20 +164,20 @@ func TestSaturationDrainsColour(t *testing.T) {
 	defer img.Close()
 
 	if err := applySaturationAndHue(img, &ProcessingParams{Saturation: -100}); err != nil {
-		t.Fatalf("applySaturationAndHue falló: %v", err)
+		t.Fatalf("applySaturationAndHue failed: %v", err)
 	}
 
 	got := pixel(t, img, 25, 25)
 	if len(got) < 3 {
-		t.Fatalf("se esperaban 3 bandas, hay %d", len(got))
+		t.Fatalf("expected 3 bands, got %d", len(got))
 	}
 	// Grey means the channels agree; the rounding of the LCh round-trip leaves
 	// a unit or two of slack.
 	if diff := got[0] - got[1]; diff > 2 || diff < -2 {
-		t.Errorf("saturación -100 dio %v, se esperaba gris", got)
+		t.Errorf("saturation -100 gave %v, expected grey", got)
 	}
 	if diff := got[1] - got[2]; diff > 2 || diff < -2 {
-		t.Errorf("saturación -100 dio %v, se esperaba gris", got)
+		t.Errorf("saturation -100 gave %v, expected grey", got)
 	}
 }
 
@@ -189,12 +189,12 @@ func TestHueRotatesColour(t *testing.T) {
 	defer img.Close()
 
 	if err := applySaturationAndHue(img, &ProcessingParams{Hue: 120}); err != nil {
-		t.Fatalf("applySaturationAndHue falló: %v", err)
+		t.Fatalf("applySaturationAndHue failed: %v", err)
 	}
 
 	got := pixel(t, img, 25, 25)
 	if got[1] <= got[0] {
-		t.Errorf("hue +120 sobre rojo dio %v, se esperaba que dominara el verde", got)
+		t.Errorf("hue +120 on red gave %v, expected green to dominate", got)
 	}
 }
 
@@ -206,12 +206,12 @@ func TestSaturationAndHueNoOp(t *testing.T) {
 	defer img.Close()
 
 	if err := applySaturationAndHue(img, &ProcessingParams{}); err != nil {
-		t.Fatalf("applySaturationAndHue falló: %v", err)
+		t.Fatalf("applySaturationAndHue failed: %v", err)
 	}
 
 	got := pixel(t, img, 25, 25)
 	if got[0] != 200 || got[1] != 40 || got[2] != 40 {
-		t.Errorf("la imagen cambió sin pedir nada: %v", got)
+		t.Errorf("image changed with nothing requested: %v", got)
 	}
 }
 
@@ -223,10 +223,10 @@ func TestRightAngleRotationIsExact(t *testing.T) {
 
 		if err := rotateImage(img, degrees); err != nil {
 			img.Close()
-			t.Fatalf("rotateImage(%v) falló: %v", degrees, err)
+			t.Fatalf("rotateImage(%v) failed: %v", degrees, err)
 		}
 		if img.Width() != 300 || img.Height() != 400 {
-			t.Errorf("rotar %v dio %dx%d, se esperaba 300x400", degrees, img.Width(), img.Height())
+			t.Errorf("rotating %v gave %dx%d, expected 300x400", degrees, img.Width(), img.Height())
 		}
 		img.Close()
 	}
@@ -242,20 +242,20 @@ func TestSharpenUsesTheRequestedAmount(t *testing.T) {
 	white := newTestImage(t, 40, 40, []float64{255, 255, 255})
 	defer white.Close()
 	if err := edge.Insert(white, 30, 30, nil); err != nil {
-		t.Fatalf("insert falló: %v", err)
+		t.Fatalf("insert failed: %v", err)
 	}
 	if err := edge.Gaussblur(2, nil); err != nil {
-		t.Fatalf("blur falló: %v", err)
+		t.Fatalf("blur failed: %v", err)
 	}
 
 	sharpenedAt := func(amount float64) float64 {
 		img, err := edge.Copy(nil)
 		if err != nil {
-			t.Fatalf("copy falló: %v", err)
+			t.Fatalf("copy failed: %v", err)
 		}
 		defer img.Close()
 		if err := applyColorAdjustments(img, &ProcessingParams{Sharpen: amount}); err != nil {
-			t.Fatalf("applyColorAdjustments falló: %v", err)
+			t.Fatalf("applyColorAdjustments failed: %v", err)
 		}
 		// Sampled on the dark side of the halo, a few pixels out from the
 		// edge: the edge itself is a fixed point of the unsharp mask and reads
@@ -265,12 +265,12 @@ func TestSharpenUsesTheRequestedAmount(t *testing.T) {
 
 	low, high := sharpenedAt(10), sharpenedAt(100)
 	if low == high {
-		t.Errorf("sharpen=10 y sharpen=100 dieron el mismo píxel (%v): el valor se está ignorando", low)
+		t.Errorf("sharpen=10 and sharpen=100 gave the same pixel (%v): the value is being ignored", low)
 	}
 	// More sharpening digs the dark side of the halo deeper, so the stronger
 	// request has to come out darker rather than merely different.
 	if high >= low {
-		t.Errorf("sharpen=100 dio %v y sharpen=10 dio %v: se esperaba un halo más marcado", high, low)
+		t.Errorf("sharpen=100 gave %v and sharpen=10 gave %v: expected a stronger halo", high, low)
 	}
 }
 
@@ -280,20 +280,20 @@ func TestSharpenUsesTheRequestedAmount(t *testing.T) {
 func TestSaturationSurvivesAnUntaggedImage(t *testing.T) {
 	img, err := vips.NewBlack(50, 50, &vips.BlackOptions{Bands: 3})
 	if err != nil {
-		t.Fatalf("no se pudo crear la imagen: %v", err)
+		t.Fatalf("could not create the image: %v", err)
 	}
 	defer img.Close()
 	if err := img.Linear([]float64{0, 0, 0}, []float64{200, 40, 40}, nil); err != nil {
-		t.Fatalf("linear falló: %v", err)
+		t.Fatalf("linear failed: %v", err)
 	}
 	if img.Interpretation() != vips.InterpretationMultiband {
-		t.Fatalf("la imagen de partida debería ser multiband, es %v", img.Interpretation())
+		t.Fatalf("the starting image should be multiband, it is %v", img.Interpretation())
 	}
 
 	if err := applySaturationAndHue(img, &ProcessingParams{Saturation: -100}); err != nil {
-		t.Fatalf("applySaturationAndHue falló sobre una imagen sin etiqueta: %v", err)
+		t.Fatalf("applySaturationAndHue failed on an untagged image: %v", err)
 	}
 	if img.Interpretation() != vips.InterpretationSrgb {
-		t.Errorf("se esperaba el fallback a sRGB, quedó en %v", img.Interpretation())
+		t.Errorf("expected the fallback to sRGB, got %v", img.Interpretation())
 	}
 }

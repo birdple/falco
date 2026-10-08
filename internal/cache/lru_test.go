@@ -163,10 +163,9 @@ func TestLRUCache_TTL_Expiration(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, []byte("value1"), val)
 
-		// Reloj falso: synctest.Sleep adelanta el tiempo del bubble al
-		// instante, así que el TTL vence sin que el test espere de verdad ni
-		// dependa de un margen de 10 ms que en una máquina cargada se queda
-		// corto.
+		// Fake clock: synctest.Sleep advances the bubble's time instantly, so
+		// the TTL expires without the test actually waiting or depending on a
+		// 10 ms margin that falls short on a loaded machine.
 		synctest.Sleep(60 * time.Millisecond)
 
 		val, ok = cache.Get("key1")

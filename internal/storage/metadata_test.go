@@ -303,33 +303,33 @@ func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
 		want string
 	}{
 		{
-			name: "cero",
+			name: "zero",
 			in:   &ImageMetadata{},
 			want: `{"id":"","original_name":"","format":"","size":0,"width":0,` +
 				`"height":0,"content_type":"","created_at":"0001-01-01T00:00:00Z"}`,
 		},
 		{
-			name: "campos opcionales omitidos",
+			name: "optional fields omitted",
 			in: &ImageMetadata{
 				ID: "i", OriginalName: `a&b <x> "q" ñ 🐦`, Format: "webp",
 				Size: 1, Width: 2, Height: 3, ContentType: "image/webp",
 				CreatedAt: stamp,
 			},
-			// v1 escapaba &, < y > como \u00XX; Wire lo sigue haciendo.
+			// v1 escaped &, < and > as \u00XX; Wire still does.
 			want: `{"id":"i","original_name":"a\u0026b \u003cx\u003e \"q\" ñ 🐦",` +
 				`"format":"webp","size":1,"width":2,"height":3,` +
 				`"content_type":"image/webp","created_at":"2026-08-21T15:04:05Z"}`,
 		},
 		{
-			name: "todos los campos",
+			name: "all fields",
 			in: &ImageMetadata{
 				ID: "i", StorageKey: "k/<a>&b", OriginalName: `a&b <x> "q" ñ 🐦`,
 				Format: "webp", Size: 1024, Width: 800, Height: 600,
 				ContentType: "image/webp", MaxAge: 31536000, SMaxAge: 7200,
 				CreatedAt: stamp, ETag: `"abc"`, OwnerID: "o",
 			},
-			// created_at va al final: el campo del struct externo tiene
-			// precedencia sobre el del *Alias embebido y se emite después.
+			// created_at goes last: the outer struct's field takes precedence
+			// over the embedded *Alias one and is emitted after it.
 			want: `{"id":"i","storage_key":"k/\u003ca\u003e\u0026b",` +
 				`"original_name":"a\u0026b \u003cx\u003e \"q\" ñ 🐦","format":"webp",` +
 				`"size":1024,"width":800,"height":600,"content_type":"image/webp",` +
@@ -344,7 +344,7 @@ func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(got))
 
-			// Y el round-trip tiene que devolver el mismo valor.
+			// And the round-trip must return the same value.
 			var back ImageMetadata
 			require.NoError(t, back.UnmarshalJSON(got))
 			assert.Equal(t, *tt.in, back)

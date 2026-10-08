@@ -96,10 +96,10 @@ func TestGenerateImageID_ShortHash(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"vacío", "", ""},
-		{"más corto que 16", "abc", "abc"},
-		{"exactamente 16", "0123456789abcdef", "0123456789abcdef"},
-		{"más largo que 16", "0123456789abcdefGHIJ", "0123456789abcdef"},
+		{"empty", "", ""},
+		{"shorter than 16", "abc", "abc"},
+		{"exactly 16", "0123456789abcdef", "0123456789abcdef"},
+		{"longer than 16", "0123456789abcdefGHIJ", "0123456789abcdef"},
 	}
 
 	for _, tt := range tests {

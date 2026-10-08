@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// slowBackend deja que el test controle cuándo termina un Store/Delete, para
-// poder observar el estado "réplica en vuelo".
+// slowBackend lets the test control when a Store/Delete finishes, so the
+// "replica in flight" state can be observed.
 type slowBackend struct {
 	release chan struct{}
 	stores  atomic.Int64
@@ -51,7 +51,7 @@ func (b *slowBackend) GetStats(context.Context) (*StorageStats, error) {
 }
 func (b *slowBackend) List(context.Context, string) ([]ListResult, error) { return nil, nil }
 
-// fastBackend es un primary que responde de inmediato.
+// fastBackend is a primary that answers immediately.
 type fastBackend struct{ stores atomic.Int64 }
 
 func (b *fastBackend) Store(_ context.Context, _ string, data io.Reader, _ *ImageMetadata) error {
@@ -83,20 +83,20 @@ func TestReplicatedStorage_CloseWaitsForAsyncStore(t *testing.T) {
 		{Backend: backup, Mode: ReplicationAsync},
 	})
 
-	require.NoError(t, rs.Store(t.Context(), "k", strings.NewReader("datos"), &ImageMetadata{}))
-	assert.Equal(t, int64(1), primary.stores.Load(), "el primary se escribe en línea")
+	require.NoError(t, rs.Store(t.Context(), "k", strings.NewReader("data"), &ImageMetadata{}))
+	assert.Equal(t, int64(1), primary.stores.Load(), "the primary is written inline")
 
-	// La réplica sigue en vuelo: Close con un contexto ya vencido tiene que
-	// reportarlo en vez de fingir que salió bien.
+	// The replica is still in flight: Close with an already expired context
+	// has to report it instead of pretending it went fine.
 	expired, cancel := context.WithTimeout(t.Context(), time.Millisecond)
 	defer cancel()
-	assert.Error(t, rs.Close(expired), "Close no puede reportar éxito con réplicas en vuelo")
+	assert.Error(t, rs.Close(expired), "Close must not report success with replicas in flight")
 	assert.Equal(t, int64(0), backup.stores.Load())
 
-	// Se libera la réplica: ahora Close espera y devuelve nil.
+	// Release the replica: now Close waits and returns nil.
 	close(backup.release)
 	require.NoError(t, rs.Close(t.Context()))
-	assert.Equal(t, int64(1), backup.stores.Load(), "Close esperó a que la réplica terminara")
+	assert.Equal(t, int64(1), backup.stores.Load(), "Close waited for the replica to finish")
 }
 
 // TestReplicatedStorage_CloseWaitsForAsyncDelete covers the same on the delete
@@ -312,8 +312,8 @@ func (b *closeTrackingBackend) Close(context.Context) error {
 	return nil
 }
 
-// TestRegistry_CloseAll comprueba que el registry sabe esperar a los backends
-// que tienen trabajo en vuelo y que ignora a los que no.
+// TestRegistry_CloseAll checks that the registry waits for backends with work
+// in flight and ignores those without.
 func TestRegistry_CloseAll(t *testing.T) {
 	backup := newSlowBackend()
 	close(backup.release)
@@ -322,10 +322,10 @@ func TestRegistry_CloseAll(t *testing.T) {
 		{Backend: backup, Mode: ReplicationAsync},
 	})
 
-	reg := NewRegistry(&fastBackend{}) // el default no implementa Closer
-	reg.Register("replicado", rs)
+	reg := NewRegistry(&fastBackend{}) // the default does not implement Closer
+	reg.Register("replicated", rs)
 
-	require.NoError(t, rs.Store(t.Context(), "k", strings.NewReader("datos"), &ImageMetadata{}))
+	require.NoError(t, rs.Store(t.Context(), "k", strings.NewReader("data"), &ImageMetadata{}))
 
 	failures := reg.CloseAll(t.Context())
 	assert.Empty(t, failures)

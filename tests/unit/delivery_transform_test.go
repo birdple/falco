@@ -121,14 +121,14 @@ func TestDelivery_GeometryRejections(t *testing.T) {
 		query string
 		code  string
 	}{
-		{"crop sin tamaño", "crop_x=10", "INVALID_CROP"},
-		{"crop sin alto", "crop_w=100", "INVALID_CROP"},
-		{"crop de ancho cero", "crop_w=0&crop_h=10", "INVALID_CROP"},
-		{"crop de origen negativo", "crop_x=-1&crop_w=10&crop_h=10", "INVALID_CROP"},
-		{"crop no numérico", "crop_w=abc&crop_h=10", "INVALID_CROP"},
-		{"rotación fuera de rango", "rotate=400", "INVALID_ROTATE"},
-		{"rotación no numérica", "rotate=abc", "INVALID_ROTATE"},
-		{"flip desconocido", "flip=diagonal", "INVALID_FLIP"},
+		{"crop without size", "crop_x=10", "INVALID_CROP"},
+		{"crop without height", "crop_w=100", "INVALID_CROP"},
+		{"crop with zero width", "crop_w=0&crop_h=10", "INVALID_CROP"},
+		{"crop with negative origin", "crop_x=-1&crop_w=10&crop_h=10", "INVALID_CROP"},
+		{"non-numeric crop", "crop_w=abc&crop_h=10", "INVALID_CROP"},
+		{"rotation out of range", "rotate=400", "INVALID_ROTATE"},
+		{"non-numeric rotation", "rotate=abc", "INVALID_ROTATE"},
+		{"unknown flip", "flip=diagonal", "INVALID_FLIP"},
 	}
 
 	for _, tc := range cases {
@@ -149,13 +149,13 @@ func TestDelivery_CosmeticParamsFallBack(t *testing.T) {
 		name  string
 		query string
 	}{
-		{"brillo fuera de rango", "brightness=9999"},
-		{"saturación no numérica", "saturation=abc"},
-		{"hue fuera de rango", "hue=999"},
-		{"gamma negativa", "gamma=-1"},
-		{"desenfoque fuera de rango", "blur=1000"},
-		{"opacidad fuera de rango", "wm_opacity=5"},
-		{"posición desconocida", "wm_position=diagonal"},
+		{"brightness out of range", "brightness=9999"},
+		{"non-numeric saturation", "saturation=abc"},
+		{"hue out of range", "hue=999"},
+		{"negative gamma", "gamma=-1"},
+		{"blur out of range", "blur=1000"},
+		{"opacity out of range", "wm_opacity=5"},
+		{"unknown position", "wm_position=diagonal"},
 	}
 
 	for _, tc := range cases {
@@ -206,10 +206,10 @@ func TestDelivery_WatermarkRejections(t *testing.T) {
 		status int
 		code   string
 	}{
-		{"ambas fuentes", "wm=logo-b&wm_url=https://example.com/l.png", http.StatusBadRequest, "INVALID_WATERMARK"},
-		{"id con traversal", "wm=../../etc/passwd", http.StatusBadRequest, "INVALID_WATERMARK"},
-		{"url externa sin allowlist", "wm_url=https%3A%2F%2Fexample.com%2Fl.png", http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED"},
-		{"url relativa", "wm_url=%2Flocal%2Fl.png", http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED"},
+		{"both sources", "wm=logo-b&wm_url=https://example.com/l.png", http.StatusBadRequest, "INVALID_WATERMARK"},
+		{"id with traversal", "wm=../../etc/passwd", http.StatusBadRequest, "INVALID_WATERMARK"},
+		{"external url without allowlist", "wm_url=https%3A%2F%2Fexample.com%2Fl.png", http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED"},
+		{"relative url", "wm_url=%2Flocal%2Fl.png", http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED"},
 	}
 
 	for _, tc := range cases {
