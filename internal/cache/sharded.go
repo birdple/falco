@@ -62,7 +62,9 @@ func (sc *ShardedCache) Get(key string) ([]byte, bool) {
 	return sc.shard(key).Get(key)
 }
 
-// Set stores a value in the cache.
+// Set stores a value in the cache. The size limit that applies is the shard's
+// (maxSize / shard count), so a value larger than that is refused with
+// ErrItemTooLarge even when the cache as a whole has room.
 func (sc *ShardedCache) Set(key string, value []byte, ttl time.Duration) error {
 	return sc.shard(key).Set(key, value, ttl)
 }

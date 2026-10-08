@@ -8,6 +8,8 @@ package cache
 
 import (
 	"container/list"
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,8 +74,23 @@ type LRUCache struct {
 	misses atomic.Int64
 }
 
-// NewLRUCache creates a new LRU cache
+// DefaultCleanupInterval is the expiry sweep frequency used when the caller
+// passes a non-positive one. It matches the cache.cleanup_interval default.
+const DefaultCleanupInterval = 10 * time.Minute
+
+// ErrItemTooLarge means a value is bigger than the whole cache (or shard) it was
+// offered to, so it was not stored.
+var ErrItemTooLarge = errors.New("cache: item larger than the cache's max size")
+
+// NewLRUCache creates a new LRU cache.
+//
+// A non-positive cleanupInterval falls back to DefaultCleanupInterval.
+// time.NewTicker panics on it, and the sweep goroutine used to recover from
+// that panic by starting itself again — which panicked again, forever.
 func NewLRUCache(maxSize int64, cleanupInterval time.Duration) *LRUCache {
+	if cleanupInterval <= 0 {
+		cleanupInterval = DefaultCleanupInterval
+	}
 	cache := &LRUCache{
 		maxSize:         maxSize,
 		currentSize:     0,
@@ -114,12 +131,25 @@ func (c *LRUCache) Get(key string) ([]byte, bool) {
 	return item.value, true
 }
 
-// Set stores a value in the cache
+// Set stores a value in the cache.
+//
+// A value larger than the cache's max size is refused with ErrItemTooLarge.
+// Accepting it meant evicting everything else to make room and then evicting
+// the value itself, since the loop stops only once the cache is back under its
+// limit: one oversized image flushed the whole shard and cached nothing. Any
+// previous value under the key is dropped too, so it is not served in place of
+// the one just refused.
 func (c *LRUCache) Set(key string, value []byte, ttl time.Duration) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	size := int64(len(value))
+	if size > c.maxSize {
+		if item, exists := c.items[key]; exists {
+			c.removeItem(item)
+		}
+		return fmt.Errorf("%w: %d bytes, max %d", ErrItemTooLarge, size, c.maxSize)
+	}
 
 	// If item already exists, update it
 	if item, exists := c.items[key]; exists {
@@ -275,48 +305,51 @@ func (c *LRUCache) removeItem(item *CacheItem) {
 	c.currentSize -= item.size
 }
 
-// cleanup periodically removes expired items with panic recovery
+// cleanup periodically removes expired items.
+//
+// Only the sweep itself is guarded against panics, one tick at a time. This
+// used to recover around the whole goroutine and start a new one, which turned
+// a panic in the setup — time.NewTicker with a non-positive interval — into an
+// endless loop of panicking goroutines.
 func (c *LRUCache) cleanup() {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error().Interface("panic", r).Msg("Cache cleanup panic recovered")
-			go c.cleanup()
-		}
-	}()
-
 	ticker := time.NewTicker(c.cleanupInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			c.cleanupExpired()
+			c.sweep()
 		case <-c.stopCleanup:
 			return
 		}
 	}
 }
 
+// sweep runs one cleanupExpired, logging a panic instead of letting it take
+// the process down; the next tick tries again.
+func (c *LRUCache) sweep() {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error().Interface("panic", r).Msg("Cache cleanup panic recovered")
+		}
+	}()
+	c.cleanupExpired()
+}
+
 // cleanupExpired removes all expired items using chunked locking
 // to avoid holding the write lock for the entire iteration.
+//
+// The locks are released with defer so that a panic, which sweep recovers
+// from, cannot leave the cache locked for good.
 func (c *LRUCache) cleanupExpired() {
-	// Collect expired keys under read lock
-	c.mutex.RLock()
-	now := time.Now()
-	var expired []string
-	for key, item := range c.items {
-		if item.ttl > 0 && now.Sub(item.createdAt) > item.ttl {
-			expired = append(expired, key)
-		}
-	}
-	c.mutex.RUnlock()
-
+	expired := c.collectExpired()
 	if len(expired) == 0 {
 		return
 	}
 
 	// Delete expired items under write lock
 	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	for _, key := range expired {
 		if item, exists := c.items[key]; exists {
 			// Re-check expiry (could have been refreshed between locks)
@@ -325,5 +358,18 @@ func (c *LRUCache) cleanupExpired() {
 			}
 		}
 	}
-	c.mutex.Unlock()
+}
+
+// collectExpired returns the keys of expired items, under the read lock.
+func (c *LRUCache) collectExpired() []string {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	now := time.Now()
+	var expired []string
+	for key, item := range c.items {
+		if item.ttl > 0 && now.Sub(item.createdAt) > item.ttl {
+			expired = append(expired, key)
+		}
+	}
+	return expired
 }

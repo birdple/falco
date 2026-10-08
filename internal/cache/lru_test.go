@@ -229,6 +229,63 @@ func TestLRUCache_Stop(t *testing.T) {
 	cache.Stop()
 }
 
+// The sweep goroutine stops for good on Stop: a bubble only finishes once all
+// of its goroutines have exited, so a cleanup loop still running would hang it.
+func TestLRUCache_StopEndsTheSweep(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache := NewLRUCache(1024, time.Second)
+		synctest.Sleep(3 * time.Second)
+		cache.Stop()
+		cache.Stop()
+	})
+}
+
+// A non-positive interval made time.NewTicker panic inside the sweep goroutine,
+// whose recover started a new one that panicked the same way, forever. It now
+// falls back to the default, and the sweep runs.
+func TestLRUCache_NonPositiveCleanupIntervalFallsBack(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		synctest.Test(t, func(t *testing.T) {
+			cache := NewLRUCache(1024, interval)
+			defer cache.Stop()
+			assert.Equal(t, DefaultCleanupInterval, cache.cleanupInterval)
+
+			require.NoError(t, cache.Set("k", []byte("v"), time.Millisecond))
+			synctest.Sleep(DefaultCleanupInterval + time.Second)
+			assert.Equal(t, 0, cache.Len(), "the expired entry was swept")
+		})
+	}
+}
+
+// An item bigger than the whole cache used to evict everything else and then
+// itself: a full flush that cached nothing.
+func TestLRUCache_RejectsItemLargerThanMaxSize(t *testing.T) {
+	cache := NewLRUCache(10, time.Hour)
+	defer cache.Stop()
+
+	require.NoError(t, cache.Set("small", []byte("12345"), 0))
+	require.NoError(t, cache.Set("big", []byte("old"), 0))
+
+	err := cache.Set("big", []byte("this is far too large"), 0)
+	require.ErrorIs(t, err, ErrItemTooLarge)
+
+	assert.True(t, cache.Contains("small"), "the rest of the cache survives")
+	assert.False(t, cache.Contains("big"), "the stale value under the key is not served instead")
+	assert.Equal(t, int64(5), cache.Size())
+
+	// Exactly the max size still fits.
+	require.NoError(t, cache.Set("exact", []byte("0123456789"), 0))
+}
+
+func TestShardedCache_RejectsItemLargerThanShard(t *testing.T) {
+	sc := NewShardedCache(16*10, time.Hour) // 10 bytes per shard
+	defer sc.Stop()
+
+	require.NoError(t, sc.Set("k", []byte("0123456789"), 0))
+	assert.ErrorIs(t, sc.Set("k2", []byte("01234567890"), 0), ErrItemTooLarge)
+	assert.Equal(t, 1, sc.Len())
+}
+
 func BenchmarkLRUCache_Set(b *testing.B) {
 	cache := NewLRUCache(256*1024*1024, time.Hour)
 	defer cache.Stop()

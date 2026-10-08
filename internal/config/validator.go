@@ -423,10 +423,20 @@ func (v *validator) validateBucketFields(name string, bucket BucketConfig) error
 	return nil
 }
 
-// validateCache validates cache configuration
+// validateCache validates cache configuration.
+//
+// A size of 0 is valid and disables the cache (buildCache treats it so); this
+// used to demand >= 1, which made the documented way of turning the cache off
+// refuse to boot. Only a negative size is a mistake.
+//
+// The cleanup interval may be 0 (the cache falls back to its default sweep
+// frequency) but not negative.
 func (v *validator) validateCache(config *Config) error {
-	if config.Cache.SizeMB < 1 {
-		return fmt.Errorf("invalid cache size: %d MB (must be >= 1)", config.Cache.SizeMB)
+	if config.Cache.SizeMB < 0 {
+		return fmt.Errorf("invalid cache size: %d MB (must be >= 0; 0 disables the cache)", config.Cache.SizeMB)
+	}
+	if config.Cache.CleanupInterval < 0 {
+		return fmt.Errorf("invalid cache cleanup interval: %s (must be >= 0)", config.Cache.CleanupInterval)
 	}
 
 	return nil
