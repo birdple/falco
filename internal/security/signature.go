@@ -71,23 +71,6 @@ func Canonicalize(rawPath string) string {
 	return path + "?" + values.Encode()
 }
 
-// CanonicalizeRequest is a helper for http.Request-style callers. It builds
-// the canonical string from a path and a parsed url.Values (typically the
-// request's already-parsed query).
-func CanonicalizeRequest(path string, values url.Values) string {
-	if len(values) == 0 {
-		return path
-	}
-	// Our own copy, so the caller can still read "sig" from theirs. Clone
-	// copies the value slices too, not just the map.
-	clone := values.Clone()
-	clone.Del("sig")
-	if len(clone) == 0 {
-		return path
-	}
-	return path + "?" + clone.Encode()
-}
-
 // SignURL generates an HMAC-SHA256 signature for the given path.
 //
 // path may be any path or path+query string. It is canonicalized (sig removed,
@@ -141,31 +124,18 @@ func appendExpiry(path string, expUnix int64) string {
 	return base + "?" + values.Encode()
 }
 
-// VerifyURL verifies the HMAC-SHA256 signature for the given path.
+// VerifyURLWithPolicy verifies the HMAC-SHA256 signature for the given path.
 //
-// `path` may be any path or path+query string; it is canonicalized internally
-// so the signer and verifier always agree regardless of query-param order. If
-// `required` is true the signature MUST be present and valid; a missing
-// key/salt is an error in required mode. In non-required mode (dev),
-// verification is skipped entirely — the route is unauthenticated.
+// path may be any path or path+query string; it is canonicalized internally so
+// the signer and verifier always agree regardless of query-param order.
 //
-// Expiry: if the path includes an "exp" query parameter, it MUST be a valid
-// Unix timestamp in the future (in required mode). URLs without "exp" are
-// accepted for backwards compatibility — callers that need to enforce
-// presence of "exp" must use VerifyURLWithPolicy.
-// The `required` parameter is a genuine control switch and a dangerous one:
-// false disables verification entirely. It stays in the signature because this
-// is falco's public API and upstream callers depend on it; production callers
-// MUST pass true (config/validator.validateSecurity enforces HMAC_REQUIRED).
-func VerifyURL(signature, path string, keyHex, saltHex string, signatureSize int, required bool) error {
-	return VerifyURLWithPolicy(signature, path, keyHex, saltHex, signatureSize, required, false)
-}
-
-// VerifyURLWithPolicy is VerifyURL plus an explicit requireExpiry switch. If
-// requireExpiry is true, the path MUST carry a non-expired "exp" parameter.
-// Use this in production to ensure leaked URLs cannot be reused indefinitely.
+// required=false skips verification entirely: the route is unauthenticated.
+// Production callers pass true (config/validator.validateSecurity enforces
+// HMAC_REQUIRED). With requireExpiry the path MUST carry a non-expired "exp"
+// parameter, so a leaked URL cannot be reused indefinitely; without it, URLs
+// with no "exp" are accepted and an "exp" that is present is still enforced.
 //
-//nolint:revive // public API: `required` is the same control switch VerifyURL exposes
+//nolint:revive // `required` is a genuine control switch, see above
 func VerifyURLWithPolicy(signature, path string, keyHex, saltHex string, signatureSize int, required, requireExpiry bool) error {
 	if !required {
 		// Non-required mode: signature is not enforced. This is a

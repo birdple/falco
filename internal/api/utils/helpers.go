@@ -15,13 +15,8 @@ import (
 	"strings"
 )
 
-// GetQueryParam returns the first non-empty value from multiple parameter names.
-// It parses the query once: r.URL.Query() reparses RawQuery on every call.
-func GetQueryParam(r *http.Request, names ...string) string {
-	return QueryParam(r.URL.Query(), names...)
-}
-
-// QueryParam is GetQueryParam over an already-parsed url.Values, for handlers
+// QueryParam returns the first non-empty value among several parameter names
+// (aliases such as w|width), over an already-parsed url.Values, for handlers
 // that hoisted r.URL.Query() into a local.
 func QueryParam(query url.Values, names ...string) string {
 	for _, name := range names {

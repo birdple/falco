@@ -99,20 +99,3 @@ func popCursor(stack string) string {
 	}
 	return stack[:idx]
 }
-
-// CursorFromStack returns the cursor the given stack points at, i.e. the one
-// that produced the page currently being viewed.
-func CursorFromStack(stack string) string {
-	if stack == "" {
-		return ""
-	}
-	last := stack
-	if idx := strings.LastIndex(stack, ","); idx >= 0 {
-		last = stack[idx+1:]
-	}
-	decoded, err := url.QueryUnescape(last)
-	if err != nil {
-		return ""
-	}
-	return decoded
-}

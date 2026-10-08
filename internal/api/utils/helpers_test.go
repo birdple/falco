@@ -1,22 +1,19 @@
 package utils
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestGetQueryParam(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/?format=webp&q=85", nil)
-
-	assert.Equal(t, "webp", GetQueryParam(req, "format"))
-	assert.Equal(t, "85", GetQueryParam(req, "q"))
-	assert.Equal(t, "", GetQueryParam(req, "missing"))
-
-	// Multiple names - returns first match
-	assert.Equal(t, "webp", GetQueryParam(req, "fmt", "format"))
+func TestQueryParam(t *testing.T) {
+	q := url.Values{"format": {"webp"}, "q": {"85"}, "empty": {""}}
+	assert.Equal(t, "webp", QueryParam(q, "format"))
+	assert.Equal(t, "85", QueryParam(q, "q"))
+	assert.Equal(t, "", QueryParam(q, "missing"))
+	assert.Equal(t, "webp", QueryParam(q, "fmt", "format"), "first non-empty alias wins")
+	assert.Equal(t, "webp", QueryParam(q, "empty", "format"), "an empty value is skipped")
 }
 
 func TestGetExtensionFromContentType(t *testing.T) {

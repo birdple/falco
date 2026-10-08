@@ -21,6 +21,7 @@ import (
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/internal/telemetry"
 )
 
 // negativeCacheSize / negativeCacheCleanup size the small side-cache used to
@@ -66,10 +67,22 @@ func NewHandler(
 		storage:        storageBackend,
 		imageProcessor: imageProc,
 		startTime:      startTime,
-		httpClient:     httputil.NewSafeHTTPClient(30 * time.Second),
+		httpClient:     newOutboundClient(),
 		negativeCache:  cache.NewLRUCache(negativeCacheSize, negativeCacheCleanup),
 	}
 }
+
+// newOutboundClient is the client for proxy, watermark and upload-by-URL
+// fetches: the SSRF-guarded client, with its transport traced so an outbound
+// fetch shows up as a child span of the request that caused it.
+func newOutboundClient() *http.Client {
+	client := httputil.NewSafeHTTPClient(outboundFetchTimeout)
+	client.Transport = telemetry.WrapTransport(client.Transport)
+	return client
+}
+
+// outboundFetchTimeout bounds every outbound fetch end to end.
+const outboundFetchTimeout = 30 * time.Second
 
 // Close stops the handler's background work.
 func (h *Handler) Close() {

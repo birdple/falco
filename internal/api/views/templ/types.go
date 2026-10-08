@@ -229,12 +229,7 @@ type PlaygroundData struct {
 
 	Bucket  string
 	Key     string
-	Name    string
 	Buckets []string
-
-	// BaseURL is the unsigned delivery path; the browser asks the panel to
-	// sign each preview so the HMAC key never leaves the server.
-	BaseURL string
 	Groups  []ParamGroup
 
 	OriginalSizeHuman string
@@ -254,14 +249,6 @@ type SignerData struct {
 	RequireExpiry  bool
 	Buckets        []string
 	DefaultTTL     int
-}
-
-// SignedResult is the answer of a signing request, rendered as a fragment.
-type SignedResult struct {
-	SignedURL string
-	ExpiresAt time.Time
-	HasExpiry bool
-	Error     string
 }
 
 // BackendStatus is one storage backend on the ops screen.
@@ -348,25 +335,6 @@ type LoginData struct {
 
 // IsDark reports whether the dark palette applies.
 func (l LoginData) IsDark() bool { return l.Theme != "light" }
-
-// ActionResult is the outcome of a mutating panel action, rendered as a toast.
-//
-// Failed is a list and not a flag on purpose: a batch delete or upload can
-// partially succeed, and the panel has to name what did not happen rather than
-// report a blanket success.
-type ActionResult struct {
-	Title     string
-	OK        bool
-	Succeeded []string
-	Failed    []ActionFailure
-	Detail    string
-}
-
-// ActionFailure is one item that did not go through, and why.
-type ActionFailure struct {
-	Name   string
-	Reason string
-}
 
 // HumanizeBytes formats a byte count for display.
 func HumanizeBytes(s int64) string {

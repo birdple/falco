@@ -107,9 +107,3 @@ func Error() *zerolog.Event { return Logger.Error() }
 // Fatal starts a fatal-level event on the global Logger. Writing the event
 // terminates the process.
 func Fatal() *zerolog.Event { return Logger.Fatal() }
-
-// Err starts a new error-level event with the given error attached.
-func Err(err error) *zerolog.Event { return Logger.Err(err) }
-
-// With returns a child logger with the given fields pre-set.
-func With() zerolog.Context { return Logger.With() }

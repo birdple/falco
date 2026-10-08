@@ -16,7 +16,7 @@ func TestSignAndVerify(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, sig)
 
-	err = VerifyURL(sig, path, keyHex, saltHex, 32, true)
+	err = VerifyURLWithPolicy(sig, path, keyHex, saltHex, 32, true, false)
 	assert.NoError(t, err)
 }
 
@@ -24,17 +24,17 @@ func TestVerifyWrongSignature(t *testing.T) {
 	keyHex := "943b421c9eb07c830af81030552c86009268de4a7405e1de8b52c3c88f703df2"
 	saltHex := "520f986b998545b4785e0defbc4f3c1203f22de2374a3d53"
 
-	err := VerifyURL("invalidsig", "/api/v1/images/abc123", keyHex, saltHex, 32, true)
+	err := VerifyURLWithPolicy("invalidsig", "/api/v1/images/abc123", keyHex, saltHex, 32, true, false)
 	assert.Error(t, err)
 }
 
 func TestVerifySkipsWhenNotConfigured(t *testing.T) {
-	err := VerifyURL("", "/api/v1/images/abc123", "", "", 32, false)
+	err := VerifyURLWithPolicy("", "/api/v1/images/abc123", "", "", 32, false, false)
 	assert.NoError(t, err)
 }
 
 func TestVerifyRequiredWithNoConfig(t *testing.T) {
-	err := VerifyURL("", "/api/v1/images/abc123", "", "", 32, true)
+	err := VerifyURLWithPolicy("", "/api/v1/images/abc123", "", "", 32, true, false)
 	assert.ErrorIs(t, err, ErrNoSignatureConfig)
 }
 
@@ -53,7 +53,7 @@ func TestSignatureTruncation(t *testing.T) {
 	assert.Less(t, len(sig16), len(sig32))
 
 	// Truncated signature should verify correctly
-	err = VerifyURL(sig16, path, keyHex, saltHex, 16, true)
+	err = VerifyURLWithPolicy(sig16, path, keyHex, saltHex, 16, true, false)
 	assert.NoError(t, err)
 }
 
@@ -66,7 +66,7 @@ func TestVerifyTamperedPath(t *testing.T) {
 	require.NoError(t, err)
 
 	// Tamper with the path
-	err = VerifyURL(sig, "/api/v1/images/abc123?w=1600", keyHex, saltHex, 32, true)
+	err = VerifyURLWithPolicy(sig, "/api/v1/images/abc123?w=1600", keyHex, saltHex, 32, true, false)
 	assert.ErrorIs(t, err, ErrSignatureMismatch)
 }
 
@@ -75,7 +75,7 @@ func TestVerifyMissingSignatureNotRequired(t *testing.T) {
 	saltHex := "520f986b998545b4785e0defbc4f3c1203f22de2374a3d53"
 
 	// Empty signature when not required should pass
-	err := VerifyURL("", "/api/v1/images/abc123", keyHex, saltHex, 32, false)
+	err := VerifyURLWithPolicy("", "/api/v1/images/abc123", keyHex, saltHex, 32, false, false)
 	assert.NoError(t, err)
 }
 
@@ -83,7 +83,7 @@ func TestVerifyMissingSignatureRequired(t *testing.T) {
 	keyHex := "943b421c9eb07c830af81030552c86009268de4a7405e1de8b52c3c88f703df2"
 	saltHex := "520f986b998545b4785e0defbc4f3c1203f22de2374a3d53"
 
-	err := VerifyURL("", "/api/v1/images/abc123", keyHex, saltHex, 32, true)
+	err := VerifyURLWithPolicy("", "/api/v1/images/abc123", keyHex, saltHex, 32, true, false)
 	assert.ErrorIs(t, err, ErrMissingSignature)
 }
 
@@ -100,12 +100,12 @@ func TestSignVerifyCanonicalization(t *testing.T) {
 
 	// Verify with reordered query string.
 	reordered := "/api/v1/images/abc?format=webp&h=600&w=800"
-	err = VerifyURL(sig, reordered, keyHex, saltHex, 32, true)
+	err = VerifyURLWithPolicy(sig, reordered, keyHex, saltHex, 32, true, false)
 	assert.NoError(t, err)
 
 	// Also verify with a dangling "sig" in the path — Canonicalize must drop it.
 	withSig := "/api/v1/images/abc?h=600&w=800&format=webp&sig=junk"
-	err = VerifyURL(sig, withSig, keyHex, saltHex, 32, true)
+	err = VerifyURLWithPolicy(sig, withSig, keyHex, saltHex, 32, true, false)
 	assert.NoError(t, err)
 }
 
