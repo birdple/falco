@@ -1,12 +1,12 @@
 package jsonx_test
 
-// Test diferencial v1 vs v2.
+// Differential test, v1 vs v2.
 //
-// La regla es simple: todo lo que falco escribe con jsonx.Wire tiene que salir
-// byte por byte igual a lo que salía con encoding/json v1. Este archivo es el
-// que lo prueba, y es el que se rompe si alguien cambia un tag `omitempty` por
-// uno que diverge. Si un caso de aquí falla, NO se ajusta el test: se ajusta el
-// tag, porque los bytes son formato de datos persistido en Jay.
+// The rule is simple: everything falco writes with jsonx.Wire must come out
+// byte for byte identical to what encoding/json v1 produced. This file is what
+// proves it, and what breaks if someone swaps an `omitempty` tag for one that
+// diverges. If a case here fails, do NOT adjust the test: adjust the tag,
+// because the bytes are a data format persisted in Jay.
 
 import (
 	jsonv1 "encoding/json"
@@ -21,9 +21,9 @@ import (
 	"github.com/birdple/falco/internal/storage"
 )
 
-// corpusStruct cubre las formas donde v1 y v2 pueden divergir: números, bools,
-// punteros, interfaces, slices/mapas nil vs vacíos, strings con caracteres que
-// v1 escapa, y time.Time.
+// corpusStruct covers the shapes where v1 and v2 can diverge: numbers, bools,
+// pointers, interfaces, nil vs empty slices/maps, strings with characters that
+// v1 escapes, and time.Time.
 type corpusStruct struct {
 	Str        string            `json:"str"`
 	StrOmit    string            `json:"str_omit,omitempty"`
@@ -54,22 +54,22 @@ type innerStruct struct {
 	B int    `json:"b"`
 }
 
-// diffCases devuelve el corpus completo. Cada valor se marshalea con v1 y con
-// v2+Wire y los bytes tienen que coincidir exactamente.
+// diffCases returns the full corpus. Each value is marshalled with v1 and with
+// v2+Wire, and the bytes must match exactly.
 func diffCases() map[string]any {
 	stamp := time.Date(2026, 8, 21, 15, 4, 5, 123456789, time.UTC)
 	zeroCount := 0
 	tricky := "a&b <script> \"x\"    ñ 日本語 emoji 🐦"
 
 	return map[string]any{
-		// --- Corpus genérico -------------------------------------------------
+		// --- Generic corpus --------------------------------------------------
 		"corpus/zero": corpusStruct{},
-		"corpus/nil-y-vacio": corpusStruct{
+		"corpus/nil-and-empty": corpusStruct{
 			Slice: []string{}, SliceOmit: []string{},
 			Mapa: map[string]int{}, MapaOmit: map[string]int{},
 			Bytes: []byte{}, StringMap: map[string]string{},
 		},
-		"corpus/lleno": corpusStruct{
+		"corpus/full": corpusStruct{
 			Str: tricky, StrOmit: tricky,
 			Num: -7, NumOmit: 7, Flt: -1.5, FltOmit: 2.25,
 			Boolean: true, BoolOmit: true,
@@ -83,92 +83,92 @@ func diffCases() map[string]any {
 			Stamp:      stamp,
 			StampOmit:  stamp,
 			StringMap:  map[string]string{"<k>": "&v"},
-			NumPointer: new(0), // new(expr) de Go 1.27: puntero a un cero explícito
+			NumPointer: new(0), // Go 1.27 new(expr): pointer to an explicit zero
 		},
 
-		// --- Escalares sueltos -----------------------------------------------
-		"scalar/string-vacio": "",
+		// --- Standalone scalars ----------------------------------------------
+		"scalar/string-empty": "",
 		"scalar/string-html":  tricky,
 		"scalar/nil-slice":    []string(nil),
-		"scalar/slice-vacio":  []string{},
+		"scalar/slice-empty":  []string{},
 		"scalar/nil-map":      map[string]int(nil),
-		"scalar/map-vacio":    map[string]int{},
+		"scalar/map-empty":    map[string]int{},
 		"scalar/nil-bytes":    []byte(nil),
-		"scalar/bytes-vacio":  []byte{},
-		"scalar/time-cero":    time.Time{},
+		"scalar/bytes-empty":  []byte{},
+		"scalar/time-zero":    time.Time{},
 		"scalar/time":         stamp,
 		"scalar/map-any": map[string]any{
 			"n": nil, "s": tricky, "i": 0, "b": false,
 			"sl": []any{}, "m": map[string]any{},
 		},
 
-		// --- Tipos reales de falco -------------------------------------------
-		"falco/ImageMetadata-cero": storage.ImageMetadata{},
+		// --- Real falco types ------------------------------------------------
+		"falco/ImageMetadata-zero": storage.ImageMetadata{},
 		"falco/ImageMetadata-ptr":  &storage.ImageMetadata{},
-		"falco/ImageMetadata-lleno": &storage.ImageMetadata{
+		"falco/ImageMetadata-full": &storage.ImageMetadata{
 			ID: "img_1", StorageKey: "k/<a>&b", OriginalName: tricky,
 			Format: "webp", Size: 1024, Width: 800, Height: 600,
 			ContentType: "image/webp", MaxAge: 31536000, SMaxAge: 0,
 			CreatedAt: stamp, ETag: `"abc"`, OwnerID: "owner-1",
 		},
-		"falco/StorageStats-cero":  storage.StorageStats{},
-		"falco/StorageStats-lleno": storage.StorageStats{TotalImages: 3, TotalSize: 9, FreeSpace: 0},
+		"falco/StorageStats-zero": storage.StorageStats{},
+		"falco/StorageStats-full": storage.StorageStats{TotalImages: 3, TotalSize: 9, FreeSpace: 0},
 
-		"falco/UploadResponse-cero": types.UploadResponse{},
-		"falco/UploadResponse-lleno": types.UploadResponse{
+		"falco/UploadResponse-zero": types.UploadResponse{},
+		"falco/UploadResponse-full": types.UploadResponse{
 			Success: true,
 			Data: types.UploadData{
 				ID: "i", URL: "https://x/?a=1&b=2", OriginalName: tricky,
 				Format: "webp", Size: 0, Dimensions: types.Dimensions{}, CreatedAt: stamp,
 			},
 		},
-		"falco/ErrorResponse-cero":   types.ErrorResponse{},
-		"falco/ErrorResponse-lleno":  types.ErrorResponse{Error: &types.APIError{Code: "C", Message: tricky}},
-		"falco/UpdateResponse-cero":  types.UpdateResponse{},
-		"falco/UpdateResponse-vacio": types.UpdateResponse{Updated: []types.UpdateResult{}},
-		"falco/UpdateResponse-lleno": types.UpdateResponse{
+		"falco/ErrorResponse-zero":   types.ErrorResponse{},
+		"falco/ErrorResponse-full":   types.ErrorResponse{Error: &types.APIError{Code: "C", Message: tricky}},
+		"falco/UpdateResponse-zero":  types.UpdateResponse{},
+		"falco/UpdateResponse-empty": types.UpdateResponse{Updated: []types.UpdateResult{}},
+		"falco/UpdateResponse-full": types.UpdateResponse{
 			Success: true,
 			Updated: []types.UpdateResult{{Key: "<k>", Quality: 0, SavedPercent: 0}},
 		},
-		"falco/ListResponse-cero":  types.ListResponse{},
-		"falco/ListResponse-vacio": types.ListResponse{Files: []types.ListItem{}, Directories: []types.DirectoryInfo{}},
-		"falco/ListResponse-lleno": types.ListResponse{
+		"falco/ListResponse-zero":  types.ListResponse{},
+		"falco/ListResponse-empty": types.ListResponse{Files: []types.ListItem{}, Directories: []types.DirectoryInfo{}},
+		"falco/ListResponse-full": types.ListResponse{
 			Success: true, Prefix: "p/&", Count: 0,
 			Files:       []types.ListItem{{Key: "<k>", Size: 0, Modified: stamp}},
 			Directories: []types.DirectoryInfo{{Name: "d", Path: "/d", FileCount: &zeroCount}},
 		},
 		// Paginated listings carry no file count: the pointer is nil and has to
 		// serialise as null in both v1 and v2, not vanish or turn into a 0.
-		"falco/ListResponse-paginado": types.ListResponse{
+		"falco/ListResponse-paginated": types.ListResponse{
 			Success: true, Prefix: "p/", Count: 1, Truncated: true, NextCursor: "p/a&b",
 			Files:       []types.ListItem{{Key: "a", Size: 1, Modified: stamp, ContentType: "image/webp", ETag: "e"}},
 			Directories: []types.DirectoryInfo{{Name: "d", Path: "p/d", FileCount: nil}},
 		},
-		"falco/DeleteResponse-cero":  types.DeleteResponse{},
-		"falco/DeleteResponse-vacio": types.DeleteResponse{Deleted: []string{}, Failed: []string{}},
-		"falco/DeleteResponse-lleno": types.DeleteResponse{
+		"falco/DeleteResponse-zero":  types.DeleteResponse{},
+		"falco/DeleteResponse-empty": types.DeleteResponse{Deleted: []string{}, Failed: []string{}},
+		"falco/DeleteResponse-full": types.DeleteResponse{
 			Success: false, Deleted: []string{"a"}, Failed: []string{"<b>"},
 			Count: 0, Truncated: false,
 		},
-		"falco/DeleteResponse-truncado": types.DeleteResponse{Truncated: true, Count: 2},
+		"falco/DeleteResponse-truncated": types.DeleteResponse{Truncated: true, Count: 2},
 
-		"falco/UpdateRequest-cero":  types.UpdateRequest{},
-		"falco/UpdateRequest-lleno": types.UpdateRequest{URL: "https://x/?a=1&b=2", Quality: 0, Format: "webp"},
-		"falco/DeleteRequest-cero":  types.DeleteRequest{},
-		"falco/DeleteRequest-vacio": types.DeleteRequest{Keys: []string{}},
+		"falco/UpdateRequest-zero":  types.UpdateRequest{},
+		"falco/UpdateRequest-full":  types.UpdateRequest{URL: "https://x/?a=1&b=2", Quality: 0, Format: "webp"},
+		"falco/DeleteRequest-zero":  types.DeleteRequest{},
+		"falco/DeleteRequest-empty": types.DeleteRequest{Keys: []string{}},
 
-		"falco/SignURLRequest-cero":   handlers.SignURLRequest{},
-		"falco/SignURLRequest-lleno":  handlers.SignURLRequest{Path: "/api/v1/images/x?w=1&h=2", ExpiresIn: 0, ExpiresAt: 0},
-		"falco/SignURLResponse-cero":  handlers.SignURLResponse{},
-		"falco/SignURLResponse-lleno": handlers.SignURLResponse{SignedURL: "https://x/?sig=a&exp=1", Signature: "s", ExpiresAt: 0},
+		"falco/SignURLRequest-zero":  handlers.SignURLRequest{},
+		"falco/SignURLRequest-full":  handlers.SignURLRequest{Path: "/api/v1/images/x?w=1&h=2", ExpiresIn: 0, ExpiresAt: 0},
+		"falco/SignURLResponse-zero": handlers.SignURLResponse{},
+		"falco/SignURLResponse-full": handlers.SignURLResponse{SignedURL: "https://x/?sig=a&exp=1", Signature: "s", ExpiresAt: 0},
 
-		"falco/ProcessingParams-cero": processor.ProcessingParams{},
-		"falco/ProcessingParams-lleno": processor.ProcessingParams{
+		"falco/ProcessingParams-zero": processor.ProcessingParams{},
+		"falco/ProcessingParams-full": processor.ProcessingParams{
 			Width: 100, Height: 0, Quality: 0, Format: "webp",
 			Rotate: 0, Brightness: 0, TrimEnabled: false, SkipAutoOrient: true,
-			// WatermarkImage lleva `json:"-"`: acá se comprueba que ni v1 ni
-			// v2 lo emiten, que es lo que impide que los bytes del overlay
-			// terminen en un log o en una respuesta.
+			// WatermarkImage carries `json:"-"`: this checks that neither v1
+			// nor v2 emits it, which is what keeps the overlay bytes out of a
+			// log or a response.
 			WatermarkSource: "", WatermarkImage: []byte{1, 2, 3},
 		},
 	}
@@ -179,23 +179,23 @@ func TestWireMatchesV1(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			v1b, err1 := jsonv1.Marshal(val)
 			if err1 != nil {
-				t.Fatalf("v1 Marshal falló: %v", err1)
+				t.Fatalf("v1 Marshal failed: %v", err1)
 			}
 			v2b, err2 := jsonv2.Marshal(val, jsonx.Wire)
 			if err2 != nil {
-				t.Fatalf("v2 Marshal falló: %v", err2)
+				t.Fatalf("v2 Marshal failed: %v", err2)
 			}
 			if string(v1b) != string(v2b) {
-				t.Fatalf("los bytes divergen\n v1: %s\n v2: %s", v1b, v2b)
+				t.Fatalf("bytes diverge\n v1: %s\n v2: %s", v1b, v2b)
 			}
 		})
 	}
 }
 
-// TestWireRoundTripsImageMetadata cubre el camino de vuelta: lo que v1 escribió
-// alguna vez (y sigue guardado en Jay) tiene que poder leerse con v2, y lo que
-// v2 escribe tiene que poder leerse con v1. ImageMetadata es el caso delicado
-// porque tiene MarshalJSON/UnmarshalJSON propios con el truco de `type Alias`.
+// TestWireRoundTripsImageMetadata covers the way back: whatever v1 ever wrote
+// (and is still stored in Jay) must be readable with v2, and whatever v2 writes
+// must be readable with v1. ImageMetadata is the delicate case because it has
+// its own MarshalJSON/UnmarshalJSON using the `type Alias` trick.
 func TestWireRoundTripsImageMetadata(t *testing.T) {
 	orig := storage.ImageMetadata{
 		ID: "img_1", StorageKey: "k/<a>&b", OriginalName: "a&b <x> ñ 🐦",
@@ -214,24 +214,24 @@ func TestWireRoundTripsImageMetadata(t *testing.T) {
 		t.Fatalf("v2 Marshal: %v", err)
 	}
 	if string(v1b) != string(v2b) {
-		t.Fatalf("los bytes divergen\n v1: %s\n v2: %s", v1b, v2b)
+		t.Fatalf("bytes diverge\n v1: %s\n v2: %s", v1b, v2b)
 	}
 
-	// v2 lee lo que escribió v1.
+	// v2 reads what v1 wrote.
 	var fromV1 storage.ImageMetadata
 	if err := jsonv2.Unmarshal(v1b, &fromV1, jsonx.Wire); err != nil {
-		t.Fatalf("v2 Unmarshal de bytes v1: %v", err)
+		t.Fatalf("v2 Unmarshal of v1 bytes: %v", err)
 	}
 	if fromV1 != orig {
-		t.Fatalf("round-trip v1→v2 perdió datos\n esperado: %+v\n obtenido: %+v", orig, fromV1)
+		t.Fatalf("round-trip v1→v2 lost data\n want: %+v\n got: %+v", orig, fromV1)
 	}
 
-	// v1 lee lo que escribió v2.
+	// v1 reads what v2 wrote.
 	var fromV2 storage.ImageMetadata
 	if err := jsonv1.Unmarshal(v2b, &fromV2); err != nil {
-		t.Fatalf("v1 Unmarshal de bytes v2: %v", err)
+		t.Fatalf("v1 Unmarshal of v2 bytes: %v", err)
 	}
 	if fromV2 != orig {
-		t.Fatalf("round-trip v2→v1 perdió datos\n esperado: %+v\n obtenido: %+v", orig, fromV2)
+		t.Fatalf("round-trip v2→v1 lost data\n want: %+v\n got: %+v", orig, fromV2)
 	}
 }

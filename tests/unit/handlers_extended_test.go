@@ -708,30 +708,30 @@ func TestHandleUpload_CustomID(t *testing.T) {
 		wantKey string
 	}{
 		{
-			name:    "id del query",
-			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload?id=desde-query", "") },
-			wantKey: "desde-query",
+			name:    "id from the query",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload?id=from-query", "") },
+			wantKey: "from-query",
 		},
 		{
-			name:    "id del multipart",
-			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "desde-form") },
-			wantKey: "desde-form",
+			name:    "id from the multipart",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "from-form") },
+			wantKey: "from-form",
 		},
 		{
 			// With both present the query one wins, and that is not falco's
 			// decision: r.FormValue reads r.Form, which net/http builds with
 			// the query values first and the multipart ones after.
-			name: "con ambos presentes gana el del query",
+			name: "with both present the query one wins",
 			request: func(t *testing.T) *http.Request {
-				return newMultipartReq(t, "/upload?id=desde-query", "desde-form")
+				return newMultipartReq(t, "/upload?id=from-query", "from-form")
 			},
-			wantKey: "desde-query",
+			wantKey: "from-query",
 		},
 		{
-			// Un id de form inválido no es un 400: se ignora y el id sale del
-			// hash del contenido, igual que si no se hubiera mandado.
-			name:    "id de multipart inválido cae al hash del contenido",
-			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "no vale/esto") },
+			// An invalid form id is not a 400: it is ignored and the id comes
+			// from the content hash, as if it had never been sent.
+			name:    "invalid multipart id falls back to the content hash",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "not valid/this") },
 			wantKey: hashutil.GenerateImageIDFromData(imageData),
 		},
 	}

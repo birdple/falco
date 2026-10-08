@@ -366,10 +366,10 @@ func TestJayStorage_ContextReachesClient(t *testing.T) {
 }
 
 func TestJayStorage_GetStats_HTTP(t *testing.T) {
-	// NewTestServer (Go 1.27): limpieza automática y el test falla si el
-	// handler paniquea. Start() lo deja en loopback porque GetStats arma su
-	// propio http.Client contra adminAddr y no podría hablar con la red
-	// in-memory.
+	// NewTestServer (Go 1.27): automatic cleanup, and the test fails if the
+	// handler panics. Start() keeps it on loopback because GetStats builds its
+	// own http.Client against adminAddr and could not talk to the in-memory
+	// network.
 	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/_stats/falco-images" {
 			http.Error(w, "wrong path: "+r.URL.Path, http.StatusNotFound)

@@ -23,11 +23,11 @@ func newBandedImage(t *testing.T, width, height int, top, bottom color.RGBA) *vi
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, src); err != nil {
-		t.Fatalf("no se pudo codificar el png de prueba: %v", err)
+		t.Fatalf("could not encode the test png: %v", err)
 	}
 	img, err := vips.NewImageFromBuffer(buf.Bytes(), nil)
 	if err != nil {
-		t.Fatalf("no se pudo cargar la imagen de prueba: %v", err)
+		t.Fatalf("could not load the test image: %v", err)
 	}
 	return img
 }
@@ -120,7 +120,7 @@ func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 	hasField := func(data []byte) bool {
 		img, err := vips.NewImageFromBuffer(data, nil)
 		if err != nil {
-			t.Fatalf("no se pudo releer la imagen codificada: %v", err)
+			t.Fatalf("could not reload the encoded image: %v", err)
 		}
 		defer img.Close()
 		_, err = img.GetString(field)
