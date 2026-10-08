@@ -24,6 +24,7 @@ import (
 	"github.com/birdple/falco/internal/pkg/circuitbreaker"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 	"github.com/birdple/falco/internal/telemetry"
@@ -180,7 +181,6 @@ func logConfiguration(cfg *config.Config) {
 		Int("rate_limit_rpm", cfg.Security.RateLimit.RequestsPerMinute).
 		Bool("hmac_required", cfg.Security.HMACRequired).
 		Bool("metrics_enabled", cfg.Development.EnableMetrics).
-		Bool("debug", cfg.Development.Debug).
 		Msg("Configuration loaded")
 }
 
@@ -403,6 +403,11 @@ func initializeStorage(cfg *config.Config) (*storage.Registry, error) {
 				Str("from", from.String()).
 				Str("to", to.String()).
 				Msg("Circuit breaker state change")
+			open := 0.0
+			if to == gobreaker.StateOpen {
+				open = 1
+			}
+			metrics.Default().StorageCircuitBreakerOpen.WithLabelValues(cbName).Set(open)
 		}
 		finalBackends[name] = circuitbreaker.NewStorageBackend(primary, cbSettings)
 	}

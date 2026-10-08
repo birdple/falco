@@ -69,7 +69,7 @@ func (h *Handler) buildExplorer(r *http.Request) (views.ExplorerData, error) {
 
 	names := h.accessibleBuckets(sess.Scope)
 	data := views.ExplorerData{
-		Page:        h.pageData(r, sess, "Storage", "explorer", h.bucketItems(r.Context(), names, bucket)),
+		Page:        h.pageData(r, sess, "Storage", "explorer", h.bucketItems(r.Context(), names)),
 		Bucket:      bucket,
 		BucketType:  h.bucketType(bucket),
 		Prefix:      prefix,
@@ -171,7 +171,7 @@ func (h *Handler) decorate(items []storage.ListResult, bucket string) []views.Ob
 // bucketItems builds the sidebar, asking every bucket for its stats
 // concurrently: in series, N unreachable buckets add up to N client timeouts
 // on every page view.
-func (h *Handler) bucketItems(ctx context.Context, names []string, current string) []views.BucketItem {
+func (h *Handler) bucketItems(ctx context.Context, names []string) []views.BucketItem {
 	items := make([]views.BucketItem, len(names))
 	defaultName := h.cfg.GetDefaultBucketName()
 
