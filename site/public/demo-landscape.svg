@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a1d14"/>
+      <stop offset="0.35" stop-color="#6b3a1a"/>
+      <stop offset="0.62" stop-color="#d9782f"/>
+      <stop offset="0.78" stop-color="#f3b866"/>
+      <stop offset="1" stop-color="#f7d79c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.62" cy="0.62" r="0.45">
+      <stop offset="0" stop-color="#fff1cf" stop-opacity="0.85"/>
+      <stop offset="0.4" stop-color="#ffd38a" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#ffd38a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#sky)"/>
+  <rect width="1600" height="1000" fill="url(#glow)"/>
+  <circle cx="990" cy="640" r="92" fill="#fff4dc"/>
+  <path d="M0 640 L140 560 L260 610 L420 500 L560 590 L700 540 L860 620 L1010 530 L1150 600 L1300 520 L1460 590 L1600 540 L1600 1000 L0 1000 Z" fill="#b8612a" opacity="0.75"/>
+  <path d="M0 720 L180 620 L330 690 L480 600 L640 700 L800 640 L960 720 L1120 630 L1280 710 L1440 640 L1600 700 L1600 1000 L0 1000 Z" fill="#7c3f1c"/>
+  <path d="M0 800 L220 700 L380 770 L560 690 L760 790 L940 720 L1120 800 L1320 720 L1600 790 L1600 1000 L0 1000 Z" fill="#4a2814"/>
+  <path d="M0 880 L260 800 L520 860 L780 800 L1040 870 L1300 810 L1600 870 L1600 1000 L0 1000 Z" fill="#2a1a10"/>
+  <g fill="#1b1714" transform="translate(990 390) scale(1.15)">
+    <path d="M-100,-10 C-70,-30 -35,-28 -12,-6 L-6,-12 L0,-16 L6,-12 L12,-6 C35,-28 70,-30 100,-10 C70,-18 40,-10 14,6 L8,20 L0,32 L-8,20 L-14,6 C-40,-10 -70,-18 -100,-10 Z"/>
+  </g>
+  <g fill="#3a2414" opacity="0.7">
+    <path transform="translate(380 260) scale(0.25)" d="M-100,-10 C-70,-30 -35,-28 -12,-6 L0,-16 L12,-6 C35,-28 70,-30 100,-10 C70,-18 40,-10 14,6 L0,32 L-14,6 C-40,-10 -70,-18 -100,-10 Z"/>
+    <path transform="translate(460 300) scale(0.18)" d="M-100,-10 C-70,-30 -35,-28 -12,-6 L0,-16 L12,-6 C35,-28 70,-30 100,-10 C70,-18 40,-10 14,6 L0,32 L-14,6 C-40,-10 -70,-18 -100,-10 Z"/>
+  </g>
+</svg>
