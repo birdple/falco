@@ -19,10 +19,12 @@ usa y que no se borra.
 ## Arrancar, probar, revisar
 
 ```bash
-make check            # gate de commit: fmt + vet + lint + test + ui-check + go build ./...
-make test             # go test ./...
+make check            # gate de commit: fmt + vet + lint + test + ui-check + mocks-check + go build ./...
+make test             # go test -race ./...
 make lint             # golangci-lint, config en .golangci.yml
 make ui               # regenera el panel: templ + Tailwind
+make mocks            # regenera tests/mocks con el mockery fijado en go.mod
+make help             # lista los targets
 go run ./cmd/server   # exige libvips en el host
 ```
 
@@ -30,9 +32,10 @@ go run ./cmd/server   # exige libvips en el host
 de `input.css`; ambos están versionados, así que editar una plantilla sin correr
 `make ui` no cambia nada de lo que sirve el binario. `make ui-check` lo detecta y
 está en `make check` y en el job de lint del CI. El compilador de Tailwind se
-descarga a `bin/` con la versión fijada en el Makefile (`bin/` está en
-`.gitignore`), y `templ` va como `tool` en `go.mod` para que no vuelva a
-divergir de la versión del módulo.
+descarga a `bin/` con la versión fijada en el Makefile y se verifica contra el
+SHA-256 publicado (`bin/` está en `.gitignore`); `templ` y `mockery` van como
+`tool` en `go.mod` para que no vuelvan a divergir. `make mocks-check` es el
+equivalente de `ui-check` para los mocks.
 
 libvips es un requisito del host, no algo opcional: sin él ni siquiera compila
 (`brew install vips` en macOS, `apt install libvips-dev` en Linux). El
@@ -75,24 +78,44 @@ Las que **no** pasan por ese mapa y se leen con `os.Getenv`:
 | `PROXY_ALLOWED_HOSTS` | `internal/api/handlers/proxy.go` | cae a un allowlist compilado |
 | `WATERMARK_ALLOWED_HOSTS` | `internal/api/handlers/watermark_source.go` | `?wm_url=` responde 403. A propósito no hay fallback: abrirlo convertiría una URL de imagen en un fetch externo arbitrario |
 | `PROXY_MAX_WIDTH`, `PROXY_DEFAULT_QUALITY` | `internal/api/handlers/proxy.go` | caen a sus constantes |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_DEPLOYMENT_ENV` | `internal/telemetry` | telemetría apagada, el arranque sigue |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_DEPLOYMENT_ENV` | `internal/telemetry` | telemetría apagada de verdad (`Init` devuelve un no-op), el arranque sigue |
+| `VIPS_BLOCK_UNTRUSTED` | libvips, al arrancar | `startVips()` la pone en `1`: libvips rechaza los loaders no confiables |
 
-`API_KEY_REQUIRED=true` **obliga** a `HMAC_REQUIRED=true`: `validateSecurity` se
-niega a arrancar si no, porque un `<img>` no puede llevar una API key y la ruta
-de delivery quedaría sin ninguna protección.
+**Un valor que no parsea aborta el arranque.** `API_KEY_REQUIRED=yes` o
+`RATE_LIMIT_RPM=1k` son un error de `Load`, nunca un valor descartado en
+silencio: antes, el primero arrancaba la API abierta.
+
+`API_KEY_REQUIRED=true` **obliga** a `HMAC_REQUIRED=true` y viceversa:
+`validateSecurity` se niega a arrancar con uno sin el otro. Sin HMAC, un `<img>`
+no puede llevar una API key y delivery quedaría sin protección; sin API key,
+`/sign` firmaría para cualquiera. El validador además exige key y salt HMAC en
+hex, `HMAC_SIGNATURE_SIZE` en 0 o 16–32, y rechaza keys scoped que resuelven a
+ningún bucket, que se repiten entre scopes o que son la admin. Las keys de menos
+de 24 caracteres sólo se avisan en el log, para no tumbar un deploy existente.
 
 ## Arquitectura
 
 Las rutas se montan en `internal/api/server.go`; esa función es el inventario.
 Lo que hay que saber antes de tocarla:
 
-- `/api/v1/upload|update|list|delete|sign` van dentro del grupo autenticado
-  (scoped keys si hay alguna configurada, si no la `API_KEY` única).
+- `/api/v1/upload|update|list|delete|sign|meta|stats|cache` van dentro del
+  grupo autenticado (scoped keys si hay alguna configurada, si no la `API_KEY`
+  única).
 - `/api/v1/images/*` (delivery) y `/api/v1/proxy/*` quedan **fuera** de ese
-  grupo a propósito y se autorizan solas: firma HMAC, o API key + scope cuando
-  `HMAC_REQUIRED=false`. No las muevas al grupo autenticado.
-- `/metrics` y `/debug/pprof/*` sólo se montan con `ENABLE_METRICS` /
-  `ENABLE_PPROF`, y detrás de la API key.
+  grupo a propósito y se autorizan solas con `authorizeDelivery`: firma HMAC
+  cuando `HMAC_REQUIRED=true`, abiertas cuando auth está apagada. No hay régimen
+  "API key en delivery": el validador lo hace imposible. No las muevas al grupo
+  autenticado.
+- **Qué bucket toca un request lo decide `authorizeBucket` (`base.go`), y sólo
+  esa función.** Canonicaliza aliases y chequea el scope; un request sin `?b=` ni
+  `?storage=` se chequea contra el bucket por defecto. `/sign` la usa también,
+  así que una URL firmada sólo puede nombrar un bucket que su firmante podía
+  tocar. Un scope con el set de buckets vacío no concede nada.
+- `/metrics`, `/debug/pprof/*` y `/health/ready` sólo se montan detrás de la
+  API key: con `API_KEY_REQUIRED=false`, metrics y pprof directamente no se
+  montan (se loguea un error). Los orquestadores consultan `/health`.
+- Todo error de la API —handlers y middleware— es JSON
+  `{"success":false,"error":{"code","message"}}` con `Cache-Control: no-store`.
 
 ## El panel
 
@@ -108,8 +131,16 @@ de formatos y la invalidación de cache aplican igual que a cualquier cliente, y
 el panel no puede hacer nada que la API rechazaría.
 
 **La API key nunca llega al navegador.** El login la cambia por una cookie de
-sesión opaca y HttpOnly; la key queda en el `SessionStore` en memoria. Las
-mutaciones exigen el token CSRF de la sesión.
+sesión opaca y HttpOnly; la key queda en el `SessionStore` en memoria (máximo 20
+sesiones por key). Las mutaciones exigen el token CSRF de la sesión; login,
+logout y theme exigen mismo origen, y `/ui/auth` sólo acepta JSON y frena 10
+fallos por cliente cada 15 min. `COOKIE_SECURE=true` fuerza `Secure` detrás de
+un proxy TLS que falco no ve.
+
+**Nada de `Sprintf` para armar expresiones Alpine.** Un `x-data`/`@click` armado
+con `fmt.Sprintf("f('%s')")` es un XSS: templ escapa el atributo, pero el
+navegador lo decodifica antes de que Alpine lo evalúe. Los argumentos van con
+`jsCall` (`views/js.go`), que los codifica como literales JSON.
 
 **Las miniaturas se firman en el servidor** (`signPath`). Sin eso, con
 `HMAC_REQUIRED=true` —que es lo que corre el stack— cada miniatura es un 403.
@@ -126,17 +157,30 @@ tal en vez de fingir paginación.
 
 **El upload no guarda el original.** `prepareForStorage` corre `Process` sobre
 lo subido y almacena el resultado reencodado a `DEFAULT_FORMAT` (webp) salvo que
-el request pida `?f=`. SVG, HTML y XML se rechazan con 415; el resto de content
-types que no son imagen pasan tal cual, sin tocar. El id sale del hash del
-contenido crudo, así que subir dos veces lo mismo cae en la misma clave y jay,
-que es idempotente por clave, lo trata como no-op.
+el request pida `?f=`, **sin metadatos y auto-orientado**: `ProcessingParams`
+tiene `KeepMetadata`/`SkipAutoOrient`, así que el valor cero es el seguro y
+quien arma los params a mano no guarda el GPS de la cámara por olvidarse un
+campo. SVG, HTML y XML se rechazan con 415; el resto de content types que no
+son imagen pasan tal cual, sin tocar. El id sale del hash del contenido crudo,
+así que subir dos veces lo mismo cae en la misma clave y jay, que es idempotente
+por clave, lo trata como no-op. Una key scoped no puede pisar un objeto de otro
+owner: con `?id=` es un 409, con id de hash se devuelve el existente intacto.
 
-**Delivery tiene dos caminos.** Sin transformaciones ni formato, se hace stream
-directo desde jay (`deliverRaw`) y no se cachea: no hay CPU que compartir y el
-streaming mantiene la memoria plana. Con transformaciones o formato, la clave de
+**Delivery tiene dos caminos.** Sin transformaciones (`deliverRaw`), se hace
+stream directo desde jay y no se cachea: no hay CPU que compartir y el streaming
+mantiene la memoria plana. Si sólo se pide formato (`/images/abc.webp`) y el
+guardado ya coincide, también es stream; si hay que convertir, se mira la cache
+antes y se cachea después. Con transformaciones (`deliverProcessed`), la clave de
 cache es computable sólo del query, así que se responde desde cache antes de
-tocar jay; en miss, un `singleflight` comparte fetch + decode + encode entre
-todos los requests concurrentes de la misma clave.
+tocar jay; en miss, un `singleflight` (`DoChan`, el que cuelga deja de esperar)
+comparte fetch + decode + encode entre todos los requests de la misma clave.
+
+**La clave de cache incluye el backend.** `backendNamespace` + storage key
+(`cacheObjectKey`) es el objeto; `generateCacheKey` le suma cada parámetro que
+cambia los bytes, con floats a precisión completa y los campos libres hasheados
+o normalizados. Sin el bucket, `avatar` en A y en B compartían variantes.
+`cachekey_test.go` recorre cada campo de `ProcessingParams`: uno nuevo hay que
+clasificarlo ahí o el test falla.
 
 **El contrato de query params es `parseDeliveryParams`.** Dos clases, y la
 diferencia es deliberada: lo que cambia geometría o encoding (`w`, `h`, `q`,
@@ -144,7 +188,9 @@ diferencia es deliberada: lo que cambia geometría o encoding (`w`, `h`, `q`,
 otra imagen sería peor que fallar—; lo cosmético (`maxage`, `smaxage`,
 `gravity`, `pad_*`, `trim`, `orient`, `meta`, y todo el grupo de color:
 `brightness`, `contrast`, `gamma`, `saturation`, `hue`, `blur`, `sharpen`) cae a
-su default. Casi todos tienen alias largo (`w|width`, `q|quality`, `b|bucket`,
+su default. NaN e Inf cuentan como malformados (pasan cualquier comparación de
+rango). `pad_*` tiene tope por lado y el processor rechaza entradas y salidas de
+más de `MAX_MEGAPIXELS`. Casi todos tienen alias largo (`w|width`, `q|quality`, `b|bucket`,
 `d|dir|directory`) y la extensión del path (`/images/abc.webp`) actúa como
 default de formato, que es lo que permite cachear por extensión en un CDN.
 
@@ -159,10 +205,16 @@ imagen, así que un scope no se puede saltar pidiendo la marca de otro bucket.
 **La cache es sólo de transformadas y vive en RAM.** Un reinicio la pierde
 entera y el siguiente request paga jay + decode + encode; nunca pierde datos,
 porque los originales están en jay, pero un redeploy en hora pico se nota.
-`CACHE_SIZE_MB` es el techo (256 por default) y en `0` desactiva la cache por
-completo. `CACHE_TTL_HOURS` es el TTL por entrada y `CACHE_CLEANUP_INTERVAL` la
+`CACHE_SIZE_MB` es el techo (256 por default) y en `0` desactiva la cache en
+proceso. `CACHE_TTL_HOURS` es el TTL por entrada y `CACHE_CLEANUP_INTERVAL` la
 frecuencia del barrido: son knobs distintos y confundirlos deja
-`CACHE_TTL_HOURS` como no-op.
+`CACHE_TTL_HOURS` como no-op. Delete/update/upload invalidan en una sola pasada
+(`InvalidateCache`), y un fill que corre contra una invalidación en el último
+minuto no se cachea. Con varias réplicas y cache en proceso, la invalidación
+sólo llega a la que atendió el request: para eso está Redis.
+
+**El proxy se autoriza igual que delivery** (firma HMAC). Cualquier key
+autenticada puede firmar un path de proxy, porque no lee ningún bucket.
 
 ## Quién consume falco
 
@@ -172,7 +224,9 @@ birdple_app y colibri. La firma HMAC está reimplementada en TypeScript en
 `birdple-api/src/modules/images/images.sign.ts`, con tests de paridad byte a
 byte contra `internal/security/signature.go`. **Cambiar la canonicalización de
 la firma rompe los tres a la vez**, y el síntoma es un 403 `INVALID_SIGNATURE`
-en producción, no un test rojo aquí.
+en producción. `internal/security/golden_test.go` congela los bytes con
+vectores fijos: si falla, cambió el esquema, y las copias TypeScript tienen que
+cambiar en el mismo release.
 
 ## JSON: `encoding/json/v2`
 
@@ -193,12 +247,17 @@ byte. Si falla, se ajusta el tag, nunca el test.
 
 ## Reglas del repo
 
-- Lo que se publica va en **inglés** (el proyecto es público): comentarios del
-  código, `README.md`, `site/` y mensajes de commit. Por eso `misspell` está en
-  el gate de lint. Es la excepción local a la regla de idioma del monorepo;
-  este `CLAUDE.md` sigue en español.
-- Los mocks de `tests/mocks/` los genera mockery a partir de `.mockery.yml`; no
-  los edites a mano.
+- Lo que se publica va en **inglés** (el proyecto es público): comentarios y
+  tests del código, workflows, scripts, `README.md`, `site/` y mensajes de
+  commit. Por eso `misspell` está en el gate de lint, tests incluidos. Es la
+  excepción local a la regla de idioma del monorepo; este `CLAUDE.md` sigue en
+  español, y también `internal/jsonx/jsonx.go`, que se espeja byte a byte entre
+  cinco repos.
+- Los mocks de `tests/mocks/` los genera mockery (`make mocks`) a partir de
+  `.mockery.yml`; no los edites a mano.
+- Las actions de los workflows van fijadas por SHA (con el tag en un
+  comentario) y las imágenes base del Dockerfile por digest; Dependabot propone
+  los bumps.
 - Después de un tag nuevo de jay:
   `go get -u github.com/ivangsm/jay@latest && go mod tidy` y `make check`.
 - No comprimas `image/*`: la lista de tipos de `middleware.Compress` en
@@ -212,12 +271,23 @@ byte. Si falla, se ajusta el tag, nunca el test.
 - **`TRUSTED_PROXIES` vacío = sólo loopback.** `X-Forwarded-For` y `X-Real-IP`
   se ignoran salvo desde los CIDRs listados: fail-closed. Detrás de
   Nginx/Traefik/ELB hay que listar la subred del proxy o el rate limit por IP
-  cuenta al proxy, no al cliente.
+  cuenta al proxy, no al cliente. La IP del cliente es la entrada de XFF más a
+  la DERECHA que no es un proxy confiable (`httputil.ClientIP`): la de la
+  izquierda la escribe el cliente. El rate limiter agrupa IPv6 por /64.
+- **El circuit breaker no cuenta lo que no es culpa del backend:** not found,
+  listing demasiado grande, y el caller que se cansó (`context.Canceled`, o su
+  propio deadline). Abierto, devuelve `ErrStorageUnavailable` y delivery
+  contesta 503.
+- **Shutdown: HTTP primero, recursos después, telemetría al final** con su
+  propio presupuesto de 5s. `SERVER_SHUTDOWN_TIMEOUT` tiene que quedar por
+  debajo del grace period del orquestador.
 - **`robots.txt` prohíbe todo.** falco es origen de un CDN de imágenes, no
   contenido indexable.
-- **`goroutineleak` en pprof.** Es el perfil que atrapa las goroutines
-  fire-and-forget de `ReplicatedStorage`, que arrancan con `context.Background()`
-  y a las que no espera ningún `WaitGroup`.
+- **`goroutineleak` en pprof.** Es el perfil que atrapa goroutines que nadie
+  espera. Las réplicas async de `ReplicatedStorage` ya no lo son: van acotadas
+  (64 en vuelo, las que sobran se cuentan en
+  `falco_storage_replications_dropped_total`) y `Registry.CloseAll` las drena
+  antes de cerrar cualquier backend.
 
 ## Trampas conocidas
 
@@ -227,10 +297,10 @@ byte. Si falla, se ajusta el tag, nunca el test.
   levantar un falco filesystem en 8080 creyendo que es el del stack.
 - **Sin `API_KEY_REQUIRED` ni `HMAC_REQUIRED`, la API arranca abierta.** Ninguna
   de las dos tiene default en viper, así que ausente vale `false` y la
-  validación no las exige. Esto contradice la regla del raíz sobre features
-  opcionales sin configurar; en el stack lo tapa el docker-compose, que pone
-  ambas en `"true"`. **El panel no cae en esto**: sin ninguna key configurada
-  se niega a servir en vez de abrirse con scope admin.
+  validación no las exige (sí exige que vayan juntas). Esto contradice la regla
+  del raíz sobre features opcionales sin configurar; en el stack lo tapa el
+  docker-compose, que pone ambas en `"true"`. **El panel no cae en esto**: sin
+  ninguna key configurada se niega a servir en vez de abrirse con scope admin.
 - **Un `?b=` que no se puede honrar es un `400 UNKNOWN_BUCKET`, y el
   puente son los alias.** El orden de resolución es: nombre del registry (o
   alias declarado) → cambio real de bucket remoto (sólo S3/R2, que son los
@@ -252,16 +322,12 @@ byte. Si falla, se ajusta el tag, nunca el test.
   backends devolviéndose a sí mismo, así que `backend.(storage.BucketAware)`
   siempre da `ok == true`: el cambio se comprueba contra `GetCurrentBucket()`,
   nunca contra el type assertion.
-- **`docs/` no es fuente de verdad; `site/` sí.** La documentación viva es el
-  sitio Astro Starlight de `site/` (publicado en https://birdple.github.io/falco/
-  por `.github/workflows/pages.yml`), escrito verificando contra el código. El
-  README es corto y apunta ahí.
-  `docs/ARCHITECTURE.md`, `TECHNICAL_SPEC.md`, `IMPLEMENTATION_ROADMAP.md` y
-  `DEPLOYMENT_GUIDE.md` son documentos previos a la implementación actual (no
-  mencionan jay, ni HMAC, ni el proxy externo, y siguen usando `STORAGE_PRIMARY`),
-  y `REVIEW_GUIDE.md` es una auditoría con hallazgos ya arreglados. `openapi.yaml`
-  sí se sirve en `/docs/openapi.yaml`, pero le falta `/proxy`.
-  Verifica contra el código antes de creerles.
+- **La documentación viva es `site/`.** El sitio Astro Starlight de `site/`
+  (publicado en https://birdple.github.io/falco/ por `.github/workflows/pages.yml`)
+  se escribe verificando contra el código. El README es corto y apunta ahí.
+  `docs/` sólo guarda `openapi.yaml` (embebido y servido en `/docs/openapi.yaml`)
+  y su `embed.go`; los documentos previos a la implementación actual se
+  borraron porque contradecían el código.
 
 ## Release y CI
 
@@ -270,8 +336,8 @@ cada paso se puede correr a mano:
 
 | Workflow | Cuándo | Qué hace |
 |---|---|---|
-| `ci.yml` | push a `main`/`dev`, PR | test con `-race`, lint, y **compilar + arrancar** el binario en glibc y musl, más construir y arrancar la imagen |
-| `release.yml` | tag `v*` | imagen multi-arch a `ghcr.io/birdple/falco`, cinco binarios y el release de GitHub |
+| `ci.yml` | push a `main`/`dev`, PR, y llamado por `release.yml` | test con `-race`, lint (golangci-lint fijado), `ui-check`, `mocks-check`, `govulncheck`, y **compilar + arrancar** el binario en glibc y musl, más construir y arrancar la imagen |
+| `release.yml` | tag `v*` | corre `ci.yml` entero primero; después imagen multi-arch a `ghcr.io/birdple/falco`, cinco binarios y el release de GitHub |
 | `pages.yml` | push a `main` con cambios en `site/` | publica el sitio de docs |
 
 Los jobs de Go corren dentro de `ubuntu:26.04`: es la primera LTS con libvips
@@ -295,9 +361,10 @@ separar por plataforma con build tags. Antes de empujar, `make lint-linux`.
 
 **Ningún artefacto se publica sin haberse arrancado.** `release-binary.sh` levanta
 el binario en un directorio vacío (no en el repo: viper tomaría el `config.yaml`
-versionado, que declara un bucket jay con credenciales) y exige que `/health`
+versionado, que declara un bucket jay y fija `storage.default`) y exige que `/health`
 reporte la versión inyectada. Un binario CGO que compila todavía no es un binario
-que enlaza.
+que enlaza. Los scripts de contenedor verifican el SHA-256 de Go y de
+golangci-lint antes de usarlos.
 
 ## Fuera de alcance
 

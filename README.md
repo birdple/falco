@@ -38,10 +38,12 @@ curl -o cover.avif "localhost:8080/api/v1/images/6d556268ff5afc0f.avif?w=1200"
   anything S3-compatible), R2, and Jay over its native protocol.
 - **Multi-target backups** per bucket, in `sync`, `async` or `read-fallback`
   mode.
-- **Signed delivery URLs.** HMAC-SHA256 over path *and* query, so nobody mints
-  transformations on your CPU.
+- **Signed delivery URLs.** HMAC-SHA256 over path *and* query, with optional
+  expiry, so nobody mints transformations on your CPU — the image proxy
+  included.
 - **Scoped API keys** at bucket, group or subgroup level, enforced on upload,
-  list, delete, delivery and signing.
+  list, delete, metadata and signing; a signed URL can only name a bucket its
+  signer could reach.
 - **An admin panel,** server-rendered, included.
 - **Prometheus metrics, structured logs, OpenTelemetry traces and pprof.**
 
@@ -79,9 +81,11 @@ Three layers, last one wins: compiled defaults, then `config.yaml`, then
 environment variables.
 
 Four settings have **no default on purpose**: without a bucket Falco refuses to
-start, `API_KEY_REQUIRED` and `HMAC_REQUIRED` must be stated explicitly, and an
-unset `HMAC_REQUIRE_EXPIRY` makes delivery answer 500 rather than quietly
-accepting signatures that never expire.
+start, `API_KEY_REQUIRED` and `HMAC_REQUIRED` must be stated explicitly (and
+together: one without the other is refused at startup), and an unset
+`HMAC_REQUIRE_EXPIRY` makes delivery answer 500 rather than quietly accepting
+signatures that never expire. A value that does not parse — `API_KEY_REQUIRED=yes`
+— is a startup error, never a silently dropped setting.
 
 Every variable is listed in
 [Configuration](https://birdple.github.io/falco/reference/configuration/).
@@ -89,7 +93,7 @@ Every variable is listed in
 ## Development
 
 ```bash
-make check        # fmt + vet + lint + test + build — what has to pass before a commit
+make check        # fmt + vet + lint + test + ui-check + mocks-check + build — what has to pass before a commit
 make test
 go run ./cmd/server
 ```
