@@ -1,7 +1,5 @@
 package views
 
-import "fmt"
-
 // SignerPage builds signed delivery URLs.
 templ SignerPage(data SignerData) {
 	@Shell(data.Page) {
@@ -13,13 +11,12 @@ templ SignerPage(data SignerData) {
 						Produces a signed delivery URL. The HMAC key stays on the server.
 					</p>
 				</div>
-
 				if !data.Enabled {
 					@Notice("Signing is not available", data.DisabledReason)
 				} else {
 					<form
 						class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5 space-y-4"
-						x-data={ fmt.Sprintf("signer(%d, %t)", data.DefaultTTL, data.RequireExpiry) }
+						x-data={ jsCall("signer", data.DefaultTTL, data.RequireExpiry) }
 						@submit.prevent="sign()"
 					>
 						<div>
@@ -36,7 +33,6 @@ templ SignerPage(data SignerData) {
 								The delivery path with its query, exactly as the client will request it.
 							</p>
 						</div>
-
 						<div>
 							<label class="block text-sm font-medium mb-1.5" for="sg-ttl">Expires in (seconds)</label>
 							<input
@@ -52,7 +48,6 @@ templ SignerPage(data SignerData) {
 								</p>
 							}
 						</div>
-
 						<button
 							type="submit"
 							:disabled="busy || !path"
@@ -60,11 +55,9 @@ templ SignerPage(data SignerData) {
 						>
 							<span x-text="busy ? 'Signing…' : 'Sign'"></span>
 						</button>
-
 						<template x-if="error">
 							<p class="text-sm text-red-600 dark:text-red-400" x-text="error"></p>
 						</template>
-
 						<template x-if="result">
 							<div class="pt-2 border-t border-neutral-200 dark:border-neutral-800">
 								<div class="flex items-center justify-between mb-2">

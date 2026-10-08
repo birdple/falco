@@ -12,7 +12,7 @@ templ PlaygroundPage(data PlaygroundData) {
 	@Shell(data.Page) {
 		<div
 			class="flex-1 h-full overflow-hidden flex"
-			x-data={ fmt.Sprintf("playground('%s', '%s')", data.Bucket, data.Key) }
+			x-data={ jsCall("playground", data.Bucket, data.Key) }
 		>
 			<!-- Controls -->
 			<aside class="w-80 shrink-0 border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 h-full overflow-y-auto">
@@ -39,7 +39,6 @@ templ PlaygroundPage(data PlaygroundData) {
 							/>
 						</div>
 					</div>
-
 					for _, group := range data.Groups {
 						<div>
 							<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">{ group.Title }</h3>
@@ -53,7 +52,6 @@ templ PlaygroundPage(data PlaygroundData) {
 							</div>
 						</div>
 					}
-
 					<button
 						@click="reset()"
 						class="w-full px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
@@ -62,7 +60,6 @@ templ PlaygroundPage(data PlaygroundData) {
 					</button>
 				</div>
 			</aside>
-
 			<!-- Preview -->
 			<div class="flex-1 h-full overflow-y-auto">
 				<div class="p-6 lg:p-8 space-y-5">
@@ -84,18 +81,15 @@ templ PlaygroundPage(data PlaygroundData) {
 							</button>
 						</div>
 					</div>
-
 					if data.Error != "" {
 						@InlineError(data.Error)
 					}
-
 					<template x-if="error">
 						<div class="p-4 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/25 rounded-xl">
 							<h4 class="font-semibold text-red-700 dark:text-red-300 text-sm">Transformation rejected</h4>
 							<p class="text-red-600 dark:text-red-400/90 text-sm mt-0.5 break-words" x-text="error"></p>
 						</div>
 					</template>
-
 					<div class="grid lg:grid-cols-2 gap-5">
 						<figure class="space-y-2">
 							<figcaption class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
@@ -114,7 +108,6 @@ templ PlaygroundPage(data PlaygroundData) {
 								<img :src="originalURL" alt="Original" class="max-w-full max-h-[55vh] object-contain"/>
 							</div>
 						</figure>
-
 						<figure class="space-y-2">
 							<figcaption class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
 								<span class="font-semibold uppercase tracking-widest">Transformed</span>
@@ -138,7 +131,6 @@ templ PlaygroundPage(data PlaygroundData) {
 							</div>
 						</figure>
 					</div>
-
 					<div class="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
 						<h3 class="text-[11px] font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-600 mb-2">Signed URL</h3>
 						<code class="block text-[11px] font-mono bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg p-2.5 break-all max-h-28 overflow-y-auto" x-text="signedURL || 'Adjust a parameter to generate a URL.'"></code>
@@ -161,7 +153,6 @@ templ paramControl(f ParamField) {
 			</label>
 			<code class="text-[10px] text-neutral-400 dark:text-neutral-600 font-mono">{ f.Name }</code>
 		</div>
-
 		if f.Disabled {
 			<div class="px-3 py-2 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 text-xs text-neutral-500 dark:text-neutral-500">
 				{ f.DisabledReason }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,7 +48,9 @@ func (l *loader) Load() (*Config, error) {
 	}
 
 	// Load from environment variables (overrides config file)
-	l.loadFromEnv(v)
+	if err := l.loadFromEnv(v); err != nil {
+		return nil, fmt.Errorf("invalid environment: %w", err)
+	}
 
 	// Unmarshal into config struct
 	var config Config
@@ -80,24 +83,37 @@ func (l *loader) loadFromFile(v *viper.Viper) error {
 	return nil
 }
 
-// loadFromEnv loads configuration from environment variables
-func (l *loader) loadFromEnv(v *viper.Viper) {
+// loadFromEnv loads configuration from environment variables.
+//
+// A value that does not parse is an error, never a skipped variable: dropping
+// API_KEY_REQUIRED=yes would boot the API with auth off while the operator
+// believes it is on.
+func (l *loader) loadFromEnv(v *viper.Viper) error {
 	envMappings := l.getEnvMappings()
 
+	var errs []error
 	for envVar, configKey := range envMappings {
 		if value := os.Getenv(envVar); value != "" {
-			l.setEnvValue(v, configKey, value)
+			if err := l.setEnvValue(v, configKey, value); err != nil {
+				errs = append(errs, fmt.Errorf("%s=%q: %w", envVar, value, err))
+			}
 		}
 	}
 
 	// Auto-discover buckets from STORAGE_BUCKET_<NAME>_TYPE env vars
-	l.discoverBucketsFromEnv(v)
+	if err := l.discoverBucketsFromEnv(v); err != nil {
+		errs = append(errs, err)
+	}
 
 	// Read bucket aliases from STORAGE_BUCKET_ALIASES
 	l.loadBucketAliasesFromEnv(v)
 
 	// Auto-discover groups from STORAGE_GROUP_<NAME>_BUCKETS env vars
 	l.discoverGroupsFromEnv(v)
+
+	// Sorted so the same environment always reports the same way.
+	slices.SortFunc(errs, func(a, b error) int { return strings.Compare(a.Error(), b.Error()) })
+	return errors.Join(errs...)
 }
 
 // loadBucketAliasesFromEnv reads STORAGE_BUCKET_ALIASES, a comma-separated list
@@ -144,39 +160,39 @@ func (l *loader) loadBucketAliasesFromEnv(v *viper.Viper) {
 // getEnvMappings returns environment variable to config key mappings
 func (l *loader) getEnvMappings() map[string]string {
 	return map[string]string{
-		"PORT":                   "server.port",
-		"HOST":                   "server.host",
-		"MAX_HEADER_BYTES":       "server.max_header_bytes",
-		"MAX_HEADER_VALUE_COUNT": "server.max_header_value_count",
-		"ENV":                    "development.debug",
-		"STORAGE_DEFAULT":        "storage.default",
-		"CACHE_SIZE_MB":          "cache.size_mb",
-		"CACHE_TTL_HOURS":        "cache.ttl_hours",
-		"CACHE_CLEANUP_INTERVAL": "cache.cleanup_interval",
-		"CACHE_DEFAULT_MAX_AGE":  "cache.default_max_age",
-		"CACHE_DEFAULT_SMAX_AGE": "cache.default_smax_age",
-		"ENABLE_REDIS":           "cache.enable_redis",
-		"REDIS_URL":              "cache.redis_url",
-		"MAX_FILE_SIZE_MB":       "processing.max_file_size_mb",
-		"DEFAULT_QUALITY":        "processing.default_quality",
-		"DEFAULT_FORMAT":         "processing.default_format",
-		"CONCURRENT_WORKERS":     "processing.concurrent_workers",
-		"WEBP_EFFORT":            "processing.webp_effort",
-		"API_KEY_REQUIRED":       "security.api_key_required",
-		"API_KEY":                "security.api_key",
-		"CORS_ORIGINS":           "security.cors.origins",
-		"RATE_LIMIT_RPM":         "security.rate_limit.requests_per_minute",
-		"TRUSTED_PROXIES":        "security.trusted_proxies",
-		"HMAC_KEY":               "security.hmac_key",
-		"HMAC_SALT":              "security.hmac_salt",
-		"HMAC_SIGNATURE_SIZE":    "security.hmac_signature_size",
-		"HMAC_REQUIRED":          "security.hmac_required",
-		"LOG_LEVEL":              "logging.level",
-		"LOG_FORMAT":             "logging.format",
-		"LOG_OUTPUT":             "logging.output",
-		"DEBUG":                  "development.debug",
-		"ENABLE_PPROF":           "development.enable_pprof",
-		"ENABLE_METRICS":         "development.enable_metrics",
+		"PORT":                    "server.port",
+		"HOST":                    "server.host",
+		"SERVER_SHUTDOWN_TIMEOUT": "server.shutdown_timeout",
+		"MAX_HEADER_BYTES":        "server.max_header_bytes",
+		"MAX_HEADER_VALUE_COUNT":  "server.max_header_value_count",
+		"STORAGE_DEFAULT":         "storage.default",
+		"CACHE_SIZE_MB":           "cache.size_mb",
+		"CACHE_TTL_HOURS":         "cache.ttl_hours",
+		"CACHE_CLEANUP_INTERVAL":  "cache.cleanup_interval",
+		"CACHE_DEFAULT_MAX_AGE":   "cache.default_max_age",
+		"CACHE_DEFAULT_SMAX_AGE":  "cache.default_smax_age",
+		"ENABLE_REDIS":            "cache.enable_redis",
+		"REDIS_URL":               "cache.redis_url",
+		"MAX_FILE_SIZE_MB":        "processing.max_file_size_mb",
+		"DEFAULT_QUALITY":         "processing.default_quality",
+		"DEFAULT_FORMAT":          "processing.default_format",
+		"CONCURRENT_WORKERS":      "processing.concurrent_workers",
+		"WEBP_EFFORT":             "processing.webp_effort",
+		"API_KEY_REQUIRED":        "security.api_key_required",
+		"API_KEY":                 "security.api_key",
+		"CORS_ORIGINS":            "security.cors.origins",
+		"RATE_LIMIT_RPM":          "security.rate_limit.requests_per_minute",
+		"TRUSTED_PROXIES":         "security.trusted_proxies",
+		"HMAC_KEY":                "security.hmac_key",
+		"HMAC_SALT":               "security.hmac_salt",
+		"HMAC_SIGNATURE_SIZE":     "security.hmac_signature_size",
+		"HMAC_REQUIRED":           "security.hmac_required",
+		"LOG_LEVEL":               "logging.level",
+		"LOG_FORMAT":              "logging.format",
+		"LOG_OUTPUT":              "logging.output",
+		"DEBUG":                   "development.debug",
+		"ENABLE_PPROF":            "development.enable_pprof",
+		"ENABLE_METRICS":          "development.enable_metrics",
 	}
 }
 
@@ -184,11 +200,12 @@ func (l *loader) getEnvMappings() map[string]string {
 // STORAGE_BUCKET_<NAME>_TYPE and builds bucket configurations.
 // Also discovers backups (STORAGE_BUCKET_<NAME>_BACKUP_<N>_TARGET/MODE)
 // and bucket-level keys (STORAGE_BUCKET_<NAME>_KEY_<KEYNAME>_KEY).
-func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
+func (l *loader) discoverBucketsFromEnv(v *viper.Viper) error {
 	const prefix = "STORAGE_BUCKET_"
 	const typeSuffix = "_TYPE"
 
 	discovered := make(map[string]bool)
+	var errs []error
 
 	// First pass: find all bucket names via _TYPE vars
 	for _, env := range os.Environ() {
@@ -207,7 +224,7 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 	}
 
 	if len(discovered) == 0 {
-		return
+		return nil
 	}
 
 	// Second pass: read all fields for each discovered bucket
@@ -234,9 +251,12 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 				configKey := fmt.Sprintf("storage.buckets.%s.%s", name, field)
 				switch field {
 				case "pool_size":
-					if intVal, err := strconv.Atoi(val); err == nil {
-						v.Set(configKey, intVal)
+					intVal, err := strconv.Atoi(val)
+					if err != nil {
+						errs = append(errs, fmt.Errorf("%s%s=%q: not an integer", envPrefix, suffix, val))
+						continue
 					}
+					v.Set(configKey, intVal)
 				default:
 					v.Set(configKey, val)
 				}
@@ -249,6 +269,7 @@ func (l *loader) discoverBucketsFromEnv(v *viper.Viper) {
 		// Discover bucket-level keys: STORAGE_BUCKET_<NAME>_KEY_<KEYNAME>_KEY
 		l.discoverBucketKeysFromEnv(v, name, envPrefix)
 	}
+	return errors.Join(errs...)
 }
 
 // discoverBucketBackupsFromEnv discovers backup refs for a bucket from env vars.
@@ -534,7 +555,7 @@ func (l *loader) discoverSubgroupKeysFromEnv(v *viper.Viper, groupName, subName,
 }
 
 // setEnvValue sets a configuration value from environment variable
-func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
+func (l *loader) setEnvValue(v *viper.Viper, key, value string) error {
 	intKeys := map[string]bool{
 		"server.port":                             true,
 		"server.max_header_bytes":                 true,
@@ -545,8 +566,6 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 		"processing.default_quality":              true,
 		"processing.concurrent_workers":           true,
 		"security.rate_limit.requests_per_minute": true,
-		"processing.max_dimensions.width":         true,
-		"processing.max_dimensions.height":        true,
 		"cache.default_max_age":                   true,
 		"cache.default_smax_age":                  true,
 		"security.hmac_signature_size":            true,
@@ -563,13 +582,17 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 
 	switch {
 	case intKeys[key]:
-		if intVal, err := strconv.Atoi(value); err == nil {
-			v.Set(key, intVal)
+		intVal, err := strconv.Atoi(value)
+		if err != nil {
+			return errors.New("not an integer")
 		}
+		v.Set(key, intVal)
 	case boolKeys[key]:
-		if boolVal, err := strconv.ParseBool(value); err == nil {
-			v.Set(key, boolVal)
+		boolVal, err := strconv.ParseBool(value)
+		if err != nil {
+			return errors.New("not a boolean (use true or false)")
 		}
+		v.Set(key, boolVal)
 	case key == "security.cors.origins":
 		v.Set(key, strings.Split(value, ","))
 	case key == "security.trusted_proxies":
@@ -587,4 +610,5 @@ func (l *loader) setEnvValue(v *viper.Viper, key, value string) {
 	default:
 		v.Set(key, value)
 	}
+	return nil
 }

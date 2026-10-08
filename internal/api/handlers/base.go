@@ -295,33 +295,66 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 }
 
 // getStorageBackendScoped resolves a storage backend and enforces scope from the request.
-//
-// Names are canonicalised through the registry's aliases BEFORE the scope
-// check, so one bucket is always authorized under one name. Checking the alias
-// instead would let the same bucket be reachable under one spelling and refused
-// under another, and a scope is configured in registry names — that is what the
-// panel and /stats enumerate.
 func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket string) (storage.StorageBackend, error) {
 	scope := apimw.GetScope(r.Context())
 
+	storageName, bucket, err := h.authorizeBucket(scope, storageName, bucket)
+	if err != nil {
+		return nil, err
+	}
+	return h.getStorageBackendWithScope(scope, storageName, bucket)
+}
+
+// authorizeBucket canonicalises a (storage, bucket) pair and checks it against
+// scope. It is the one place that decides which bucket a request reaches, so
+// every handler and /sign — which authorises a URL for later — answer the same
+// question the same way.
+//
+// Names are canonicalised through the registry's aliases BEFORE the check, so
+// one bucket is always authorized under one name. Checking the alias instead
+// would let the same bucket be reachable under one spelling and refused under
+// another, and a scope is configured in registry names — that is what the
+// panel and /stats enumerate.
+//
+// A request that names no bucket at all goes to the default one, and is
+// checked as such: skipping the check would let a key scoped to bucket B read,
+// write and delete in the default bucket just by leaving ?b= out.
+func (h *Handler) authorizeBucket(scope *apimw.APIScope, storageName, bucket string) (string, string, error) {
 	storageName = h.canonicalBucket(storageName)
 	bucket = h.canonicalBucket(bucket)
 
-	// Enforce bucket access (storageName is now the bucket name in the registry)
+	if scope == nil || scope.IsAdmin {
+		return storageName, bucket, nil
+	}
+
 	effectiveBucket := storageName
 	if effectiveBucket == "" {
 		effectiveBucket = bucket
 	}
-	if scope != nil && effectiveBucket != "" && !scope.CanAccessBucket(effectiveBucket) {
-		return nil, fmt.Errorf("access denied to bucket %q", effectiveBucket)
+	if effectiveBucket == "" {
+		effectiveBucket = h.defaultBucketName()
+	}
+	if !scope.CanAccessBucket(effectiveBucket) {
+		return "", "", fmt.Errorf("access denied to bucket %q", effectiveBucket)
 	}
 
 	// Enforce bucket-level access for the provider bucket override
-	if scope != nil && bucket != "" && !scope.CanAccessBucket(bucket) {
-		return nil, fmt.Errorf("access denied to bucket %q", bucket)
+	if bucket != "" && !scope.CanAccessBucket(bucket) {
+		return "", "", fmt.Errorf("access denied to bucket %q", bucket)
 	}
 
-	return h.getStorageBackendWithScope(scope, storageName, bucket)
+	return storageName, bucket, nil
+}
+
+// defaultBucketName is the registry name requests without ?b= or ?storage= go
+// to.
+func (h *Handler) defaultBucketName() string {
+	if h.storageRegistry != nil {
+		if name := h.storageRegistry.DefaultName(); name != "" {
+			return name
+		}
+	}
+	return h.config.Storage.Default
 }
 
 // canonicalBucket maps a caller-supplied bucket name onto the registry name it
