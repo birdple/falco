@@ -126,3 +126,11 @@ func TestHandleSignURL_CapsExpiry(t *testing.T) {
 	w = signRequest(t, h, nil, `{"path":"/api/v1/images/abc","expires_in":3600}`)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
+
+func TestHandleSignURL_ProxyPathNeedsNoBucket(t *testing.T) {
+	h := scopeHandler(t)
+	// A key scoped away from the default bucket can still sign a proxy URL:
+	// the proxy reads no bucket at all.
+	w := signRequest(t, h, onlyBucket("other"), `{"path":"/api/v1/proxy/x.webp?url=https://lh3.googleusercontent.com/a","expires_in":60}`)
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
