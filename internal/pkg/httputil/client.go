@@ -1,5 +1,5 @@
-// Package httputil holds HTTP helpers: a hardened client for outbound fetches,
-// trusted-proxy resolution and JSON response writing.
+// Package httputil holds HTTP helpers: a hardened client for outbound fetches
+// and trusted-proxy resolution.
 //
 // Trusted-proxy handling is fail-closed: with no TRUSTED_PROXIES configured only
 // loopback is believed, so a forwarded header cannot be used to spoof a client
@@ -135,25 +135,6 @@ func ClientIP(remoteIP, xff, xRealIP string) string {
 // GetUserAgent returns the User-Agent header from the request
 func GetUserAgent(r *http.Request) string {
 	return r.Header.Get("User-Agent")
-}
-
-// NewHTTPClient creates a new HTTP client with sensible timeouts
-func NewHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-		},
-	}
 }
 
 // redirectPolicyKey is the context key under which an outbound fetch declares

@@ -182,18 +182,6 @@ type ImageProcessor interface {
 	GetCacheStats() cache.CacheStats
 }
 
-// ResizeMode represents different image resizing modes
-type ResizeMode string
-
-// The supported resize modes. They differ in what they sacrifice when the
-// requested aspect ratio does not match the source: cover crops, contain leaves
-// empty space, fill distorts.
-const (
-	ResizeModeCover   ResizeMode = "cover"   // Maintain aspect ratio, crop if necessary
-	ResizeModeContain ResizeMode = "contain" // Maintain aspect ratio, fit within dimensions
-	ResizeModeFill    ResizeMode = "fill"    // Stretch to fill dimensions
-)
-
 // ImageFormat represents supported image formats
 type ImageFormat string
 

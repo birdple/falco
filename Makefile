@@ -48,10 +48,6 @@ test-coverage:
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
-.PHONY: test-integration
-test-integration:
-	go test -v -tags=integration ./tests/integration/...
-
 .PHONY: test-performance
 test-performance:
 	go test -v -bench=. -benchmem ./...
@@ -275,7 +271,6 @@ help:
 	@echo "  Test:"
 	@echo "    test               Run all tests"
 	@echo "    test-coverage      Run tests with coverage report"
-	@echo "    test-integration   Run integration tests"
 	@echo "    test-performance   Run performance benchmarks"
 	@echo ""
 	@echo "  Panel web:"

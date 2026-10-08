@@ -10,12 +10,6 @@ type UpdateRequest struct {
 	Format  string `json:"format,omitempty"`  // Output format
 }
 
-// ListRequest represents the request for listing files
-type ListRequest struct {
-	Bucket string `json:"bucket,omitempty"` // Bucket to list from
-	Prefix string `json:"prefix,omitempty"` // Prefix/directory to filter by
-}
-
 // DeleteRequest represents the request for deleting files or directories
 type DeleteRequest struct {
 	Bucket  string   `json:"bucket,omitempty"`  // Bucket to delete from

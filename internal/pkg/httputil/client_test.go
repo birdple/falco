@@ -177,12 +177,6 @@ func TestGetUserAgent_Empty(t *testing.T) {
 	assert.Equal(t, "", GetUserAgent(req))
 }
 
-func TestNewHTTPClient(t *testing.T) {
-	client := NewHTTPClient(30 * time.Second)
-	require.NotNil(t, client)
-	assert.Equal(t, 30*time.Second, client.Timeout)
-}
-
 func TestNewSafeHTTPClient(t *testing.T) {
 	client := NewSafeHTTPClient(30 * time.Second)
 	require.NotNil(t, client)

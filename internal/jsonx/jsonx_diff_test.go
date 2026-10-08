@@ -17,7 +17,6 @@ import (
 	"github.com/birdple/falco/internal/api/handlers"
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/jsonx"
-	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -155,7 +154,6 @@ func diffCases() map[string]any {
 
 		"falco/UpdateRequest-cero":  types.UpdateRequest{},
 		"falco/UpdateRequest-lleno": types.UpdateRequest{URL: "https://x/?a=1&b=2", Quality: 0, Format: "webp"},
-		"falco/ListRequest-cero":    types.ListRequest{},
 		"falco/DeleteRequest-cero":  types.DeleteRequest{},
 		"falco/DeleteRequest-vacio": types.DeleteRequest{Keys: []string{}},
 
@@ -163,11 +161,6 @@ func diffCases() map[string]any {
 		"falco/SignURLRequest-lleno":  handlers.SignURLRequest{Path: "/api/v1/images/x?w=1&h=2", ExpiresIn: 0, ExpiresAt: 0},
 		"falco/SignURLResponse-cero":  handlers.SignURLResponse{},
 		"falco/SignURLResponse-lleno": handlers.SignURLResponse{SignedURL: "https://x/?sig=a&exp=1", Signature: "s", ExpiresAt: 0},
-
-		"falco/JSONResponse-cero":  httputil.JSONResponse{},
-		"falco/JSONResponse-data":  httputil.JSONResponse{Success: true, Data: map[string]any{}},
-		"falco/JSONResponse-vacio": httputil.JSONResponse{Success: true, Data: ""},
-		"falco/JSONResponse-err":   httputil.JSONResponse{Error: &httputil.ErrorInfo{}},
 
 		"falco/ProcessingParams-cero": processor.ProcessingParams{},
 		"falco/ProcessingParams-lleno": processor.ProcessingParams{
