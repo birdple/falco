@@ -2,7 +2,9 @@ package handlers
 
 import (
 	jsonv2 "encoding/json/v2"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -12,6 +14,9 @@ import (
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/security"
 )
+
+// maxSignedURLLifetime caps how far in the future a signed URL may expire.
+const maxSignedURLLifetime = 366 * 24 * time.Hour
 
 // SignURLRequest represents a request to sign a URL.
 //
@@ -56,36 +61,30 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce scope on the requested path's bucket. Upload/list/delete all
-	// route through getStorageBackendScoped — /sign was the missing link.
-	scope := apimw.GetScope(r.Context())
-	bucket, _, err := utils.ExtractBucketAndDirFromSignPath(req.Path)
+	// The path is authorised exactly the way delivery will resolve it, through
+	// the same function: checking only ?b= here once let a key scoped to bucket
+	// A sign "?storage=B" and read bucket B with the result. The query is split
+	// at the first "?" because that is what Canonicalize signs; a "#" is
+	// refused because url.Parse and Canonicalize disagree about it.
+	if strings.ContainsRune(req.Path, '#') {
+		h.sendError(w, http.StatusBadRequest, "INVALID_PATH", "Path must not contain a fragment")
+		return
+	}
+	_, rawQuery, _ := strings.Cut(req.Path, "?")
+	query, err := url.ParseQuery(rawQuery)
 	if err != nil {
 		h.sendError(w, http.StatusBadRequest, "INVALID_PATH", "Malformed path")
 		return
 	}
-	if scope != nil && !scope.IsAdmin && bucket != "" && !scope.CanAccessBucket(bucket) {
-		logger.Warn().
-			Str("key_name", scope.KeyName).
-			Str("bucket", bucket).
-			Msg("Scope denied signing path for bucket")
+	scope := apimw.GetScope(r.Context())
+	if _, _, err := h.authorizeBucket(scope, query.Get("storage"), utils.QueryParam(query, "b", "bucket")); err != nil {
+		keyName := ""
+		if scope != nil {
+			keyName = scope.KeyName
+		}
+		logger.Warn().Err(err).Str("key_name", keyName).Msg("Scope denied signing path")
 		h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", "Key not authorized for this bucket")
 		return
-	}
-	// If no bucket in query the path is for the default bucket. When scoped
-	// keys are configured and the key has any bucket restrictions, a blank
-	// bucket would resolve to the server's default — which the scoped key
-	// may not be allowed to access. Fail closed rather than silently signing
-	// a URL the caller can't use.
-	if scope != nil && !scope.IsAdmin && bucket == "" && len(scope.Buckets) > 0 {
-		defaultBucket := h.config.Storage.Default
-		if defaultBucket == "" || !scope.CanAccessBucket(defaultBucket) {
-			logger.Warn().
-				Str("key_name", scope.KeyName).
-				Msg("Scope denied signing path for default bucket")
-			h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", "Key not authorized for default bucket")
-			return
-		}
 	}
 
 	// Resolve expiry. If caller supplied neither, no expiry is appended.
@@ -94,6 +93,13 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 		expUnix = req.ExpiresAt
 	} else if req.ExpiresIn > 0 {
 		expUnix = time.Now().Unix() + req.ExpiresIn
+	}
+	// An expiry centuries away is no expiry at all, and would make
+	// HMAC_REQUIRE_EXPIRY=true meaningless.
+	if expUnix > time.Now().Add(maxSignedURLLifetime).Unix() {
+		h.sendError(w, http.StatusBadRequest, "INVALID_EXPIRY",
+			fmt.Sprintf("Expiry may be at most %d days away", int(maxSignedURLLifetime.Hours()/24)))
+		return
 	}
 
 	pathToSign := req.Path

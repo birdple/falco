@@ -28,9 +28,8 @@ func (s *APIScope) CanAccessBucket(bucket string) bool {
 	if s == nil || s.IsAdmin {
 		return true
 	}
-	if len(s.Buckets) == 0 {
-		return true
-	}
+	// An empty set grants nothing. The validator refuses keys that resolve to
+	// no bucket, and this keeps the check fail-closed even if one slips past.
 	return s.Buckets[bucket]
 }
 

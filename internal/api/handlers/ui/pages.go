@@ -28,6 +28,9 @@ func (h *Handler) Object(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := strings.TrimPrefix(query.Get("key"), "/")
+	if !safePanelPath(key) {
+		key = ""
+	}
 	name := key
 	if idx := strings.LastIndex(name, "/"); idx >= 0 {
 		name = name[idx+1:]
@@ -106,6 +109,9 @@ func (h *Handler) Playground(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := strings.TrimPrefix(query.Get("key"), "/")
+	if !safePanelPath(key) {
+		key = ""
+	}
 	names := h.accessibleBuckets(sess.Scope)
 
 	data := views.PlaygroundData{

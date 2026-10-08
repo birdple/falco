@@ -54,7 +54,13 @@ func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		// The legacy XSS auditor is gone from every current browser and its
+		// "block" mode was itself an info-leak vector; "0" is the recommended
+		// value now that the CSP below does the real work.
+		w.Header().Set("X-XSS-Protection", "0")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 
 		// Strict CSP for API and image delivery routes — no unsafe-eval needed.
 		csp := "default-src 'self'; " +
@@ -97,7 +103,8 @@ func SecurityHeaders(next http.Handler) http.Handler {
 // requires a relaxed CSP (Alpine.js needs 'unsafe-eval'). API, image, and
 // metrics routes are excluded so they keep the strict default policy.
 func isUIPath(path string) bool {
-	if path == "/" || path == "/dashboard" {
+	switch path {
+	case "/", "/dashboard", "/object", "/playground", "/signer", "/ops":
 		return true
 	}
 	return strings.HasPrefix(path, "/ui/") || strings.HasPrefix(path, "/static/")

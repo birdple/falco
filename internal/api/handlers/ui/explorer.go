@@ -307,13 +307,31 @@ func normalizePrefix(raw string) string {
 	// A prefix is data, not a path to walk: anything that could climb out of
 	// the bucket is refused outright rather than cleaned up into something
 	// that still resolves somewhere.
-	if strings.Contains(p, "..") {
+	if !safePanelPath(p) {
 		return ""
 	}
 	if !strings.HasSuffix(p, "/") {
 		p += "/"
 	}
 	return p
+}
+
+// safePanelPath reports whether a prefix or key taken from the query string is
+// acceptable to echo back into the panel. It is deliberately looser than
+// utils.ValidateDirectoryPath: objects written to jay or S3 by other tools may
+// carry spaces or punctuation and must stay browsable. What it refuses is what
+// is never legitimate — climbing out with "..", and control characters.
+// Escaping is not its job; the templates encode every value they emit.
+func safePanelPath(p string) bool {
+	if strings.Contains(p, "..") {
+		return false
+	}
+	for _, c := range p {
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // domID hashes a storage key into something usable as an HTML id.

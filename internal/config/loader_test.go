@@ -17,37 +17,38 @@ func TestSetEnvValue_IntKeys(t *testing.T) {
 	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
 	v := viper.New()
 
-	l.setEnvValue(v, "server.port", "9090")
+	require.NoError(t, l.setEnvValue(v, "server.port", "9090"))
 	assert.Equal(t, 9090, v.GetInt("server.port"))
 
-	l.setEnvValue(v, "cache.size_mb", "512")
+	require.NoError(t, l.setEnvValue(v, "cache.size_mb", "512"))
 	assert.Equal(t, 512, v.GetInt("cache.size_mb"))
 
-	// Invalid int should not be set
-	l.setEnvValue(v, "server.port", "not-a-number")
-	assert.Equal(t, 9090, v.GetInt("server.port")) // unchanged
+	// An invalid int is an error, and leaves the previous value alone.
+	assert.Error(t, l.setEnvValue(v, "server.port", "not-a-number"))
+	assert.Equal(t, 9090, v.GetInt("server.port"))
 }
 
 func TestSetEnvValue_BoolKeys(t *testing.T) {
 	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
 	v := viper.New()
 
-	l.setEnvValue(v, "security.api_key_required", "true")
+	require.NoError(t, l.setEnvValue(v, "security.api_key_required", "true"))
 	assert.True(t, v.GetBool("security.api_key_required"))
 
-	l.setEnvValue(v, "development.debug", "false")
+	require.NoError(t, l.setEnvValue(v, "development.debug", "false"))
 	assert.False(t, v.GetBool("development.debug"))
 
-	// Invalid bool should not be set
-	l.setEnvValue(v, "development.debug", "not-a-bool")
-	assert.False(t, v.GetBool("development.debug"))
+	// An invalid bool is an error: API_KEY_REQUIRED=yes must not boot with
+	// auth silently off.
+	assert.Error(t, l.setEnvValue(v, "security.api_key_required", "yes"))
+	assert.True(t, v.GetBool("security.api_key_required"))
 }
 
 func TestSetEnvValue_CORSOrigins(t *testing.T) {
 	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
 	v := viper.New()
 
-	l.setEnvValue(v, "security.cors.origins", "http://localhost:3000,https://example.com")
+	require.NoError(t, l.setEnvValue(v, "security.cors.origins", "http://localhost:3000,https://example.com"))
 	origins := v.GetStringSlice("security.cors.origins")
 	assert.Len(t, origins, 2)
 	assert.Equal(t, "http://localhost:3000", origins[0])
@@ -58,10 +59,10 @@ func TestSetEnvValue_StringKeys(t *testing.T) {
 	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
 	v := viper.New()
 
-	l.setEnvValue(v, "storage.default", "images")
+	require.NoError(t, l.setEnvValue(v, "storage.default", "images"))
 	assert.Equal(t, "images", v.GetString("storage.default"))
 
-	l.setEnvValue(v, "logging.level", "debug")
+	require.NoError(t, l.setEnvValue(v, "logging.level", "debug"))
 	assert.Equal(t, "debug", v.GetString("logging.level"))
 }
 
@@ -84,4 +85,25 @@ func TestLoadFromFile_NoConfigFile(t *testing.T) {
 	// Should not error when no config file is found
 	err := l.loadFromFile(v)
 	assert.NoError(t, err)
+}
+
+func TestLoadFromEnv_InvalidValuesAreReported(t *testing.T) {
+	t.Setenv("API_KEY_REQUIRED", "yes")
+	t.Setenv("RATE_LIMIT_RPM", "1k")
+
+	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
+	err := l.loadFromEnv(viper.New())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API_KEY_REQUIRED")
+	assert.Contains(t, err.Error(), "RATE_LIMIT_RPM")
+}
+
+func TestLoadFromEnv_InvalidPoolSizeIsReported(t *testing.T) {
+	t.Setenv("STORAGE_BUCKET_MAIN_TYPE", "jay")
+	t.Setenv("STORAGE_BUCKET_MAIN_POOL_SIZE", "four")
+
+	l := &loader{defaults: NewDefaultsProvider(), validator: NewValidator()}
+	err := l.loadFromEnv(viper.New())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "STORAGE_BUCKET_MAIN_POOL_SIZE")
 }
