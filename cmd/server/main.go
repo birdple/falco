@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -29,8 +30,17 @@ import (
 	"github.com/cshum/vipsgen/vips"
 )
 
-// defaultShutdownTimeout is used when SERVER_SHUTDOWN_TIMEOUT is unset.
-const defaultShutdownTimeout = 30 * time.Second
+const (
+	// defaultShutdownTimeout is used when SERVER_SHUTDOWN_TIMEOUT is unset.
+	// Keep SERVER_SHUTDOWN_TIMEOUT below the orchestrator's grace period
+	// (Docker's default is 10s), or the process is killed mid-drain.
+	defaultShutdownTimeout = 30 * time.Second
+
+	// telemetryFlushTimeout bounds the final span/metric flush. It runs on
+	// its own budget, after requests have drained, so an unreachable
+	// collector can never eat the time in-flight requests needed.
+	telemetryFlushTimeout = 5 * time.Second
+)
 
 func main() {
 	cfg, err := config.Load()
@@ -206,7 +216,7 @@ func buildCache(cfg *config.Config) processor.Cache {
 		if err != nil {
 			logger.Warn().Err(err).Msg("Failed to initialize Redis cache, falling back to LRU cache")
 		} else {
-			logger.Info().Str("redis_url", cfg.Cache.RedisURL).Msg("Redis cache initialized")
+			logger.Info().Str("redis_url", redactURL(cfg.Cache.RedisURL)).Msg("Redis cache initialized")
 			return redisCache
 		}
 	}
@@ -228,9 +238,10 @@ func buildCache(cfg *config.Config) processor.Cache {
 
 // shutdownEverything tears the process down in order.
 //
-// Telemetry flushes first, so the spans describing the shutdown itself make it
-// out; then the server stops accepting requests; only then are the resources
-// those requests were using released.
+// The server stops accepting requests and drains the ones in flight first;
+// only then are the resources those requests were using released; telemetry
+// flushes last, so the spans of the drained requests make it out, and on its
+// own short budget.
 func shutdownEverything(
 	cfg *config.Config,
 	otelShutdown func(context.Context) error,
@@ -247,12 +258,6 @@ func shutdownEverything(
 
 	logger.Info().Msg("Initiating graceful shutdown...")
 
-	if otelShutdown != nil {
-		if err := otelShutdown(shutdownCtx); err != nil {
-			logger.Warn().Err(err).Msg("Telemetry shutdown error")
-		}
-	}
-
 	logger.Info().Msg("Phase 1: Stopping server (no new requests)")
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error().Err(err).Msg("Server shutdown error")
@@ -260,6 +265,15 @@ func shutdownEverything(
 
 	logger.Info().Msg("Phase 2: Cleaning up resources")
 	cleanupResources(shutdownCtx, storageReg, appCache)
+
+	if otelShutdown != nil {
+		logger.Info().Msg("Phase 3: Flushing telemetry")
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+		if err := otelShutdown(flushCtx); err != nil {
+			logger.Warn().Err(err).Msg("Telemetry shutdown error")
+		}
+		flushCancel()
+	}
 
 	logger.Info().Msg("Server shutdown complete")
 }
@@ -286,7 +300,14 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 		}
 
 		cancel()
-		time.Sleep(50 * time.Millisecond)
+
+		// A second signal means the operator does not want to wait for the
+		// drain: honour it instead of swallowing it.
+		go func() {
+			sig := <-sigChan
+			logger.Warn().Str("signal", sig.String()).Msg("Second signal received, exiting without waiting for the drain")
+			os.Exit(1)
+		}()
 	}()
 
 	return shutdown
@@ -296,18 +317,12 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 // async replications via Registry.CloseAll: a fixed sleep does not know
 // whether the work finished.
 func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCache processor.Cache) {
-	if appCache != nil {
+	// The cache is only stopped, never cleared: the in-process LRU dies with
+	// the process anyway, and clearing a shared Redis cache would cold-start
+	// every other replica on each deploy.
+	if stopper, ok := appCache.(interface{ Stop() }); ok {
 		logger.Info().Msg("Stopping cache...")
-		if sharded, ok := appCache.(*cache.ShardedCache); ok {
-			sharded.Stop()
-		} else if lru, ok := appCache.(*cache.LRUCache); ok {
-			lru.Stop()
-		} else if redis, ok := appCache.(*cache.RedisCache); ok {
-			redis.Stop()
-		}
-		logger.Info().Msg("Clearing cache...")
-		appCache.Clear()
-		logger.Info().Msg("Cache cleanup completed")
+		stopper.Stop()
 	}
 
 	if storageReg != nil {
@@ -442,4 +457,13 @@ func buildBucketBackend(bcfg config.BucketConfig) (storage.StorageBackend, error
 	}
 
 	return storage.NewStorageBackend(storageConfig)
+}
+
+// redactURL hides the password of a connection URL before it is logged.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable>"
+	}
+	return u.Redacted()
 }

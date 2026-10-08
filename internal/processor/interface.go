@@ -73,11 +73,17 @@ type ProcessingParams struct {
 	PaddingLeft   int    `json:"padding_left,omitzero"`
 	PaddingColor  string `json:"padding_color,omitempty"` // hex color, default "FFFFFF"
 
-	// Auto-orient from EXIF (default true)
-	AutoOrient bool `json:"auto_orient,omitzero"`
+	// SkipAutoOrient leaves the pixels as stored instead of rotating them by
+	// their EXIF orientation (?orient=0).
+	//
+	// Both flags are phrased so that the zero value is the safe one. A caller
+	// that builds ProcessingParams{Format: ...} by hand — upload and update do —
+	// gets oriented pixels with the metadata stripped, instead of storing the
+	// camera's GPS coordinates because it forgot a field.
+	SkipAutoOrient bool `json:"skip_auto_orient,omitzero"`
 
-	// Strip metadata (default true)
-	StripMetadata bool `json:"strip_metadata,omitzero"`
+	// KeepMetadata carries EXIF/XMP/ICC through the re-encode (?meta=1).
+	KeepMetadata bool `json:"keep_metadata,omitzero"`
 }
 
 // ProcessedImage holds the result of image processing

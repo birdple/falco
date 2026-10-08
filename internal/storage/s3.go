@@ -119,9 +119,11 @@ func (s *S3Storage) Store(ctx context.Context, key string, data io.Reader, metad
 
 // Retrieve retrieves an image by key
 func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
-	// Apply operation timeout
+	// The timeout has to outlive this function: net/http reads the response
+	// body under the request's context, so cancelling it on return (a plain
+	// defer) truncates every body mid-stream. It is released when the caller
+	// closes the body instead.
 	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
-	defer cancel()
 
 	// Get object
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
@@ -130,6 +132,7 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 	})
 
 	if err != nil {
+		cancel()
 		if isNotFoundError(err) {
 			return nil, nil, ErrImageNotFound
 		}
@@ -139,16 +142,31 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 	// Decode metadata from S3 metadata
 	metadata, err := s.metadataEncoder.Decode(result.Metadata)
 	if err != nil {
+		_ = result.Body.Close()
+		cancel()
 		return nil, nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
 	// Update metadata with S3-specific fields
 	metadata.ID = key
 	metadata.ContentType = aws.ToString(result.ContentType)
-	metadata.Size = *result.ContentLength
+	metadata.Size = aws.ToInt64(result.ContentLength)
 	metadata.ETag = strings.Trim(aws.ToString(result.ETag), `"`)
 
-	return result.Body, metadata, nil
+	return &cancelOnClose{ReadCloser: result.Body, cancel: cancel}, metadata, nil
+}
+
+// cancelOnClose releases a request context when the body read under it is
+// closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // Delete deletes an image by key

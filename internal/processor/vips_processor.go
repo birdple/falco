@@ -214,7 +214,7 @@ const defaultTrimThreshold = 10
 // applyGeometry runs the operations that change what part of the image is kept
 // and which way up it is.
 func applyGeometry(img *vips.Image, params *ProcessingParams) error {
-	if params.AutoOrient {
+	if !params.SkipAutoOrient {
 		// Non-fatal: plenty of formats carry no EXIF orientation at all.
 		_ = img.Autorot(nil)
 	}
@@ -831,10 +831,10 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 // `?meta=1` to have any effect. Stripping stays the default: a CDN origin
 // should not hand out the camera GPS coordinates baked into an upload.
 func keepMode(params *ProcessingParams) vips.Keep {
-	if params.StripMetadata {
-		return vips.KeepNone
+	if params.KeepMetadata {
+		return vips.KeepAll
 	}
-	return vips.KeepAll
+	return vips.KeepNone
 }
 
 // GetMetadata extracts metadata from an image
@@ -1095,13 +1095,13 @@ func generateCacheKey(storageKey string, params *ProcessingParams) string {
 	if params.PaddingTop > 0 || params.PaddingRight > 0 || params.PaddingBottom > 0 || params.PaddingLeft > 0 {
 		parts = append(parts, fmt.Sprintf("pad%d_%d_%d_%d_%s", params.PaddingTop, params.PaddingRight, params.PaddingBottom, params.PaddingLeft, params.PaddingColor))
 	}
-	if params.AutoOrient {
+	if !params.SkipAutoOrient {
 		parts = append(parts, "orient")
 	}
 	// Keeping metadata produces different bytes, so it has to be part of the
 	// key. Stripping is the default, so only the opposite is recorded — this
 	// leaves every already-cached key unchanged.
-	if !params.StripMetadata {
+	if params.KeepMetadata {
 		parts = append(parts, "meta")
 	}
 

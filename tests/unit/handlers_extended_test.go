@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,7 +255,7 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Mock listing files with prefix
-	mockStorage.On("List", mock.Anything, "images/2024").Return([]storage.ListResult{
+	mockStorage.On("List", mock.Anything, "images/2024/").Return([]storage.ListResult{
 		{Key: "images/2024/img1.jpg"},
 		{Key: "images/2024/img2.jpg"},
 	}, nil)
@@ -315,18 +316,37 @@ func TestHandleList_WithPrefix(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/list?prefix=images/", nil)
 
 	expectedResults := []storage.ListResult{
-		{Key: "photo1.jpg", Size: 1024},
-		{Key: "photo2.jpg", Size: 2048},
+		// Backends return full keys; a sibling directory sharing the prefix
+		// text must not leak into this one.
+		{Key: "images/photo1.jpg", Size: 1024},
+		{Key: "images/photo2.jpg", Size: 2048},
+		{Key: "images-archive/old.jpg", Size: 10},
 	}
 
-	mockStorage.On("List", mock.Anything, "images").Return(expectedResults, nil)
+	mockStorage.On("List", mock.Anything, "images/").Return(expectedResults, nil)
 
 	w := httptest.NewRecorder()
 	h.HandleList(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "photo1.jpg")
+	assert.NotContains(t, w.Body.String(), "old.jpg")
 	mockStorage.AssertExpectations(t)
+}
+
+func TestHandleDelete_RootPrefixIsRejected(t *testing.T) {
+	for _, prefix := range []string{"/", "//", "///"} {
+		mockStorage := new(mocks.MockStorageBackend)
+		h := handlers.NewHandler(&config.Config{}, mockStorage, new(mocks.MockImageProcessor), time.Now())
+
+		req := httptest.NewRequest(http.MethodDelete, "/delete", strings.NewReader(`{"prefix":"`+prefix+`"}`))
+		w := httptest.NewRecorder()
+		h.HandleDelete(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "prefix %q", prefix)
+		assert.Contains(t, w.Body.String(), "INVALID_PREFIX")
+		mockStorage.AssertNotCalled(t, "List", mock.Anything, mock.Anything)
+	}
 }
 
 func TestHandleList_StorageError(t *testing.T) {
@@ -389,7 +409,7 @@ func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
-	mockStorage.On("List", mock.Anything, "images").
+	mockStorage.On("List", mock.Anything, "images/").
 		Return([]storage.ListResult{}, fmt.Errorf("jay: %w", storage.ErrListingTooLarge))
 
 	w := httptest.NewRecorder()

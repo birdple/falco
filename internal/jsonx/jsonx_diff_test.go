@@ -171,7 +171,7 @@ func diffCases() map[string]any {
 		"falco/ProcessingParams-cero": processor.ProcessingParams{},
 		"falco/ProcessingParams-lleno": processor.ProcessingParams{
 			Width: 100, Height: 0, Quality: 0, Format: "webp",
-			Rotate: 0, Brightness: 0, TrimEnabled: false, AutoOrient: true,
+			Rotate: 0, Brightness: 0, TrimEnabled: false, SkipAutoOrient: true,
 			// WatermarkImage lleva `json:"-"`: acá se comprueba que ni v1 ni
 			// v2 lo emiten, que es lo que impide que los bytes del overlay
 			// terminen en un log o en una respuesta.

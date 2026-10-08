@@ -428,8 +428,8 @@ func (h *Handler) parseDeliveryParams(query url.Values, extFormat string) (*proc
 	params.PaddingColor = query.Get("pad_color")
 
 	// Both default to on, so the query string opts *out* rather than in.
-	params.AutoOrient = query.Get("orient") != "0"
-	params.StripMetadata = query.Get("meta") != "1"
+	params.SkipAutoOrient = query.Get("orient") == "0"
+	params.KeepMetadata = query.Get("meta") == "1"
 
 	return params, nil
 }

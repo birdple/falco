@@ -117,6 +117,17 @@ func NormalizeDirectoryPath(path string) string {
 	return path
 }
 
+// DirectoryListPrefix turns a normalised directory path into the prefix that
+// lists exactly that directory. Backends match prefixes verbatim, so without the
+// trailing slash "users/1" would also match "users/10/..." and "users/1abc".
+// The empty path (the bucket root) stays empty.
+func DirectoryListPrefix(dir string) string {
+	if dir == "" || strings.HasSuffix(dir, "/") {
+		return dir
+	}
+	return dir + "/"
+}
+
 // ValidateDirectoryPath validates a directory path against path traversal attacks
 // Returns an error if the path is invalid or contains malicious patterns
 func ValidateDirectoryPath(path string) error {

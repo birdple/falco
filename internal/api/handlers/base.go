@@ -71,6 +71,13 @@ func NewHandler(
 	}
 }
 
+// Close stops the handler's background work.
+func (h *Handler) Close() {
+	if h.negativeCache != nil {
+		h.negativeCache.Stop()
+	}
+}
+
 // SetRegistry sets the storage registry for multi-backend support.
 func (h *Handler) SetRegistry(r *storage.Registry) {
 	h.storageRegistry = r

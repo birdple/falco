@@ -55,12 +55,21 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	if req.Prefix != "" {
 		prefix := utils.NormalizeDirectoryPath(req.Prefix)
+		// "/" and "//" normalise to "", which would list — and delete — the
+		// whole bucket. The non-empty check above ran on the raw value, so it
+		// has to be repeated on the normalised one.
+		if prefix == "" {
+			h.sendError(w, http.StatusBadRequest, "INVALID_PREFIX",
+				"Prefix must name a directory; deleting a whole bucket is not supported")
+			return
+		}
 		if err := utils.ValidateDirectoryPath(prefix); err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_PREFIX", fmt.Sprintf("Invalid prefix path: %v", err))
 			return
 		}
 
-		results, err := storageBackend.List(ctx, prefix)
+		// Directory semantics: "users/1" must not also take "users/10/...".
+		results, err := storageBackend.List(ctx, utils.DirectoryListPrefix(prefix))
 		if err != nil {
 			if storage.IsListingTooLarge(err) {
 				// Not a backend failure, and deleting the part that fits would

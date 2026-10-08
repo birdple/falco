@@ -51,7 +51,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := storageBackend.List(ctx, prefix)
+	results, err := storageBackend.List(ctx, utils.DirectoryListPrefix(prefix))
 	if err != nil {
 		if storage.IsListingTooLarge(err) {
 			// The prefix does not fit a whole listing. Name the knob that
@@ -113,10 +113,7 @@ func (h *Handler) listPage(w http.ResponseWriter, r *http.Request, backend stora
 
 	// The prefix is matched verbatim by the backends, so directory semantics
 	// are asked for explicitly here.
-	listPrefix := prefix
-	if listPrefix != "" && !strings.HasSuffix(listPrefix, "/") {
-		listPrefix += "/"
-	}
+	listPrefix := utils.DirectoryListPrefix(prefix)
 
 	page, err := pager.ListPage(r.Context(), storage.ListOptions{
 		Prefix:    listPrefix,
@@ -176,16 +173,18 @@ func (h *Handler) listPage(w http.ResponseWriter, r *http.Request, backend stora
 // Both slices come back sorted by name so the listing is stable between calls;
 // the backend makes no ordering promise.
 func groupListing(results []storage.ListResult, prefix string) ([]types.ListItem, []types.DirectoryInfo) {
-	prefixPath := prefix
-	if prefixPath != "" && !strings.HasSuffix(prefixPath, "/") {
-		prefixPath += "/"
-	}
+	prefixPath := utils.DirectoryListPrefix(prefix)
 
 	var files []types.ListItem
 	directoryMap := make(map[string]*types.DirectoryInfo)
 
 	for _, result := range results {
-		key := strings.TrimPrefix(result.Key, prefixPath)
+		// Backends match prefixes verbatim; a sibling such as "users/10/x"
+		// under "users/1" is not part of this directory.
+		key, under := strings.CutPrefix(result.Key, prefixPath)
+		if !under {
+			continue
+		}
 
 		dirName, _, isNested := strings.Cut(key, "/")
 		if !isNested {

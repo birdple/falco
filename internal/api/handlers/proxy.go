@@ -333,8 +333,8 @@ func (h *Handler) parseProxyParams(query url.Values, extFormat string) (*process
 		params.Format = extFormat
 	}
 
-	params.AutoOrient = query.Get("orient") != "0"
-	params.StripMetadata = query.Get("meta") != "1"
+	params.SkipAutoOrient = query.Get("orient") == "0"
+	params.KeepMetadata = query.Get("meta") == "1"
 
 	if params.Width == 0 && params.Height == 0 {
 		params.Width = envPositiveInt("PROXY_MAX_WIDTH", defaultProxyMaxWidth, 0)

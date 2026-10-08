@@ -127,10 +127,10 @@ func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 		return err == nil
 	}
 
-	if hasField(encode(keepMode(&ProcessingParams{StripMetadata: true}))) {
+	if hasField(encode(keepMode(&ProcessingParams{KeepMetadata: false}))) {
 		t.Fatal("stripping is the default and it did not strip: metadata survived the re-encode")
 	}
-	if !hasField(encode(keepMode(&ProcessingParams{StripMetadata: false}))) {
+	if !hasField(encode(keepMode(&ProcessingParams{KeepMetadata: true}))) {
 		t.Fatal("meta=1 asked to keep metadata and it was dropped anyway")
 	}
 }
@@ -139,8 +139,8 @@ func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 // different bytes, so the two variants must not share a cache entry — otherwise
 // whichever was requested first would be served to everyone.
 func TestGenerateCacheKeySeparatesMetadataVariants(t *testing.T) {
-	stripped := &ProcessingParams{Width: 100, StripMetadata: true}
-	kept := &ProcessingParams{Width: 100, StripMetadata: false}
+	stripped := &ProcessingParams{Width: 100, KeepMetadata: false}
+	kept := &ProcessingParams{Width: 100, KeepMetadata: true}
 
 	if generateCacheKey("k", stripped) == generateCacheKey("k", kept) {
 		t.Fatal("meta variants collide in the cache: the first one requested would be served to both")
