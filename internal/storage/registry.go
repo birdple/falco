@@ -169,28 +169,51 @@ func (r *Registry) HealthAll(ctx context.Context) map[string]error {
 	return results
 }
 
-// Closer is implemented by backends that leave work in flight and have to be
-// waited on at shutdown — today, ReplicatedStorage with async targets.
+// Closer is implemented by backends that hold something to release or wait
+// for at shutdown: ReplicatedStorage (in-flight async replications) and
+// JayStorage (its connection pool).
 type Closer interface {
 	Close(ctx context.Context) error
 }
 
-// CloseAll waits on every registered backend that has pending work.
+// Drainer is implemented by backends that leave work in flight — today,
+// ReplicatedStorage with async targets. Drain waits for that work and releases
+// nothing.
+//
+// It is separate from Closer because one raw backend can sit behind several
+// registry entries: bucket B's async backup target is bucket A's own backend.
+// Closing A before B has drained would close the very connection B's in-flight
+// replications are writing through.
+type Drainer interface {
+	Drain(ctx context.Context) error
+}
+
+// CloseAll shuts every registered backend down in two passes: first it drains
+// every Drainer, so no replication is still running, and only then closes every
+// Closer.
 //
 // Returns a name → error map containing ONLY the ones that failed; empty means
-// they all finished cleanly. Backends that do not implement Closer are absent:
-// there is nothing to wait for.
+// they all finished cleanly. Backends that implement neither are absent: there
+// is nothing to wait for. A backend registered under two names (the default
+// one is) is closed twice, so Close implementations are idempotent.
 func (r *Registry) CloseAll(ctx context.Context) map[string]error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	failures := make(map[string]error)
 	for name, backend := range r.backends {
+		if drainer, ok := backend.(Drainer); ok {
+			if err := drainer.Drain(ctx); err != nil {
+				failures[name] = err
+			}
+		}
+	}
+	for name, backend := range r.backends {
 		closer, ok := backend.(Closer)
 		if !ok {
 			continue
 		}
-		if err := closer.Close(ctx); err != nil {
+		if err := closer.Close(ctx); err != nil && failures[name] == nil {
 			failures[name] = err
 		}
 	}

@@ -31,6 +31,9 @@ type Metrics struct {
 	StorageOperationsTotal    *prometheus.CounterVec
 	StorageOperationDuration  *prometheus.HistogramVec
 	StorageCircuitBreakerOpen prometheus.Gauge
+	// StorageReplicationsDropped counts async replications that never ran
+	// because too many were already in flight: each one is a backup left stale.
+	StorageReplicationsDropped prometheus.Counter
 }
 
 // namespace is the Prometheus namespace for all metrics
@@ -174,6 +177,13 @@ func create() *Metrics {
 				Namespace: namespace,
 				Name:      "storage_circuit_breaker_open",
 				Help:      "Whether the storage circuit breaker is open (1) or closed (0)",
+			},
+		),
+		StorageReplicationsDropped: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "storage_replications_dropped_total",
+				Help:      "Async backup replications dropped because too many were in flight",
 			},
 		),
 	}

@@ -52,4 +52,5 @@ func TestMetrics_StorageFields(t *testing.T) {
 	assert.NotNil(t, m.StorageOperationsTotal)
 	assert.NotNil(t, m.StorageOperationDuration)
 	assert.NotNil(t, m.StorageCircuitBreakerOpen)
+	assert.NotNil(t, m.StorageReplicationsDropped)
 }

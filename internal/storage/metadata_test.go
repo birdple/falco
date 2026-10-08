@@ -104,6 +104,51 @@ func TestMetadataEncoder_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.CreatedAt, decoded.CreatedAt)
 }
 
+// TestMetadataEncoder_RoundTrip_OwnershipAndCacheFields guards the fields the
+// S3/R2 encoder used to drop. Losing owner-id made every S3/R2 image unowned,
+// which only an admin key may delete or update.
+func TestMetadataEncoder_RoundTrip_OwnershipAndCacheFields(t *testing.T) {
+	encoder := NewMetadataEncoder()
+	original := &ImageMetadata{
+		ID:      "abc123",
+		Format:  "webp",
+		MaxAge:  3600,
+		SMaxAge: 86400,
+		OwnerID: "user-42",
+	}
+
+	encoded, err := encoder.Encode(original)
+	require.NoError(t, err)
+	// Same keys jay writes, so both backends store an object the same way.
+	jay := metaToMap(original)
+	for _, k := range []string{"id", "maxage", "smaxage", "owner-id"} {
+		assert.Equal(t, jay[k], encoded[k], "key %q", k)
+	}
+
+	decoded, err := encoder.Decode(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, "abc123", decoded.ID)
+	assert.Equal(t, 3600, decoded.MaxAge)
+	assert.Equal(t, 86400, decoded.SMaxAge)
+	assert.Equal(t, "user-42", decoded.OwnerID)
+}
+
+// TestMetadataEncoder_Decode_LegacyObject is the backward-compatibility half:
+// an object written before those keys existed still decodes, as unowned and
+// with default cache lifetimes, and a malformed lifetime is ignored.
+func TestMetadataEncoder_Decode_LegacyObject(t *testing.T) {
+	decoded, err := NewMetadataEncoder().Decode(map[string]string{
+		"original-name": "old.jpg",
+		"format":        "jpeg",
+		"maxage":        "not-a-number",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decoded.ID)
+	assert.Empty(t, decoded.OwnerID)
+	assert.Zero(t, decoded.MaxAge)
+	assert.Zero(t, decoded.SMaxAge)
+}
+
 func TestImageMetadata_MarshalJSON(t *testing.T) {
 	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	metadata := &ImageMetadata{

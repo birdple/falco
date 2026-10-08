@@ -2,11 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/pkg/metrics"
 )
 
 // BackupTarget pairs a storage backend with a replication mode.
@@ -15,15 +18,37 @@ type BackupTarget struct {
 	Mode    ReplicationMode
 }
 
+// maxAsyncReplications bounds how many asynchronous replications (stores and
+// deletes to async targets) can be in flight at once, across every copy of a
+// ReplicatedStorage made by WithBucket.
+//
+// Each one holds the whole object in memory until its backup answers, so
+// without a bound a slow or hung backup turns every upload into a goroutine
+// pinning its buffer, and the process grows until it dies. Past the bound a
+// replication is dropped — counted, logged and exported as
+// falco_storage_replications_dropped_total — rather than queued: the primary
+// already has the object, and a stale backup that says so beats an OOM.
+const maxAsyncReplications = 64
+
+// replicationQueue is the in-flight state of async replication. It lives behind
+// a pointer so that every copy WithBucket hands out shares it: draining the
+// registered instance has to wait for the replications started through those
+// copies too, and the bound has to hold across all of them.
+type replicationQueue struct {
+	// wg tracks in-flight replications. Without it, shutting the process down
+	// mid-replication loses that copy silently and leaves the backup out of
+	// sync with nothing to say so. Drain waits on it.
+	wg      sync.WaitGroup
+	slots   chan struct{}
+	dropped atomic.Int64
+}
+
 // ReplicatedStorage wraps a primary StorageBackend with N backup targets,
 // each with its own replication mode (sync, async, read-fallback).
 type ReplicatedStorage struct {
 	primary StorageBackend
 	backups []BackupTarget
-	// async tracks in-flight replications. Without it, shutting the process
-	// down mid-replication loses that copy silently and leaves the backup out
-	// of sync with nothing to say so. Close waits on it.
-	async sync.WaitGroup
+	async   *replicationQueue
 }
 
 // NewReplicatedStorage creates a new replicated storage wrapper.
@@ -31,18 +56,19 @@ func NewReplicatedStorage(primary StorageBackend, backups []BackupTarget) *Repli
 	return &ReplicatedStorage{
 		primary: primary,
 		backups: backups,
+		async:   &replicationQueue{slots: make(chan struct{}, maxAsyncReplications)},
 	}
 }
 
-// Close waits for in-flight asynchronous replications to finish.
+// Drain waits for in-flight asynchronous replications to finish.
 //
 // Returns the context's error if it expires first: whatever was still in flight
 // is lost, and whoever is shutting the process down needs to be able to find
 // that out rather than assume it went fine.
-func (rs *ReplicatedStorage) Close(ctx context.Context) error {
+func (rs *ReplicatedStorage) Drain(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
-		rs.async.Wait()
+		rs.async.wg.Wait()
 		close(done)
 	}()
 
@@ -56,8 +82,75 @@ func (rs *ReplicatedStorage) Close(ctx context.Context) error {
 	}
 }
 
+// Close drains in-flight replications and then closes the primary and every
+// backup that implements Closer.
+//
+// Backup targets are usually bucket backends in their own right, registered
+// and closed under their own names as well. That is why Registry.CloseAll
+// drains every backend before it closes any, and why Close implementations
+// have to be idempotent.
+func (rs *ReplicatedStorage) Close(ctx context.Context) error {
+	if err := rs.Drain(ctx); err != nil {
+		return err
+	}
+	var errs []error
+	if c, ok := rs.primary.(Closer); ok {
+		errs = append(errs, c.Close(ctx))
+	}
+	for _, t := range rs.backups {
+		if c, ok := t.Backend.(Closer); ok {
+			errs = append(errs, c.Close(ctx))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// DroppedReplications returns how many async replications were dropped because
+// maxAsyncReplications were already in flight.
+func (rs *ReplicatedStorage) DroppedReplications() int64 {
+	return rs.async.dropped.Load()
+}
+
+// replicate runs fn in the background if a slot is free, and drops it
+// otherwise. fn reports its own errors: only it knows what it was doing.
+func (rs *ReplicatedStorage) replicate(op, key string, backupIndex int, fn func()) {
+	select {
+	case rs.async.slots <- struct{}{}:
+	default:
+		dropped := rs.async.dropped.Add(1)
+		metrics.Default().StorageReplicationsDropped.Inc()
+		logger.Error().
+			Str("operation", op).
+			Str("key", key).
+			Int("backup_index", backupIndex).
+			Int64("dropped_total", dropped).
+			Int("max_in_flight", maxAsyncReplications).
+			Msg("Async replication dropped: too many in flight — the backup is now stale for this key")
+		return
+	}
+	rs.async.wg.Go(func() {
+		defer func() { <-rs.async.slots }()
+		fn()
+	})
+}
+
+// cloneMetadata returns a copy the callee can write into. Backends fill in the
+// metadata they are handed (size, etag, storage key, created-at), so two of
+// them sharing one pointer race — and an async replication sharing the
+// caller's pointer races with the caller reading it after Store returns.
+func cloneMetadata(m *ImageMetadata) *ImageMetadata {
+	if m == nil {
+		return nil
+	}
+	c := *m
+	return &c
+}
+
 // Store writes data to the primary backend and replicates to backup targets
 // based on each target's replication mode.
+//
+// The primary writes into the caller's metadata, as any backend does; each
+// backup gets its own copy, taken once the primary is done with it.
 func (rs *ReplicatedStorage) Store(ctx context.Context, key string, data io.Reader, metadata *ImageMetadata) error {
 	buf, err := io.ReadAll(data)
 	if err != nil {
@@ -72,7 +165,7 @@ func (rs *ReplicatedStorage) Store(ctx context.Context, key string, data io.Read
 	for i, target := range rs.backups {
 		switch target.Mode {
 		case ReplicationSync:
-			if err := target.Backend.Store(ctx, key, newBytesReader(buf), metadata); err != nil {
+			if err := target.Backend.Store(ctx, key, newBytesReader(buf), cloneMetadata(metadata)); err != nil {
 				logger.Error().Err(err).
 					Str("key", key).
 					Int("backup_index", i).
@@ -80,9 +173,9 @@ func (rs *ReplicatedStorage) Store(ctx context.Context, key string, data io.Read
 				return err
 			}
 		case ReplicationAsync:
-			t, idx := target, i
-			rs.async.Go(func() {
-				if err := t.Backend.Store(context.Background(), key, newBytesReader(buf), metadata); err != nil {
+			t, idx, meta := target, i, cloneMetadata(metadata)
+			rs.replicate("store", key, idx, func() {
+				if err := t.Backend.Store(context.Background(), key, newBytesReader(buf), meta); err != nil {
 					logger.Error().Err(err).
 						Str("key", key).
 						Int("backup_index", idx).
@@ -120,10 +213,65 @@ func (rs *ReplicatedStorage) Retrieve(ctx context.Context, key string) (io.ReadC
 	return nil, nil, err
 }
 
+// Stat reads metadata from the primary, falling back to read-fallback targets
+// when the primary does not have the key — the same rule as Retrieve, so the
+// two agree on whether an object exists.
+func (rs *ReplicatedStorage) Stat(ctx context.Context, key string) (*ImageMetadata, error) {
+	metadata, err := rs.primary.Stat(ctx, key)
+	if err == nil || !IsNotFound(err) {
+		return metadata, err
+	}
+
+	for _, target := range rs.backups {
+		if target.Mode == ReplicationReadFallback {
+			if m, e := target.Backend.Stat(ctx, key); e == nil {
+				return m, nil
+			}
+		}
+	}
+
+	return nil, err
+}
+
 // Delete removes from the primary and replicates deletion to backup targets.
+//
+// Read-fallback targets are deleted synchronously and before answering, unlike
+// the other modes: Retrieve and Stat read from them whenever the primary
+// misses, so a delete that only reached the primary would go on serving the
+// deleted image from the backup. A failure there is returned, since the image
+// is still being served. For the same reason a primary that no longer has the
+// key does not end the delete: the read-fallback copy is the visible one, and
+// this is what lets a retry after such a failure finish the job.
 func (rs *ReplicatedStorage) Delete(ctx context.Context, key string) error {
-	if err := rs.primary.Delete(ctx, key); err != nil {
-		return err
+	primaryErr := rs.primary.Delete(ctx, key)
+	if primaryErr != nil && !IsNotFound(primaryErr) {
+		return primaryErr
+	}
+
+	deletedFromFallback := false
+	for i, target := range rs.backups {
+		if target.Mode != ReplicationReadFallback {
+			continue
+		}
+		err := target.Backend.Delete(ctx, key)
+		switch {
+		case err == nil:
+			deletedFromFallback = true
+		case IsNotFound(err):
+		default:
+			logger.Error().Err(err).
+				Str("key", key).
+				Int("backup_index", i).
+				Msg("Failed to delete from read-fallback backup — it would still be served")
+			return fmt.Errorf("delete %s from read-fallback backup %d: %w", key, i, err)
+		}
+	}
+
+	if primaryErr != nil {
+		if deletedFromFallback {
+			return nil
+		}
+		return primaryErr
 	}
 
 	for i, target := range rs.backups {
@@ -138,7 +286,7 @@ func (rs *ReplicatedStorage) Delete(ctx context.Context, key string) error {
 			}
 		case ReplicationAsync:
 			t, idx := target, i
-			rs.async.Go(func() {
+			rs.replicate("delete", key, idx, func() {
 				if err := t.Backend.Delete(context.Background(), key); err != nil && !IsNotFound(err) {
 					logger.Error().Err(err).
 						Str("key", key).
@@ -147,17 +295,7 @@ func (rs *ReplicatedStorage) Delete(ctx context.Context, key string) error {
 				}
 			})
 		case ReplicationReadFallback:
-			// Best-effort delete: logged, not propagated — a read-fallback
-			// backup is not the source of truth for deletion.
-			t, idx := target, i
-			rs.async.Go(func() {
-				if err := t.Backend.Delete(context.Background(), key); err != nil && !IsNotFound(err) {
-					logger.Warn().Err(err).
-						Str("key", key).
-						Int("backup_index", idx).
-						Msg("Failed to delete from read-fallback backup (best-effort)")
-				}
-			})
+			// Already deleted above, synchronously.
 		}
 	}
 
@@ -220,6 +358,10 @@ func (rs *ReplicatedStorage) GetStats(ctx context.Context) (*StorageStats, error
 }
 
 // WithBucket delegates to all backends that support it.
+//
+// The copy shares the async replication state with rs: CloseAll only reaches
+// the registered instance, and it has to wait for replications started through
+// any copy of it.
 func (rs *ReplicatedStorage) WithBucket(bucket string) StorageBackend {
 	primary := rs.primary
 	if ba, ok := rs.primary.(BucketAware); ok {
@@ -238,6 +380,7 @@ func (rs *ReplicatedStorage) WithBucket(bucket string) StorageBackend {
 	return &ReplicatedStorage{
 		primary: primary,
 		backups: newBackups,
+		async:   rs.async,
 	}
 }
 

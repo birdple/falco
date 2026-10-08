@@ -120,6 +120,13 @@ type Lister interface {
 // Reader defines the interface for reading operations
 type Reader interface {
 	Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error)
+	// Stat returns an object's metadata without its body: a HEAD, not a GET.
+	// A missing object is ErrImageNotFound, exactly as with Retrieve.
+	//
+	// It exists for the callers that only need to know what an object is —
+	// its owner, its content type, its size — and were paying for a body they
+	// closed unread.
+	Stat(ctx context.Context, key string) (*ImageMetadata, error)
 	Exists(ctx context.Context, key string) (bool, error)
 }
 
