@@ -195,7 +195,7 @@ func (h *Handler) deliverRaw(w http.ResponseWriter, r *http.Request, req deliver
 	defer func() { _ = reader.Close() }()
 
 	if !utils.IsImageContentType(metadata.ContentType) || !needsReencode(params, metadata) {
-		h.serveImage(w, r, reader, metadata)
+		h.serveImage(w, r, reader, withRequestedTTL(metadata, params))
 		return
 	}
 
@@ -215,6 +215,23 @@ func (h *Handler) deliverRaw(w http.ResponseWriter, r *http.Request, req deliver
 	defer func() { _ = processedImage.Data.Close() }()
 
 	h.serveImage(w, r, processedImage.Data, h.buildProcessedMetadata(req.imageID, processedImage, params))
+}
+
+// withRequestedTTL lets ?maxage= / ?smaxage= override the stored TTLs on the
+// streaming path, as they do on every rendered response. The stored metadata
+// is copied, not modified.
+func withRequestedTTL(metadata *storage.ImageMetadata, params *processor.ProcessingParams) *storage.ImageMetadata {
+	if params.MaxAge <= 0 && params.SMaxAge <= 0 {
+		return metadata
+	}
+	out := *metadata
+	if params.MaxAge > 0 {
+		out.MaxAge = params.MaxAge
+	}
+	if params.SMaxAge > 0 {
+		out.SMaxAge = params.SMaxAge
+	}
+	return &out
 }
 
 // needsReencode reports whether an untransformed image still has to go through

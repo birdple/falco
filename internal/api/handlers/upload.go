@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -210,11 +211,22 @@ func (h *Handler) parseUploadPayload(
 	}
 }
 
+// bodyReadFailure maps an error reading the request body: past the
+// MAX_FILE_SIZE_MB limit it is a 413, like a body the middleware refused up
+// front for its Content-Length; anything else is the caller's malformed
+// request.
+func bodyReadFailure(err error, code, message string) *fetchError {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		return &fetchError{http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Image exceeds the maximum upload size"}
+	}
+	return &fetchError{http.StatusBadRequest, code, message}
+}
+
 // readRawBody handles an upload whose body is the image itself.
 func readRawBody(r *http.Request, query url.Values, contentType string) (uploadPayload, *fetchError) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return uploadPayload{}, &fetchError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
+		return uploadPayload{}, bodyReadFailure(err, "READ_ERROR", "Failed to read image data")
 	}
 
 	payload := uploadPayload{
@@ -240,7 +252,7 @@ func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *fetchEr
 		maxFormBytes = defaultMaxFormBytes
 	}
 	if err := r.ParseMultipartForm(maxFormBytes); err != nil {
-		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse multipart form"}
+		return uploadPayload{}, bodyReadFailure(err, "INVALID_REQUEST", "Failed to parse multipart form")
 	}
 
 	file, header, err := r.FormFile("file")
@@ -251,7 +263,7 @@ func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *fetchEr
 
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return uploadPayload{}, &fetchError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
+		return uploadPayload{}, bodyReadFailure(err, "READ_ERROR", "Failed to read image data")
 	}
 
 	payload := uploadPayload{

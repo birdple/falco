@@ -481,6 +481,13 @@ func (h *Handler) sendStorageBackendError(w http.ResponseWriter, err error) {
 	h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", err.Error())
 }
 
+// ownershipError is checkOwnership's refusal: the caller may not mutate the
+// object. Any other error it returns comes from the backend and says nothing
+// about the caller.
+type ownershipError struct{ reason string }
+
+func (e *ownershipError) Error() string { return e.reason }
+
 // checkOwnership verifies that the authenticated caller is allowed to mutate
 // the object at `key` in `backend`. Rules:
 //
@@ -522,18 +529,18 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 			Str("key", key).
 			Str("key_name", scope.KeyName).
 			Msg("Denied mutation of legacy (unowned) image by scoped key")
-		return errors.New("image has no recorded owner; admin scope required")
+		return &ownershipError{"image has no recorded owner; admin scope required"}
 	}
 
 	if callerOwner == "" {
-		return errors.New("X-Owner-Id header is required")
+		return &ownershipError{"X-Owner-Id header is required"}
 	}
 	if callerOwner != storedOwner {
 		logger.Warn().
 			Str("key", key).
 			Str("key_name", scope.KeyName).
 			Msg("Owner mismatch on mutation attempt")
-		return errors.New("caller is not the owner of this image")
+		return &ownershipError{"caller is not the owner of this image"}
 	}
 	return nil
 }

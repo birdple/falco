@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -40,11 +41,16 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Enforce per-image ownership BEFORE any mutation. Admin scope bypasses.
 	if ownErr := h.checkOwnership(r, storageBackend, req.Key); ownErr != nil {
-		if storage.IsNotFound(ownErr) {
+		switch denied, isDenial := errors.AsType[*ownershipError](ownErr); {
+		case isDenial:
+			h.sendError(w, http.StatusForbidden, "FORBIDDEN", denied.Error())
+		case storage.IsNotFound(ownErr):
 			h.sendError(w, http.StatusNotFound, "NOT_FOUND", "Image not found")
-			return
+		default:
+			// The backend failed to answer: not a verdict on the caller.
+			fe := retrieveFailure(ownErr)
+			h.sendError(w, fe.status, fe.code, fe.message)
 		}
-		h.sendError(w, http.StatusForbidden, "FORBIDDEN", ownErr.Error())
 		return
 	}
 
