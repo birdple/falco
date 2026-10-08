@@ -4,31 +4,42 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  # The release workflow runs this whole pipeline first: nothing is published
+  # from a commit that would not pass it.
+  workflow_call:
 
 permissions:
   contents: read
 
-# Un push nuevo a la misma rama invalida el anterior: acá cada job compila
-# libvips-dev y CGO, y dejar corriendo revisiones muertas no sirve de nada.
+# A new push to the same ref supersedes the previous one: every job here builds
+# libvips-dev and CGO, and finishing a stale revision helps nobody.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# falco enlaza libvips por CGO y usa github.com/cshum/vipsgen/vips, que exige
-# libvips 8.18.x. Ubuntu 24.04 (el ubuntu-latest del runner) trae 8.15 y Debian
-# trixie 8.16: ninguna compila. Por eso TODO job que toque Go corre dentro de
-# ubuntu:26.04, la primera LTS con 8.18 en apt.
+# falco links libvips through CGO via github.com/cshum/vipsgen/vips, which needs
+# libvips 8.18.x. Ubuntu 24.04 (the runner's ubuntu-latest) ships 8.15 and
+# Debian trixie 8.16: neither builds. So EVERY job that touches Go runs inside
+# ubuntu:26.04, the first LTS with 8.18 in apt.
+#
+# Third-party actions are pinned by commit SHA (the tag is in the comment):
+# a moved tag cannot change what runs here. Dependabot proposes the bumps.
 env:
   GO_VERSION: "1.27.0"
+  # Same version as scripts/lint-in-container.sh: `make lint-linux` and CI must
+  # agree, or a finding shows up in only one of them.
+  GOLANGCI_LINT_VERSION: "v2.13.2"
+  GOVULNCHECK_VERSION: "v1.8.0"
 
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
     container: ubuntu:26.04
+    timeout-minutes: 30
     steps:
-      # Va antes del checkout a propósito: la imagen base no trae ni git ni las
-      # herramientas de compilación.
+      # Before checkout on purpose: the base image has neither git nor a
+      # toolchain.
       - name: System dependencies
         run: |
           set -eux
@@ -36,9 +47,9 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config libvips-dev git ca-certificates curl
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -52,7 +63,7 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage
           path: coverage.out
@@ -61,6 +72,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     container: ubuntu:26.04
+    timeout-minutes: 30
     steps:
       - name: System dependencies
         run: |
@@ -69,9 +81,9 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config libvips-dev git ca-certificates curl
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -80,49 +92,61 @@ jobs:
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
-            echo "sin formatear:" >&2
+            echo "not formatted:" >&2
             echo "$unformatted" >&2
             exit 1
           fi
 
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
 
-      # El panel se COMPILA: los *_templ.go salen de los .templ y output.css de
-      # input.css. Sin esta compuerta el drift es invisible — así fue como los
-      # generados quedaron en templ v0.3.1001 mientras go.mod exigía v0.3.1020,
-      # y output.css vino de un tailwind distinto al de bin/.
-      - name: Panel regenerado
+      # The panel is COMPILED: the *_templ.go files come from the .templ ones
+      # and output.css from input.css. Without this gate the drift is
+      # invisible — that is how the generated files sat on templ v0.3.1001
+      # while go.mod required v0.3.1020.
+      - name: Panel regenerated
         run: make ui-check
 
-  # Compila y ARRANCA el binario en las dos libc que publica el release. Un
-  # binario CGO puede compilar y no enlazar en runtime, así que el gate es que
-  # /health conteste, no que `go build` termine.
+      # Same rule for the mocks: generated by the mockery pinned in go.mod,
+      # never edited by hand.
+      - name: Mocks regenerated
+        run: make mocks-check
+
+      # Known vulnerabilities in the dependencies and the standard library
+      # that falco's code actually reaches.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
+
+  # Builds AND STARTS the binary on both libcs the release publishes. A CGO
+  # binary can build and still fail to link at runtime, so the gate is /health
+  # answering, not `go build` finishing.
   binary:
     name: Binary (${{ matrix.libc }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         libc: [glibc, musl]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Build and smoke test
         run: scripts/build-in-container.sh "${{ matrix.libc }}" 0.0.0-ci "${GITHUB_SHA::7}" dist
 
-  # El Dockerfile es lo que se despliega en birdple-v2; si se rompe, se rompe en
-  # el deploy y no en la revisión. Acá se construye y se arranca, sin publicar.
+  # The Dockerfile is what birdple-v2 deploys; if it breaks, it should break
+  # here and not at deploy time. Built and started, never published.
   image:
     name: Image
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64
@@ -131,8 +155,10 @@ jobs:
           build-args: |
             VERSION=0.0.0-ci
             COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped apart from the release's cache, so a pull request can never
+          # seed layers that end up in a published image.
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,scope=ci,mode=max
 
       - name: Smoke test the image
         run: scripts/smoke-image.sh falco:ci 0.0.0-ci

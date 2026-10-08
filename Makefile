@@ -1,312 +1,215 @@
-# `make check` es lo que tiene que pasar antes de un commit. El gate de lint
-# (.golangci.yml) es lo que impide que la legibilidad se vuelva a degradar.
-.PHONY: check check-fmt check-build
-check: check-fmt vet lint test ui-check check-build ## Todo lo que tiene que pasar antes de un commit
-	@echo "ok: check completo"
+# falco — image processing and delivery service.
+#
+# `make check` is what has to pass before a commit; the lint gate
+# (.golangci.yml) is what keeps readability from degrading again.
+# `make help` lists every target.
 
-check-fmt: ## Falla si algo está sin formatear
-	@test -z "$$(gofmt -l . | grep -v vendor)" || \
-		(echo "sin formatear:"; gofmt -l . | grep -v vendor; exit 1)
+BINARY_NAME  := falco-server
+DOCKER_IMAGE := falco-service
+VERSION      ?= dev
+COMMIT       ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS      := -X github.com/birdple/falco/internal/version.Version=$(VERSION) \
+                -X github.com/birdple/falco/internal/version.Commit=$(COMMIT)
 
-check-build: ## Compila TODOS los paquetes para el host.
-	@# No usa el target `build`: ese cross-compila a Linux con CGO y no corre
-	@# en macOS, donde libvips es del host.
-	go build ./...
+# Kept in step with scripts/lint-in-container.sh and .github/workflows/ci.yml.
+GOLANGCI_LINT_VERSION := v2.13.2
 
-# Makefile de falco — servicio de procesamiento de imágenes
-
-# Variables
-BINARY_NAME=falco-server
-DOCKER_IMAGE=falco-service
-VERSION?=latest
-
-# Build commands
-.PHONY: build
-build:
-	CGO_ENABLED=1 GOOS=linux go build -o bin/$(BINARY_NAME) cmd/server/main.go
-
-.PHONY: build-local
-build-local:
-	go build -o bin/$(BINARY_NAME) cmd/server/main.go
-
-.PHONY: run
-run:
-	go run cmd/server/main.go
-
-# air lee .air.toml de la raíz si existe; sin -c no falla cuando no está.
-.PHONY: dev
-dev:
-	air
-
-# Testing commands
-.PHONY: test
-test:
-	go test -v ./...
-
-.PHONY: test-coverage
-test-coverage:
-	go test -v -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
-
-.PHONY: test-performance
-test-performance:
-	go test -v -bench=. -benchmem ./...
-
-# Code quality commands
-.PHONY: lint
-lint:
-	golangci-lint run
-
-# El lint del host NO es el de CI: hay reglas cuyo resultado depende de la
-# plataforma (unconvert sobre syscall.Statfs_t, por ejemplo, donde el tipo del
-# campo cambia entre Linux y Darwin). Este target corre el mismo golangci-lint
-# que el workflow, dentro de Linux.
-.PHONY: lint-linux
-lint-linux:
-	@scripts/lint-in-container.sh
-
-.PHONY: fmt
-fmt:
-	go fmt ./...
-	goimports -w .
-
-.PHONY: vet
-vet:
-	go vet ./...
+.DEFAULT_GOAL := help
 
 # ---------------------------------------------------------------------------
-# Panel web (templ + Tailwind)
+# Gate
+# ---------------------------------------------------------------------------
+
+.PHONY: check check-fmt check-build
+check: check-fmt vet lint test ui-check mocks-check check-build ## Everything that must pass before a commit
+	@echo "ok: check passed"
+
+check-fmt: ## Fail if anything is not gofmt-formatted
+	@test -z "$$(gofmt -l . | grep -v vendor)" || \
+		(echo "not formatted:"; gofmt -l . | grep -v vendor; exit 1)
+
+check-build: ## Compile EVERY package for the host
+	@# Not the `build` target: that one cross-compiles to Linux with CGO and
+	@# does not run on macOS, where libvips comes from the host.
+	go build ./...
+
+# ---------------------------------------------------------------------------
+# Build and run
+# ---------------------------------------------------------------------------
+
+.PHONY: build build-local run dev
+build: ## Build the Linux binary (CGO; run it on Linux)
+	CGO_ENABLED=1 GOOS=linux go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/server
+
+build-local: ## Build the binary for the host
+	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/server
+
+run: ## Run the service (needs libvips on the host)
+	go run ./cmd/server
+
+# air reads .air.toml from the root if it exists; without -c it does not fail
+# when there is none.
+dev: ## Run with hot reload (needs air, see `make setup`)
+	air
+
+# ---------------------------------------------------------------------------
+# Tests and quality
+# ---------------------------------------------------------------------------
+
+.PHONY: test test-coverage test-performance lint lint-linux fmt vet vuln
+test: ## Run all tests with the race detector, as CI does
+	go test -race ./...
+
+test-coverage: ## Run the tests with an HTML coverage report
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+
+test-performance: ## Run the benchmarks
+	go test -run '^$$' -bench=. -benchmem ./...
+
+lint: ## Run golangci-lint on the host
+	golangci-lint run
+
+# The host lint is NOT CI's lint: some rules depend on the platform (unconvert
+# on syscall.Statfs_t, whose field type differs between Linux and Darwin).
+# This runs the same golangci-lint as the workflow, inside Linux.
+lint-linux: ## Run CI's lint inside a Linux container
+	@scripts/lint-in-container.sh
+
+fmt: ## Format the code
+	gofmt -w .
+
+vet: ## Run go vet
+	go vet ./...
+
+vuln: ## Check dependencies for known vulnerabilities
+	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+# ---------------------------------------------------------------------------
+# Generated code
 #
-# Las plantillas y el CSS del panel se COMPILAN. Sin estos targets, editar un
-# .templ o una clase de Tailwind no cambia nada de lo que sirve el binario y
-# nada lo detecta: los *_templ.go decían v0.3.1001 mientras go.mod exigía
-# v0.3.1020, y output.css venía de un tailwind 4.2.2 que no era el de bin/.
+# The panel templates and CSS are COMPILED, and the test mocks are GENERATED.
+# Without these targets, editing a .templ, a Tailwind class or an interface
+# changes nothing the binary or the tests see, and nothing notices: the
+# *_templ.go files once said v0.3.1001 while go.mod required v0.3.1020.
 # ---------------------------------------------------------------------------
 
 TAILWIND_VERSION := 4.2.2
 TAILWIND_BIN     := bin/tailwindcss
-TEMPL_SRC        := $(wildcard internal/api/views/templ/*.templ)
 
-.PHONY: ui ui-templ ui-css ui-check
-ui: ui-templ ui-css ## Regenera el panel: plantillas templ + CSS de Tailwind
+.PHONY: ui ui-templ ui-css ui-check mocks mocks-check
+ui: ui-templ ui-css ## Regenerate the panel: templ templates + Tailwind CSS
 
-ui-templ: ## Genera los *_templ.go desde los .templ
+ui-templ: ## Generate the *_templ.go files from the .templ ones
 	@go tool templ generate
 
-ui-css: $(TAILWIND_BIN) ## Compila web/static/css/input.css -> output.css
+ui-css: $(TAILWIND_BIN) ## Compile web/static/css/input.css -> output.css
 	@$(TAILWIND_BIN) -i web/static/css/input.css -o web/static/css/output.css
 
-# bin/ está en .gitignore, así que un clone limpio no trae el compilador de
-# Tailwind. Se descarga con la versión FIJADA: si flota, el CSS cambia sin que
-# nadie lo haya pedido y el diff aparece en un commit ajeno.
+# bin/ is in .gitignore, so a clean clone has no Tailwind compiler. It is
+# downloaded at the PINNED version and checked against the release's published
+# SHA-256: a floating version changes the CSS nobody asked for, and an
+# unverified binary is code run on every developer machine and in CI.
 $(TAILWIND_BIN):
 	@mkdir -p bin
 	@os=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
 	arch=$$(uname -m); \
 	case "$$os" in darwin) os=macos ;; esac; \
 	case "$$arch" in x86_64|amd64) arch=x64 ;; aarch64) arch=arm64 ;; esac; \
-	url="https://github.com/tailwindlabs/tailwindcss/releases/download/v$(TAILWIND_VERSION)/tailwindcss-$$os-$$arch"; \
-	echo "descargando tailwindcss v$(TAILWIND_VERSION) ($$os-$$arch)"; \
-	curl -fsSL -o $@ "$$url"
+	asset="tailwindcss-$$os-$$arch"; \
+	case "$$asset" in \
+		tailwindcss-linux-x64)   sum=4ab84f2b496c402d3ec4fd25e0e5559fe1184d886dadae8fb4438344ec044c22 ;; \
+		tailwindcss-linux-arm64) sum=ad627e77b496cccada4a6e26eafff698ef0829081e575a4baf3af8524bb00747 ;; \
+		tailwindcss-macos-arm64) sum=2ce66b7c8101ef1245a07d1e7abb4beb35bf512fd3beecba1cdfb327580d1252 ;; \
+		tailwindcss-macos-x64)   sum=98e34c6abd00a75a74ea2d20acf9e284241d13023133076d220c6f3ca419d920 ;; \
+		*) echo "no pinned checksum for $$asset" >&2; exit 1 ;; \
+	esac; \
+	echo "downloading tailwindcss v$(TAILWIND_VERSION) ($$asset)"; \
+	curl -fsSL -o $@.tmp "https://github.com/tailwindlabs/tailwindcss/releases/download/v$(TAILWIND_VERSION)/$$asset"; \
+	if command -v sha256sum >/dev/null; then got=$$(sha256sum $@.tmp | cut -d' ' -f1); \
+	else got=$$(shasum -a 256 $@.tmp | cut -d' ' -f1); fi; \
+	if [ "$$got" != "$$sum" ]; then rm -f $@.tmp; echo "checksum mismatch for $$asset" >&2; exit 1; fi; \
+	mv $@.tmp $@
 	@chmod +x $@
 
-# Comprueba que los archivos generados corresponden a sus fuentes.
+# Checks that the generated files match their sources.
 #
-# Compara por contenido antes/después de regenerar, NO con `git diff`: así vale
-# igual en CI y en un árbol de trabajo sucio, que es el estado normal mientras
-# se edita el panel.
-ui-check: ## Falla si el panel está sin regenerar
+# Compares contents before/after regenerating, NOT with `git diff`, so it
+# works the same in CI and in a dirty working tree, which is the normal state
+# while editing the panel.
+ui-check: ## Fail if the panel is not regenerated
 	@tmp=$$(mktemp -d); \
 	cp internal/api/views/templ/*_templ.go "$$tmp/" 2>/dev/null || true; \
 	cp web/static/css/output.css "$$tmp/output.css" 2>/dev/null || true; \
 	$(MAKE) --no-print-directory ui >/dev/null; \
 	rc=0; \
 	for f in internal/api/views/templ/*_templ.go; do \
-		cmp -s "$$f" "$$tmp/$$(basename $$f)" || { echo "sin regenerar: $$f" >&2; rc=1; }; \
+		cmp -s "$$f" "$$tmp/$$(basename $$f)" || { echo "not regenerated: $$f" >&2; rc=1; }; \
 	done; \
 	cmp -s web/static/css/output.css "$$tmp/output.css" || \
-		{ echo "sin regenerar: web/static/css/output.css" >&2; rc=1; }; \
+		{ echo "not regenerated: web/static/css/output.css" >&2; rc=1; }; \
 	rm -rf "$$tmp"; \
-	test $$rc -eq 0 || { echo "corre 'make ui' y commitea el resultado" >&2; exit 1; }
+	test $$rc -eq 0 || { echo "run 'make ui' and commit the result" >&2; exit 1; }
 
-# Docker commands
-.PHONY: docker-build
-docker-build:
-	docker build -t $(DOCKER_IMAGE):$(VERSION) .
+mocks: ## Regenerate tests/mocks with the mockery pinned in go.mod
+	@go tool mockery
 
-.PHONY: docker-run
-docker-run: docker-build
+mocks-check: ## Fail if tests/mocks is not regenerated
+	@tmp=$$(mktemp -d); \
+	cp tests/mocks/*.go "$$tmp/"; \
+	go tool mockery >/dev/null 2>&1; \
+	rc=0; \
+	for f in tests/mocks/*.go; do \
+		cmp -s "$$f" "$$tmp/$$(basename $$f)" || { echo "not regenerated: $$f" >&2; rc=1; }; \
+	done; \
+	rm -rf "$$tmp"; \
+	test $$rc -eq 0 || { echo "run 'make mocks' and commit the result" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+
+.PHONY: docker-build docker-run docker-up docker-down docker-monitoring docker-logs
+docker-build: ## Build the Docker image
+	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t $(DOCKER_IMAGE):$(VERSION) .
+
+docker-run: docker-build ## Build and run the image with .env
 	docker run -p 8080:8080 --env-file .env $(DOCKER_IMAGE):$(VERSION)
 
-.PHONY: docker-compose-up
-docker-compose-up:
-	docker-compose up --build
+docker-up: ## Start falco with docker compose
+	docker compose --profile app up -d --build
 
-.PHONY: docker-compose-down
-docker-compose-down:
-	docker-compose down
+docker-monitoring: ## Start falco plus Prometheus and Grafana
+	docker compose --profile app --profile monitoring up -d --build
 
-# Monitoring commands
-.PHONY: monitoring-up
-monitoring-up:
-	docker-compose --profile monitoring up -d
-	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana: http://localhost:3001 (admin/falco123)"
+docker-down: ## Stop every compose service
+	docker compose --profile app --profile monitoring --profile with-cache --profile with-nginx down
 
-.PHONY: monitoring-down
-monitoring-down:
-	docker-compose --profile monitoring down
+docker-logs: ## Follow the compose logs
+	docker compose logs -f
 
-.PHONY: monitoring-logs
-monitoring-logs:
-	docker-compose --profile monitoring logs -f
+# ---------------------------------------------------------------------------
+# Setup and housekeeping
+# ---------------------------------------------------------------------------
 
-# Docker profile commands
-.PHONY: docker-app
-docker-app:
-	docker-compose --profile app up -d
-	@echo "falco: http://localhost:8080"
-
-.PHONY: docker-app-with-monitoring
-docker-app-with-monitoring:
-	docker-compose --profile app --profile monitoring up -d
-	@echo "falco: http://localhost:8080"
-	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana: http://localhost:3001 (admin/falco123)"
-
-.PHONY: docker-app-with-cache
-docker-app-with-cache:
-	docker-compose --profile app --profile with-cache up -d
-	@echo "falco: http://localhost:8080"
-	@echo "Valkey (Redis): localhost:6379"
-
-.PHONY: docker-app-with-db
-docker-app-with-db:
-	docker-compose --profile app --profile with-db up -d
-	@echo "falco: http://localhost:8080"
-	@echo "PostgreSQL: localhost:5432"
-
-.PHONY: docker-app-with-nginx
-docker-app-with-nginx:
-	docker-compose --profile app --profile with-nginx up -d
-	@echo "Nginx: http://localhost:80"
-	@echo "falco (backend): http://localhost:8080"
-
-.PHONY: docker-full
-docker-full:
-	docker-compose --profile app --profile monitoring --profile with-cache --profile with-db --profile with-nginx up -d
-	@echo "=== Full Stack Started ==="
-	@echo "Nginx: http://localhost:80"
-	@echo "falco: http://localhost:8080"
-	@echo "Prometheus: http://localhost:9090"
-	@echo "Grafana: http://localhost:3001 (admin/falco123)"
-	@echo "Valkey (Redis): localhost:6379"
-	@echo "PostgreSQL: localhost:5432"
-
-.PHONY: docker-all-down
-docker-all-down:
-	docker-compose --profile app --profile monitoring --profile with-cache --profile with-db --profile with-nginx down
-
-.PHONY: docker-logs
-docker-logs:
-	docker-compose logs -f
-
-# Development setup
-.PHONY: setup
-setup:
+.PHONY: setup dev-setup clean health help
+setup: ## Install development tools (pinned versions)
 	go mod download
-	go install github.com/air-verse/air@latest
-	go install golang.org/x/tools/cmd/goimports@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install github.com/air-verse/air@v1.67.4
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-.PHONY: dev-setup
-dev-setup: setup
-	cp .env.example .env
-	mkdir -p data/images
-	mkdir -p logs
+dev-setup: setup ## Full local setup: tools, .env, data directory
+	cp -n .env.example .env || true
+	mkdir -p data/images logs
 
-# Cleanup commands
-.PHONY: clean
-clean:
-	rm -rf bin/
+clean: ## Remove build artifacts and local images data
+	rm -rf bin/ dist/
 	rm -rf data/images/*
 	rm -f coverage.out coverage.html
-	docker system prune -f
 
-# Deployment commands
-.PHONY: deploy-staging
-deploy-staging:
-	@echo "Deploying to staging environment..."
-	# Add staging deployment commands here
+health: ## Check a local instance's /health
+	curl -fsS http://localhost:8080/health
 
-.PHONY: deploy-production
-deploy-production:
-	@echo "Deploying to production environment..."
-	# Add production deployment commands here
-
-# Health check
-.PHONY: health
-health:
-	curl -f http://localhost:8080/health || exit 1
-
-# Load test for metrics
-.PHONY: load-test
-load-test:
-	@chmod +x scripts/load-test.sh
-	@./scripts/load-test.sh
-
-# Help
-.PHONY: help
-help:
-	@echo "Available commands:"
-	@echo ""
-	@echo "  Build:"
-	@echo "    build              Build the binary for Linux"
-	@echo "    build-local        Build the binary for local OS"
-	@echo ""
-	@echo "  Run:"
-	@echo "    run                Run the application locally"
-	@echo "    dev                Run with hot reload (requires air)"
-	@echo ""
-	@echo "  Test:"
-	@echo "    test               Run all tests"
-	@echo "    test-coverage      Run tests with coverage report"
-	@echo "    test-performance   Run performance benchmarks"
-	@echo ""
-	@echo "  Panel web:"
-	@echo "    ui                 Regenera plantillas templ + CSS de Tailwind"
-	@echo "    ui-check           Falla si el panel está sin regenerar"
-	@echo ""
-	@echo "  Code Quality:"
-	@echo "    lint               Run linter"
-	@echo "    fmt                Format code"
-	@echo "    vet                Run go vet"
-	@echo ""
-	@echo "  Docker:"
-	@echo "    docker-build       Build Docker image"
-	@echo "    docker-run         Build and run Docker container"
-	@echo "    docker-compose-up  Run with docker-compose (default)"
-	@echo "    docker-app         Run falco-service in Docker"
-	@echo "    docker-full        Run ALL services (app, monitoring, cache, db, nginx)"
-	@echo "    docker-all-down    Stop ALL Docker services"
-	@echo "    docker-logs        View all Docker logs"
-	@echo ""
-	@echo "  Docker Profiles:"
-	@echo "    docker-app-with-monitoring   App + Prometheus + Grafana"
-	@echo "    docker-app-with-cache        App + Valkey (Redis)"
-	@echo "    docker-app-with-db           App + PostgreSQL"
-	@echo "    docker-app-with-nginx        App + Nginx reverse proxy"
-	@echo ""
-	@echo "  Monitoring:"
-	@echo "    monitoring-up      Start Prometheus + Grafana (for local dev)"
-	@echo "    monitoring-down    Stop monitoring stack"
-	@echo "    monitoring-logs    View monitoring logs"
-	@echo ""
-	@echo "  Setup:"
-	@echo "    setup              Install development dependencies"
-	@echo "    dev-setup          Complete development environment setup"
-	@echo "    clean              Clean build artifacts and data"
-	@echo ""
-	@echo "  Other:"
-	@echo "    health             Check service health"
-	@echo "    help               Show this help message"
+help: ## List the targets
+	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*## "}; {printf "  %-18s %s\n", $$1, $$2}'

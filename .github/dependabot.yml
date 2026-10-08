@@ -1,0 +1,25 @@
+# Weekly update proposals for the pinned GitHub Actions and the Go modules.
+# Actions are pinned by commit SHA in the workflows; Dependabot keeps the SHA
+# and the tag comment in step.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

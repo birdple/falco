@@ -1,86 +1,57 @@
-# Git
+# Only what `go build ./cmd/server` needs reaches the build context. Anything
+# else either leaks into the builder layer (.env, credentials) or busts the
+# cache for no reason (docs, the site, CI files).
+
+# VCS and editor state
 .git
 .gitignore
 .gitattributes
-
-# Documentation
-*.md
-ARCHITECTURE.md
-TECHNICAL_SPEC.md
-DEPLOYMENT_GUIDE.md
-IMPLEMENTATION_ROADMAP.md
-
-# Development files
-.env.example
-
-# IDE files
+.github/
+.claude/
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS generated files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
 
-# Build artifacts
-bin/
-dist/
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+# Local configuration and secrets — never in an image
+.env
+.env.*
+*.pem
+*.key
+*.crt
+ssl/
 
-# Test files
-*_test.go
-tests/
-coverage.out
-coverage.html
+# Documentation and the docs site (docs/openapi.yaml and docs/embed.go are
+# embedded in the binary, so docs/ itself stays)
+*.md
+site/
 
-# Docker files
+# Tooling not used by the build
+Makefile
+scripts/
+deployments/
+.golangci.yml
+.mockery.yml
+.air.toml
 Dockerfile*
 docker-compose*.yml
 .dockerignore
 
-# Logs
-logs/
-*.log
+# Tests
+*_test.go
+tests/
+coverage.out
+coverage.html
+*.out
 
-# Data directories (for production builds)
+# Build artifacts and local data
+bin/
+dist/
 data/
+logs/
+tmp/
 uploads/
 cache/
-
-# Temporary files
-tmp/
-*.tmp
-*.temp
-
-# Node modules (if any)
 node_modules/
-
-# Coverage reports
-*.out
-coverage.html
-
-# Air (hot reload)
-.air.toml
-
-# Makefile (not needed in container)
-Makefile
-
-# Deployment files (will be mounted as volumes)
-deployments/
-
-# SSL certificates (will be mounted as volumes)
-ssl/
-*.pem
-*.key
-*.crt

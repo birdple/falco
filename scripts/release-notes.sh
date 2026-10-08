@@ -1,58 +1,58 @@
 #!/usr/bin/env bash
 #
-# Arma el cuerpo del release de GitHub para un tag.
+# Writes the GitHub release body for a tag.
 #
 #   scripts/release-notes.sh v0.13.0 > notes.md
 #
-# Necesita el historial completo (fetch-depth: 0): con un clon superficial no
-# hay tag anterior con el que comparar y la lista de cambios saldría vacía sin
-# decir por qué.
+# Needs the full history (fetch-depth: 0): with a shallow clone there is no
+# previous tag to compare against, and the change list would come out empty
+# without saying why.
 set -euo pipefail
 
-TAG="${1:?falta el tag, por ejemplo v0.13.0}"
+TAG="${1:?missing tag, for example v0.13.0}"
 VERSION="${TAG#v}"
 
 PREVIOUS="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
 
-echo "## Cambios"
+echo "## Changes"
 echo
 if [ -z "$PREVIOUS" ]; then
-  echo "Primer release etiquetado del repositorio."
+  echo "First tagged release of the repository."
 else
-  # Los mismos filtros que usa jay: la documentación y los bumps de dependencias
-  # no son noticia para quien lee un release.
+  # The same filters jay uses: docs and dependency bumps are not news to
+  # someone reading a release.
   git log --no-merges --pretty=format:"- %s (%h)" "${PREVIOUS}..${TAG}" \
     | grep -v -E "^- (docs|test|chore\(deps\)):" \
-    || echo "- Sin cambios que reportar desde ${PREVIOUS}."
+    || echo "- Nothing to report since ${PREVIOUS}."
   echo
   echo
-  echo "**Comparación completa:** \`${PREVIOUS}...${TAG}\`"
+  echo "**Full comparison:** \`${PREVIOUS}...${TAG}\`"
 fi
 
-cat <<EOF
+cat <<NOTES
 
-## Imagen de contenedor
+## Container image
 
 \`\`\`bash
 docker pull ghcr.io/birdple/falco:${VERSION}
 \`\`\`
 
-## Binarios
+## Binaries
 
-falco enlaza **libvips por CGO**, así que los binarios no son estáticos: cada
-uno necesita libvips **8.18.x** instalada en el sistema donde corre. Elige por
-la libc de tu distribución, no sólo por la arquitectura.
+falco links **libvips through CGO**, so the binaries are not static: each one
+needs libvips **8.18.x** installed on the system it runs on. Pick by your
+distribution's libc, not only by architecture.
 
-| Archivo | Para |
+| File | For |
 |---|---|
 | \`falco_${VERSION}_linux_amd64.tar.gz\` | Linux glibc (Debian, Ubuntu, Fedora…), x86-64 |
 | \`falco_${VERSION}_linux_arm64.tar.gz\` | Linux glibc, ARM64 |
-| \`falco_${VERSION}_linux_amd64_musl.tar.gz\` | Alpine y otras musl, x86-64 |
-| \`falco_${VERSION}_linux_arm64_musl.tar.gz\` | Alpine y otras musl, ARM64 |
+| \`falco_${VERSION}_linux_amd64_musl.tar.gz\` | Alpine and other musl, x86-64 |
+| \`falco_${VERSION}_linux_arm64_musl.tar.gz\` | Alpine and other musl, ARM64 |
 | \`falco_${VERSION}_darwin_arm64.tar.gz\` | macOS, Apple Silicon |
 
 \`\`\`bash
-# Debian/Ubuntu 26.04+ (el runtime; los headers son libvips-dev)
+# Debian/Ubuntu 26.04+ (the runtime; the headers are libvips-dev)
 sudo apt install libvips42t64
 
 # Alpine
@@ -62,6 +62,6 @@ apk add vips
 brew install vips
 \`\`\`
 
-Cada archivo se compiló y **se arrancó** en su plataforma antes de publicarse.
-Los checksums están en \`checksums.txt\`.
-EOF
+Every file was built **and started** on its platform before it was published.
+The checksums are in \`checksums.txt\`.
+NOTES

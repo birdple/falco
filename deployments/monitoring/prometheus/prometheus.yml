@@ -8,10 +8,15 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Imagine image processing service
+  # falco. /metrics is only mounted behind the API key, so the scrape carries
+  # it. This is the development key from docker-compose.yml; for any other
+  # deployment use credentials_file instead of an inline value.
   - job_name: 'falco'
     static_configs:
-      - targets: ['host.docker.internal:8080']
+      - targets: ['falco-service:8080']
     metrics_path: '/metrics'
     scrape_interval: 5s
     scheme: http
+    authorization:
+      type: Bearer
+      credentials: falco-dev-api-key-not-for-production
