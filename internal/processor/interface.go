@@ -95,7 +95,6 @@ type ProcessedImage struct {
 	Bytes    []byte
 	Metadata *ImageMetadata
 	CacheKey string
-	Cached   bool // Indicates if this result came from cache
 }
 
 // ImageMetadata holds metadata about processed images
@@ -117,10 +116,8 @@ type Cache interface {
 	Delete(key string)
 	Clear()
 	Stats() cache.CacheStats
-	Contains(key string) bool
 	Keys() []string
 	Size() int64
-	MaxSize() int64
 	Len() int
 }
 
@@ -163,14 +160,8 @@ type ImageProcessor interface {
 	// answering "purged" without a number is how a no-op passes for a purge.
 	PurgeCache() int
 
-	// GetMetadata extracts metadata from an image without processing
-	GetMetadata(ctx context.Context, input io.Reader) (*ImageMetadata, error)
-
 	// ValidateFormat validates if the input format is supported
 	ValidateFormat(format string) bool
-
-	// SupportedFormats returns a list of supported output formats
-	SupportedFormats() []string
 
 	// GetContentType returns the content type for a format
 	GetContentType(format string) string

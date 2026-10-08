@@ -71,16 +71,15 @@ var allowedLoaders = map[vips.ImageType]bool{
 
 // VipsProcessor implements ImageProcessor using libvips
 type VipsProcessor struct {
-	maxFileSizeMB    int
-	defaultQuality   int
-	defaultFormat    ImageFormat
-	supportedFormats []ImageFormat
-	maxDimensions    struct{ width, height int }
-	cache            Cache
-	sem              chan struct{} // semaphore limiting concurrent processing
-	webpEffort       int           // libwebp encode effort (0-6); see SetWebPEffort
-	cacheTTL         time.Duration // per-entry LRU TTL; see SetCacheTTL
-	maxPixels        int64         // input and output pixel ceiling; see SetMaxPixels
+	maxFileSizeMB  int
+	defaultQuality int
+	defaultFormat  ImageFormat
+	maxDimensions  struct{ width, height int }
+	cache          Cache
+	sem            chan struct{} // semaphore limiting concurrent processing
+	webpEffort     int           // libwebp encode effort (0-6); see SetWebPEffort
+	cacheTTL       time.Duration // per-entry LRU TTL; see SetCacheTTL
+	maxPixels      int64         // input and output pixel ceiling; see SetMaxPixels
 
 	// invalidatedAt records recent invalidations by object prefix; see
 	// staleFillWindow.
@@ -94,14 +93,13 @@ type VipsProcessor struct {
 // NewVipsProcessor creates a new vips-based image processor
 func NewVipsProcessor(maxFileSizeMB, defaultQuality int, defaultFormat ImageFormat, maxWidth, maxHeight int) *VipsProcessor {
 	return &VipsProcessor{
-		maxFileSizeMB:    maxFileSizeMB,
-		defaultQuality:   defaultQuality,
-		defaultFormat:    defaultFormat,
-		supportedFormats: []ImageFormat{FormatJPEG, FormatPNG, FormatWebP, FormatHEIC, FormatAVIF},
-		maxDimensions:    struct{ width, height int }{width: maxWidth, height: maxHeight},
-		webpEffort:       defaultWebPEffort,
-		cacheTTL:         defaultCacheTTL,
-		maxPixels:        defaultMaxPixels,
+		maxFileSizeMB:  maxFileSizeMB,
+		defaultQuality: defaultQuality,
+		defaultFormat:  defaultFormat,
+		maxDimensions:  struct{ width, height int }{width: maxWidth, height: maxHeight},
+		webpEffort:     defaultWebPEffort,
+		cacheTTL:       defaultCacheTTL,
+		maxPixels:      defaultMaxPixels,
 	}
 }
 
@@ -193,9 +191,6 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 		return nil, err
 	}
 
-	// Detect format before releasing input buffer
-	format := p.detectFormat(inputData)
-
 	// Apply transformations
 	if err := p.applyTransformations(img, params); err != nil {
 		return nil, fmt.Errorf("failed to apply transformations: %w", err)
@@ -207,7 +202,7 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	}
 
 	// Determine output format
-	outputFormat := p.determineOutputFormat(params, format)
+	outputFormat := p.determineOutputFormat(params)
 
 	// Encode image (actualFormat may differ from outputFormat on fallback, e.g. AVIF→WebP)
 	processedData, actualFormat, err := p.encodeImage(img, outputFormat, params.Quality, keepMode(params))
@@ -251,7 +246,6 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 			CreatedAt:   time.Now(),
 		},
 		CacheKey: cacheKey,
-		Cached:   false,
 	}, nil
 }
 
@@ -902,46 +896,9 @@ func keepMode(params *ProcessingParams) vips.Keep {
 	return vips.KeepNone
 }
 
-// GetMetadata extracts metadata from an image
-func (p *VipsProcessor) GetMetadata(ctx context.Context, input io.Reader) (*ImageMetadata, error) {
-	data, err := io.ReadAll(io.LimitReader(input, int64(p.maxFileSizeMB)*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read image data: %w", err)
-	}
-
-	source := vips.NewSource(io.NopCloser(bytes.NewReader(data)))
-	defer source.Close()
-
-	img, err := vips.NewImageFromSource(source, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load image: %w", err)
-	}
-	defer img.Close()
-
-	format := p.detectFormat(data)
-
-	return &ImageMetadata{
-		Format:      format,
-		Size:        int64(len(data)),
-		Width:       img.Width(),
-		Height:      img.Height(),
-		ContentType: GetContentType(ImageFormat(format)),
-		CreatedAt:   time.Now(),
-	}, nil
-}
-
 // ValidateFormat validates if a format is supported
 func (p *VipsProcessor) ValidateFormat(format string) bool {
 	return IsValidFormat(format)
-}
-
-// SupportedFormats returns the list of supported formats
-func (p *VipsProcessor) SupportedFormats() []string {
-	formats := make([]string, len(p.supportedFormats))
-	for i, format := range p.supportedFormats {
-		formats[i] = string(format)
-	}
-	return formats
 }
 
 // GetContentType returns the content type for a format
@@ -966,58 +923,9 @@ func (p *VipsProcessor) GetCacheStats() cache.CacheStats {
 	return cache.NoCacheStats()
 }
 
-// detectFormat detects the image format from data
-func (p *VipsProcessor) detectFormat(data []byte) string {
-	if len(data) < 12 {
-		return "unknown"
-	}
-
-	// JPEG
-	if data[0] == 0xFF && data[1] == 0xD8 {
-		return "jpeg"
-	}
-
-	// PNG
-	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
-		return "png"
-	}
-
-	// WebP
-	if data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
-		return "webp"
-	}
-
-	// GIF: 47 49 46 38
-	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 {
-		return "gif"
-	}
-
-	// TIFF: 49 49 (little-endian) or 4D 4D (big-endian)
-	if (data[0] == 0x49 && data[1] == 0x49) || (data[0] == 0x4D && data[1] == 0x4D) {
-		return "tiff"
-	}
-
-	// HEIC/HEIF
-	if data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70 {
-		ftype := string(data[8:12])
-		if ftype == "heic" || ftype == "heix" || ftype == "hevc" || ftype == "hevx" || ftype == "mif1" {
-			return "heic"
-		}
-		if ftype == "avif" || ftype == "avis" {
-			return "avif"
-		}
-	}
-
-	// SVG: starts with <svg or <?xml
-	if len(data) > 5 && (string(data[:4]) == "<svg" || string(data[:5]) == "<?xml") {
-		return "svg"
-	}
-
-	return "unknown"
-}
-
-// determineOutputFormat determines the output format
-func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams, inputFormat string) ImageFormat {
+// determineOutputFormat is the requested format when it is a valid one, and the
+// configured default otherwise.
+func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams) ImageFormat {
 	if params.Format != "" && IsValidFormat(params.Format) {
 		return ImageFormat(params.Format)
 	}

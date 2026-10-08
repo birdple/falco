@@ -144,7 +144,7 @@ func (r *RedisCache) Clear() {
 // Hits and Misses are real: this process counts them on every Get. Size,
 // MaxSize and ItemCount are statUnmeasured because knowing them would mean a
 // DBSIZE or a full SCAN per call, and returning 0 would be indistinguishable
-// from an empty cache. For connection-pool detail, see PoolStats.
+// from an empty cache.
 func (r *RedisCache) Stats() CacheStats {
 	hits := r.hits.Load()
 	misses := r.misses.Load()
@@ -162,12 +162,6 @@ func (r *RedisCache) Stats() CacheStats {
 		ItemCount: statUnmeasured,
 		HitRatio:  hitRatio,
 	}
-}
-
-// PoolStats exposes go-redis connection-pool metrics, apart from Stats, which
-// has one uniform type across the three backends.
-func (r *RedisCache) PoolStats() *redis.PoolStats {
-	return r.client.PoolStats()
 }
 
 // Contains checks if a key exists in Redis

@@ -500,15 +500,9 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 		return nil
 	}
 
-	// Retrieve metadata. The storage interface has no Head-with-metadata, so
-	// we use Retrieve and immediately close the body — this matches the
-	// pattern already used in HandleUpdate's existing-size lookup.
-	body, metadata, err := backend.Retrieve(r.Context(), key)
+	metadata, err := backend.Stat(r.Context(), key)
 	if err != nil {
 		return err
-	}
-	if body != nil {
-		_ = body.Close()
 	}
 
 	storedOwner := ""

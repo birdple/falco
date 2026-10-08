@@ -392,16 +392,6 @@ func (rs *ReplicatedStorage) GetCurrentBucket() string {
 	return ""
 }
 
-// Primary returns the underlying primary backend.
-func (rs *ReplicatedStorage) Primary() StorageBackend {
-	return rs.primary
-}
-
-// Backups returns the backup targets.
-func (rs *ReplicatedStorage) Backups() []BackupTarget {
-	return rs.backups
-}
-
 // newBytesReader creates a new bytes reader (helper to avoid import in callers)
 func newBytesReader(b []byte) io.Reader {
 	return &bytesReader{data: b, pos: 0}

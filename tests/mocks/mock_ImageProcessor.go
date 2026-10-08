@@ -263,74 +263,6 @@ func (_c *MockImageProcessor_GetFromCache_Call) RunAndReturn(run func(key string
 	return _c
 }
 
-// GetMetadata provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) GetMetadata(ctx context.Context, input io.Reader) (*processor.ImageMetadata, error) {
-	ret := _mock.Called(ctx, input)
-
-	if len(ret) == 0 {
-		panic("no return value specified for GetMetadata")
-	}
-
-	var r0 *processor.ImageMetadata
-	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, io.Reader) (*processor.ImageMetadata, error)); ok {
-		return returnFunc(ctx, input)
-	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, io.Reader) *processor.ImageMetadata); ok {
-		r0 = returnFunc(ctx, input)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*processor.ImageMetadata)
-		}
-	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, io.Reader) error); ok {
-		r1 = returnFunc(ctx, input)
-	} else {
-		r1 = ret.Error(1)
-	}
-	return r0, r1
-}
-
-// MockImageProcessor_GetMetadata_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetMetadata'
-type MockImageProcessor_GetMetadata_Call struct {
-	*mock.Call
-}
-
-// GetMetadata is a helper method to define mock.On call
-//   - ctx context.Context
-//   - input io.Reader
-func (_e *MockImageProcessor_Expecter) GetMetadata(ctx any, input any) *MockImageProcessor_GetMetadata_Call {
-	return &MockImageProcessor_GetMetadata_Call{Call: _e.mock.On("GetMetadata", ctx, input)}
-}
-
-func (_c *MockImageProcessor_GetMetadata_Call) Run(run func(ctx context.Context, input io.Reader)) *MockImageProcessor_GetMetadata_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 context.Context
-		if args[0] != nil {
-			arg0 = args[0].(context.Context)
-		}
-		var arg1 io.Reader
-		if args[1] != nil {
-			arg1 = args[1].(io.Reader)
-		}
-		run(
-			arg0,
-			arg1,
-		)
-	})
-	return _c
-}
-
-func (_c *MockImageProcessor_GetMetadata_Call) Return(imageMetadata *processor.ImageMetadata, err error) *MockImageProcessor_GetMetadata_Call {
-	_c.Call.Return(imageMetadata, err)
-	return _c
-}
-
-func (_c *MockImageProcessor_GetMetadata_Call) RunAndReturn(run func(ctx context.Context, input io.Reader) (*processor.ImageMetadata, error)) *MockImageProcessor_GetMetadata_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // InvalidateCache provides a mock function for the type MockImageProcessor
 func (_mock *MockImageProcessor) InvalidateCache(objectKeys ...string) int {
 	var tmpRet mock.Arguments
@@ -552,52 +484,6 @@ func (_c *MockImageProcessor_SetCache_Call) Return() *MockImageProcessor_SetCach
 
 func (_c *MockImageProcessor_SetCache_Call) RunAndReturn(run func(cache1 processor.Cache)) *MockImageProcessor_SetCache_Call {
 	_c.Run(run)
-	return _c
-}
-
-// SupportedFormats provides a mock function for the type MockImageProcessor
-func (_mock *MockImageProcessor) SupportedFormats() []string {
-	ret := _mock.Called()
-
-	if len(ret) == 0 {
-		panic("no return value specified for SupportedFormats")
-	}
-
-	var r0 []string
-	if returnFunc, ok := ret.Get(0).(func() []string); ok {
-		r0 = returnFunc()
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]string)
-		}
-	}
-	return r0
-}
-
-// MockImageProcessor_SupportedFormats_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SupportedFormats'
-type MockImageProcessor_SupportedFormats_Call struct {
-	*mock.Call
-}
-
-// SupportedFormats is a helper method to define mock.On call
-func (_e *MockImageProcessor_Expecter) SupportedFormats() *MockImageProcessor_SupportedFormats_Call {
-	return &MockImageProcessor_SupportedFormats_Call{Call: _e.mock.On("SupportedFormats")}
-}
-
-func (_c *MockImageProcessor_SupportedFormats_Call) Run(run func()) *MockImageProcessor_SupportedFormats_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run()
-	})
-	return _c
-}
-
-func (_c *MockImageProcessor_SupportedFormats_Call) Return(strings []string) *MockImageProcessor_SupportedFormats_Call {
-	_c.Call.Return(strings)
-	return _c
-}
-
-func (_c *MockImageProcessor_SupportedFormats_Call) RunAndReturn(run func() []string) *MockImageProcessor_SupportedFormats_Call {
-	_c.Call.Return(run)
 	return _c
 }
 

@@ -156,19 +156,6 @@ func (r *Registry) Len() int {
 	return len(r.backends)
 }
 
-// HealthAll runs health checks on all registered backends.
-// Returns a map of backend name to error (nil if healthy).
-func (r *Registry) HealthAll(ctx context.Context) map[string]error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	results := make(map[string]error, len(r.backends))
-	for name, backend := range r.backends {
-		results[name] = backend.Health(ctx)
-	}
-	return results
-}
-
 // Closer is implemented by backends that hold something to release or wait
 // for at shutdown: ReplicatedStorage (in-flight async replications) and
 // JayStorage (its connection pool).
