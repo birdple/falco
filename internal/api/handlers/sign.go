@@ -15,6 +15,9 @@ import (
 	"github.com/birdple/falco/internal/security"
 )
 
+// proxyRoutePrefix is the path every proxy URL starts with.
+const proxyRoutePrefix = "/api/v1/proxy/"
+
 // maxSignedURLLifetime caps how far in the future a signed URL may expire.
 const maxSignedURLLifetime = 366 * 24 * time.Hour
 
@@ -77,7 +80,10 @@ func (h *Handler) HandleSignURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := apimw.GetScope(r.Context())
-	if _, _, err := h.authorizeBucket(scope, query.Get("storage"), utils.QueryParam(query, "b", "bucket")); err != nil {
+	// A proxy URL reads no bucket — it names an external, allowlisted image —
+	// so any authenticated key may sign one.
+	isProxyPath := strings.HasPrefix(req.Path, proxyRoutePrefix)
+	if _, _, err := h.authorizeBucket(scope, query.Get("storage"), utils.QueryParam(query, "b", "bucket")); err != nil && !isProxyPath {
 		keyName := ""
 		if scope != nil {
 			keyName = scope.KeyName

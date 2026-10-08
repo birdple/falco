@@ -118,9 +118,20 @@ func proxyFailureKey(rawURL string) string {
 //
 // Route: GET /api/v1/proxy/*
 // The wildcard captures "{hash}.{ext}" (e.g. "a1b2c3d4e5f6.webp").
+//
+// It is authorised exactly like delivery — an HMAC signature over path and
+// query when HMAC_REQUIRED=true — and before anything else. Left public, any
+// client could make falco fetch, decode and encode every w×q×f×fit
+// combination of an allowlisted image, each a full libvips job competing with
+// real delivery and filling the same cache.
 func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// Parsed once for the whole handler (see HandleDelivery).
 	query := r.URL.Query()
+
+	authorized, r := h.authorizeDelivery(w, r, query)
+	if !authorized {
+		return
+	}
 
 	target, targetErr := h.resolveProxyTarget(r, query)
 	if targetErr != nil {
