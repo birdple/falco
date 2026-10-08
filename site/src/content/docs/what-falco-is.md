@@ -29,9 +29,10 @@ bytes, so uploading the same file twice lands on the same key. There is no
 "check if it exists first" round trip to get wrong.
 
 **Delivery a browser can actually use.** The delivery route authorises itself —
-by HMAC signature, or by API key plus scope — because an `<img>` tag cannot
-attach an `Authorization` header. That is the whole reason it sits outside the
-authenticated route group.
+by HMAC signature over path and query — because an `<img>` tag cannot attach an
+`Authorization` header. That is the whole reason it sits outside the
+authenticated route group, and the scope of the key that signed the URL decides
+which buckets it can reach.
 
 **Transforms that a CDN can cache.** The format can ride in the path extension
 (`/images/abc123.webp`) instead of the query string, and `maxage` / `smaxage`

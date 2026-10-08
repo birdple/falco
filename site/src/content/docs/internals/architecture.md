@@ -14,6 +14,8 @@ in-memory cache that a restart is allowed to lose.
      │                  │                  │
   upload            delivery             proxy
      │                  │                  │
+     │             signature           signature
+     │                  │                  │
      │            cache lookup        allowlist + SSRF
      │                  │                  │
      │             singleflight        HTTP fetch
@@ -29,21 +31,26 @@ in-memory cache that a restart is allowed to lose.
 
 1. The body is read under `MAX_FILE_SIZE_MB`.
 2. The content type is **sniffed from the bytes**, not trusted from the header.
-3. An image goes through libvips and is re-encoded; anything else is stored
-   verbatim, except SVG, HTML and XML, which are refused.
+3. An image goes through libvips and is re-encoded — auto-oriented, with EXIF
+   and GPS stripped; anything else is stored verbatim, except SVG, HTML and
+   XML, which are refused.
 4. The id is the hash of the raw content, so the same bytes always land on the
    same key. Backends are idempotent per key, which makes a repeated upload a
    no-op rather than a duplicate.
-5. Metadata is written alongside, and backup targets are replicated according to
-   their mode.
+5. Metadata — including the owner from `X-Owner-Id` — is written alongside,
+   backup targets are replicated according to their mode, and any cached
+   variants of that key are dropped.
 
 ## The delivery path
 
-Two branches, chosen entirely from the query string before any I/O:
+The signature is checked first, when `HMAC_REQUIRED=true`. Then two branches,
+chosen entirely from the query string before any I/O:
 
 **No transformation** — stream the stored object straight through. Nothing is
 cached: there is no CPU work to amortise, and streaming keeps memory flat no
-matter how large the file is.
+matter how large the file is. The one exception is a format conversion (a
+different `?f=` or extension than the object is stored in), which is encoded and
+cached.
 
 **A transformation** — the cache key is computable from the query alone, so a hit
 answers without touching storage at all. On a miss, a `singleflight` group makes
@@ -58,9 +65,11 @@ picks one by name. Backups are a decorator over a bucket rather than a feature o
 a backend, which is why "S3 backed up to R2" and "Jay backed up to the local
 disk" are the same code.
 
-Every backend call goes through a circuit breaker. When a backend starts failing,
-the breaker opens and requests fail fast instead of piling up on timeouts and
-exhausting connections.
+Every backend call goes through a circuit breaker, one per bucket. When a backend
+starts failing, the breaker opens and requests fail fast — `503
+STORAGE_UNAVAILABLE` — instead of piling up on timeouts and exhausting
+connections. A client hanging up or its own deadline passing never counts as a
+backend failure.
 
 ## libvips, through cgo
 
@@ -74,7 +83,13 @@ is a one-line detail with a whole-service effect.
 Concurrency into libvips is bounded by `CONCURRENT_WORKERS` through a semaphore.
 Beyond it, requests queue rather than each taking a decode buffer, because
 libvips memory is per in-flight operation and unbounded concurrency is how an
-image service gets OOM-killed.
+image service gets OOM-killed. A request that waits too long for a slot is
+`503 PROCESSING_BUSY`.
+
+What libvips is given is bounded too: only JPEG, PNG, WebP, GIF, HEIF, AVIF and
+TIFF are decoded, libvips' untrusted loaders are blocked with
+`VIPS_BLOCK_UNTRUSTED`, and inputs and outputs above `MAX_MEGAPIXELS` are
+refused with `422 IMAGE_TOO_LARGE`.
 
 ## What is deliberately absent
 
