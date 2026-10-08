@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/jsonx"
@@ -87,7 +88,23 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Dedup by key: storageKey derives from the content hash, so identical
 	// uploads land on the same key and Store with the same bytes is a no-op at
-	// the backend. No Exists round-trip is needed first.
+	// the backend. A scoped caller, though, must not replace — or take the
+	// ownership of — an object somebody else owns. With a caller-chosen id that
+	// is a conflict; with a content-hash id the bytes are identical by
+	// definition, so the existing object is the answer, left as it is.
+	foreign, err := foreignObject(r, storageBackend, storageKey)
+	switch {
+	case err != nil:
+		fe := retrieveFailure(err)
+		h.sendError(w, fe.status, fe.code, fe.message)
+		return
+	case foreign != nil && customID != "":
+		h.sendError(w, http.StatusConflict, "OBJECT_EXISTS", "An object with this id already exists and belongs to another owner")
+		return
+	case foreign != nil:
+		writeUploadResponse(w, imageID, bucket, directory, foreign.OriginalName, foreign)
+		return
+	}
 
 	storeReader, storedMeta, prepErr := h.prepareForStorage(ctx, imageData, uploadTarget{
 		imageID:  imageID,
@@ -109,25 +126,49 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// the cache key does not change with the bytes.
 	h.invalidateCache(h.backendNamespace(storageName, bucket), storageKey)
 
-	fileURL := utils.BuildImageURL(imageID, bucket, directory)
+	writeUploadResponse(w, imageID, bucket, directory, filename, &storedMeta)
+}
 
-	response := types.UploadResponse{
+// writeUploadResponse answers a successful upload.
+func writeUploadResponse(w http.ResponseWriter, imageID, bucket, directory, filename string, meta *storage.ImageMetadata) {
+	writeJSON(w, http.StatusCreated, types.UploadResponse{
 		Success: true,
 		Data: types.UploadData{
 			ID:           imageID,
-			URL:          fileURL,
+			URL:          utils.BuildImageURL(imageID, bucket, directory),
 			OriginalName: filename,
-			Format:       storedMeta.Format,
-			Size:         storedMeta.Size,
+			Format:       meta.Format,
+			Size:         meta.Size,
 			Dimensions: types.Dimensions{
-				Width:  storedMeta.Width,
-				Height: storedMeta.Height,
+				Width:  meta.Width,
+				Height: meta.Height,
 			},
-			CreatedAt: storedMeta.CreatedAt,
+			CreatedAt: meta.CreatedAt,
 		},
-	}
+	})
+}
 
-	writeJSON(w, http.StatusCreated, response)
+// foreignObject returns the object already stored under key when a scoped
+// caller does not own it, or nil when the caller may write there: nothing is
+// stored, the caller owns it, or the caller is an admin (or auth is off).
+func foreignObject(r *http.Request, backend storage.StorageBackend, key string) (*storage.ImageMetadata, error) {
+	scope := apimw.GetScope(r.Context())
+	if scope == nil || scope.IsAdmin {
+		return nil, nil
+	}
+	existing, err := backend.Stat(r.Context(), key)
+	switch {
+	case storage.IsNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case existing == nil:
+		return nil, nil
+	}
+	if existing.OwnerID != "" && existing.OwnerID == r.Header.Get("X-Owner-Id") {
+		return nil, nil
+	}
+	return existing, nil
 }
 
 // uploadPayload is an upload request whose body has been read, whatever shape it

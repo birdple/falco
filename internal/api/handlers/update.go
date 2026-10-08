@@ -32,18 +32,6 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxSize := h.config.GetMaxFileSizeBytes()
-	// Authenticated, operator-chosen URL: no allowlist to preserve across a
-	// redirect, but the policy is stated explicitly — see downloadFromJSONBody.
-	imageData, _, err := httputil.DownloadURL(httputil.WithAnyPublicHost(ctx), h.httpClient, req.URL, maxSize)
-	if err != nil {
-		logger.Error().Err(err).Msg("Failed to download image from URL")
-		h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
-		return
-	}
-
-	urlSize := int64(len(imageData))
-
 	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
 	if sbErr != nil {
 		h.sendStorageBackendError(w, sbErr)
@@ -60,16 +48,25 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Downloaded only once the caller is known to be allowed to replace the
+	// object: an unauthorised update must not cost an outbound fetch.
+	maxSize := h.config.GetMaxFileSizeBytes()
+	// Authenticated, operator-chosen URL: no allowlist to preserve across a
+	// redirect, but the policy is stated explicitly — see downloadFromJSONBody.
+	imageData, _, err := httputil.DownloadURL(httputil.WithAnyPublicHost(ctx), h.httpClient, req.URL, maxSize)
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to download image from URL")
+		h.sendError(w, http.StatusBadRequest, "DOWNLOAD_FAILED", fmt.Sprintf("Failed to download image: %v", err))
+		return
+	}
+
+	urlSize := int64(len(imageData))
+
 	var existingSize int64
 	var existingOwnerID string
-	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {
-		if body, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
-			existingSize = metadata.Size
-			if metadata != nil {
-				existingOwnerID = metadata.OwnerID
-			}
-			_ = body.Close() // Only need metadata, close body immediately
-		}
+	if metadata, err := storageBackend.Stat(ctx, req.Key); err == nil && metadata != nil {
+		existingSize = metadata.Size
+		existingOwnerID = metadata.OwnerID
 	}
 
 	imageReader := bytes.NewReader(imageData)

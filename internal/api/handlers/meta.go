@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/storage"
 )
@@ -69,10 +70,7 @@ func (h *Handler) HandleObjectMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Retrieve is the only call in the StorageBackend interface that returns
-	// stored metadata, so the body is opened and closed unread. Backends stream
-	// on demand, so nothing is transferred beyond the response header.
-	reader, meta, err := backend.Retrieve(r.Context(), storageKey)
+	meta, err := backend.Stat(r.Context(), storageKey)
 	if err != nil {
 		if storage.IsNotFound(err) {
 			h.sendError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "Image not found")
@@ -81,7 +79,6 @@ func (h *Handler) HandleObjectMeta(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusInternalServerError, "RETRIEVAL_ERROR", "Failed to read image metadata")
 		return
 	}
-	_ = reader.Close()
 
 	if meta == nil {
 		h.sendError(w, http.StatusNotFound, "METADATA_NOT_FOUND", "The object exists but carries no metadata")
@@ -100,10 +97,24 @@ func (h *Handler) HandleObjectMeta(w http.ResponseWriter, r *http.Request) {
 		Width:        meta.Width,
 		Height:       meta.Height,
 		OriginalName: meta.OriginalName,
-		OwnerID:      meta.OwnerID,
+		OwnerID:      visibleOwner(r, meta.OwnerID),
 		ETag:         meta.ETag,
 		CreatedAt:    meta.CreatedAt,
 		MaxAge:       meta.MaxAge,
 		SMaxAge:      meta.SMaxAge,
 	})
+}
+
+// visibleOwner decides whether the caller may see an object's owner id. An
+// admin may; a scoped key only when it already presents that owner in
+// X-Owner-Id. Handing the owner id to any key that can read the bucket gave it
+// exactly the header checkOwnership trusts for deletes and updates.
+func visibleOwner(r *http.Request, owner string) string {
+	if scope := apimw.GetScope(r.Context()); scope == nil || scope.IsAdmin {
+		return owner
+	}
+	if owner != "" && r.Header.Get("X-Owner-Id") == owner {
+		return owner
+	}
+	return ""
 }

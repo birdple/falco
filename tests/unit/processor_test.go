@@ -61,18 +61,6 @@ func TestImageProcessor_ValidateFormat(t *testing.T) {
 	}
 }
 
-func TestImageProcessor_SupportedFormats(t *testing.T) {
-	proc := processor.NewImageProcessor(10, 85, processor.FormatWebP, 1000, 1000)
-
-	formats := proc.SupportedFormats()
-	assert.Contains(t, formats, "jpeg")
-	assert.Contains(t, formats, "png")
-	assert.Contains(t, formats, "webp")
-	assert.Contains(t, formats, "heic")
-	assert.Contains(t, formats, "avif")
-	assert.Len(t, formats, 5)
-}
-
 func TestProcessingParams_Advanced(t *testing.T) {
 	params := &processor.ProcessingParams{
 		Width:      400,

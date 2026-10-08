@@ -80,57 +80,6 @@ func (_c *MockCache_Clear_Call) RunAndReturn(run func()) *MockCache_Clear_Call {
 	return _c
 }
 
-// Contains provides a mock function for the type MockCache
-func (_mock *MockCache) Contains(key string) bool {
-	ret := _mock.Called(key)
-
-	if len(ret) == 0 {
-		panic("no return value specified for Contains")
-	}
-
-	var r0 bool
-	if returnFunc, ok := ret.Get(0).(func(string) bool); ok {
-		r0 = returnFunc(key)
-	} else {
-		r0 = ret.Get(0).(bool)
-	}
-	return r0
-}
-
-// MockCache_Contains_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Contains'
-type MockCache_Contains_Call struct {
-	*mock.Call
-}
-
-// Contains is a helper method to define mock.On call
-//   - key string
-func (_e *MockCache_Expecter) Contains(key any) *MockCache_Contains_Call {
-	return &MockCache_Contains_Call{Call: _e.mock.On("Contains", key)}
-}
-
-func (_c *MockCache_Contains_Call) Run(run func(key string)) *MockCache_Contains_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 string
-		if args[0] != nil {
-			arg0 = args[0].(string)
-		}
-		run(
-			arg0,
-		)
-	})
-	return _c
-}
-
-func (_c *MockCache_Contains_Call) Return(b bool) *MockCache_Contains_Call {
-	_c.Call.Return(b)
-	return _c
-}
-
-func (_c *MockCache_Contains_Call) RunAndReturn(run func(key string) bool) *MockCache_Contains_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // Delete provides a mock function for the type MockCache
 func (_mock *MockCache) Delete(key string) {
 	_mock.Called(key)
@@ -319,50 +268,6 @@ func (_c *MockCache_Len_Call) Return(n int) *MockCache_Len_Call {
 }
 
 func (_c *MockCache_Len_Call) RunAndReturn(run func() int) *MockCache_Len_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// MaxSize provides a mock function for the type MockCache
-func (_mock *MockCache) MaxSize() int64 {
-	ret := _mock.Called()
-
-	if len(ret) == 0 {
-		panic("no return value specified for MaxSize")
-	}
-
-	var r0 int64
-	if returnFunc, ok := ret.Get(0).(func() int64); ok {
-		r0 = returnFunc()
-	} else {
-		r0 = ret.Get(0).(int64)
-	}
-	return r0
-}
-
-// MockCache_MaxSize_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'MaxSize'
-type MockCache_MaxSize_Call struct {
-	*mock.Call
-}
-
-// MaxSize is a helper method to define mock.On call
-func (_e *MockCache_Expecter) MaxSize() *MockCache_MaxSize_Call {
-	return &MockCache_MaxSize_Call{Call: _e.mock.On("MaxSize")}
-}
-
-func (_c *MockCache_MaxSize_Call) Run(run func()) *MockCache_MaxSize_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run()
-	})
-	return _c
-}
-
-func (_c *MockCache_MaxSize_Call) Return(n int64) *MockCache_MaxSize_Call {
-	_c.Call.Return(n)
-	return _c
-}
-
-func (_c *MockCache_MaxSize_Call) RunAndReturn(run func() int64) *MockCache_MaxSize_Call {
 	_c.Call.Return(run)
 	return _c
 }
