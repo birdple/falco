@@ -366,3 +366,15 @@ func TestValidator_ScopedKeyReusesAdminKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "admin API key")
 }
+
+func TestValidator_APIKeyRequiresHMAC(t *testing.T) {
+	cfg := validConfig()
+	cfg.Security.APIKeyRequired = true
+	cfg.Security.APIKey = "admin"
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hmac_required")
+
+	cfg.Security.APIKey = ""
+	assert.Error(t, NewValidator().Validate(cfg), "API key required but empty")
+}

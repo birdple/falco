@@ -12,6 +12,7 @@ import (
 
 	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/config"
+	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 )
 
@@ -35,7 +36,7 @@ func scopeHandler(t *testing.T) *Handler {
 	cfg.Security.HMACKey = "00112233445566778899aabbccddeeff"
 	cfg.Security.HMACKeySalt = "ffeeddccbbaa99887766554433221100"
 
-	h := NewHandler(cfg, mainFS, nil, time.Now())
+	h := NewHandler(cfg, mainFS, processor.NewVipsProcessor(10, 85, processor.FormatWebP, 4096, 4096), time.Now())
 	h.SetRegistry(reg)
 	return h
 }
