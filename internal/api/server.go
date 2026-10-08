@@ -42,6 +42,9 @@ type Server struct {
 	uiHandler *ui.Handler
 	metrics   *metrics.Metrics
 	registry  *storage.Registry
+	// rateLimiter is kept so Shutdown can stop its sweeper; nil when rate
+	// limiting is off.
+	rateLimiter *apimw.RateLimiter
 }
 
 // NewServer creates a new API server
@@ -137,11 +140,11 @@ func (s *Server) useMiddleware(r chi.Router) {
 	}
 
 	if s.config.Security.RateLimit.RequestsPerMinute > 0 {
-		rateLimiter := apimw.NewRateLimiter(
+		s.rateLimiter = apimw.NewRateLimiter(
 			s.config.Security.RateLimit.RequestsPerMinute,
 			s.config.Security.RateLimit.Burst,
 		)
-		r.Use(rateLimiter.Handler)
+		r.Use(s.rateLimiter.Handler)
 	}
 
 	r.Use(cors.Handler(cors.Options{
@@ -353,14 +356,18 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	logger.Info().Msg("Initiating HTTP server shutdown")
 
-	shutdownCtx := ctx
-	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 30*time.Second {
-		var cancel context.CancelFunc
-		shutdownCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
+	// The deadline is the caller's (SERVER_SHUTDOWN_TIMEOUT); capping it here
+	// as well made that setting ineffective above 30s.
+	err := s.server.Shutdown(ctx)
+
+	// Background sweepers the handlers own. Stopped after the drain, since
+	// in-flight requests may still be using them.
+	s.uiHandler.Close()
+	s.handler.Close()
+	if s.rateLimiter != nil {
+		s.rateLimiter.Stop()
 	}
 
-	err := s.server.Shutdown(shutdownCtx)
 	if err != nil {
 		logger.Warn().Err(err).Msg("HTTP server shutdown completed with errors")
 		return err
