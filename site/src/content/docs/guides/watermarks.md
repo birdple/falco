@@ -24,8 +24,8 @@ curl -o out.webp "localhost:8080/api/v1/images/a1b2c3d4?w=800&wm=logos/brand"
 ```
 
 No configuration, no outbound request. The overlay is read through the **same
-backend as the image itself**, so a key scoped to one bucket cannot pull a
-watermark out of another.
+backend as the image itself** — the one `?b=`/`?storage=` selects — so a URL
+signed for one bucket cannot pull a watermark out of another.
 
 **From an external URL — opt-in, allowlisted.**
 
@@ -42,7 +42,8 @@ list means *no external watermarks*, not *any host*: an image URL that can make
 the server fetch an arbitrary address is an open proxy with extra steps. The
 host is checked before the name is resolved — DNS resolution is itself an
 outbound request — and the client will not dial a private or reserved address
-even for an allowed host.
+even for an allowed host. A redirect is only followed to a host on the same
+allowlist.
 
 Naming both `wm` and `wm_url` is a `400`. A precedence rule between them is
 something nobody would remember correctly.
@@ -83,12 +84,13 @@ output if you get them wrong:
 
 | Status | Code | Cause |
 |---|---|---|
-| 400 | `INVALID_WATERMARK` | Both sources named, or a `wm` that is not a valid id or escapes its directory |
-| 403 | `WATERMARK_HOST_NOT_ALLOWED` | `wm_url` host is not allowlisted, the allowlist is empty, or the host resolves inward |
+| 400 | `INVALID_WATERMARK` | Both sources named, a `wm` that is not a valid id or escapes its directory, or a `wm_url` that is not an absolute `http`/`https` URL or is over 2048 characters |
+| 403 | `WATERMARK_HOST_NOT_ALLOWED` | `wm_url` host is not allowlisted, or the allowlist is empty |
 | 404 | `WATERMARK_NOT_FOUND` | `wm` names an image that is not in the bucket |
 | 422 | `WATERMARK_NOT_AN_IMAGE` | The overlay is not an image |
 | 422 | `WATERMARK_TOO_LARGE` | The overlay is over 2 MB. A logo is kilobytes |
-| 502 | `WATERMARK_FETCH_FAILED` | The allowlisted host did not serve it |
+| 500 | `WATERMARK_ERROR` | Storage failed reading a `wm` overlay |
+| 502 | `WATERMARK_FETCH_FAILED` | The allowlisted host did not serve it, or resolves to a private or reserved address |
 
 None of these degrades into an unwatermarked image. That response would be
 indistinguishable from one that worked — the caller asked for a watermark, would
@@ -102,7 +104,8 @@ overlay on every request to find that out.
 
 The overlay itself is read once and kept in memory for ten minutes, so a logo
 that appears on ten thousand images costs one storage read rather than ten
-thousand. It is loaded only on a cache miss: a request answered from the
+thousand. A stored overlay is kept per bucket: `wm=logo` read from one bucket is
+never handed to a request for another. It is loaded only on a cache miss: a request answered from the
 transformed cache never touches the overlay at all.
 
 Replacing the logo at the same id (`POST /api/v1/update`) therefore takes up to

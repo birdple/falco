@@ -6,334 +6,613 @@ info:
     serves them transformed on the fly; the bytes themselves live in a storage
     backend (jay, S3, R2 or a local filesystem).
 
+    ## Authorization
+
     Two routes authorise themselves rather than sitting behind the API key,
-    because a browser cannot attach a header to an `<img>` URL: `/images/*` and
-    `/proxy/*` are gated by HMAC signature, or by API key when
-    `HMAC_REQUIRED=false`.
-  version: "1.0.0"
+    because a browser cannot attach a header to an `<img>` URL:
+    `/api/v1/images/*` and `/api/v1/proxy/*` require an HMAC signature
+    (`sig`, plus `exp` under `HMAC_REQUIRE_EXPIRY=true`) covering their path
+    and query when `HMAC_REQUIRED=true`. With `HMAC_REQUIRED=false` they are
+    open; the server only accepts that setting together with
+    `API_KEY_REQUIRED=false`, so there is no "API key instead of signature"
+    mode. Signatures are minted with `POST /api/v1/sign` or computed by the
+    caller.
+
+    Every other `/api/v1` route needs an API key (`X-API-Key` or
+    `Authorization: Bearer`) when `API_KEY_REQUIRED=true`: the admin key, or a
+    key scoped to a bucket, group or subgroup. A scoped key is checked against
+    the bucket a request names with `b`/`bucket`/`storage`, and against the
+    default bucket when it names none. `/health/ready` and `/metrics` accept
+    the admin key only.
+
+    ## Errors
+
+    Every error, from a handler or from the middleware, is
+    `{"success": false, "error": {"code": "...", "message": "..."}}` with
+    `Cache-Control: no-store`. Branch on `code`, never on `message`.
+  version: "1.0.3"
   license:
-    name: MIT
+    name: GPL-3.0
+    url: https://www.gnu.org/licenses/gpl-3.0.html
 servers:
-  - url: http://localhost:4009/api/v1
+  - url: http://localhost:4009
     description: Local development (the port the stack runs on)
+
+tags:
+  - name: Delivery
+    description: Signed, browser-facing image routes.
+  - name: Objects
+    description: Upload, replace, list, inspect and delete stored objects.
+  - name: Signing
+  - name: Operations
+    description: Statistics, cache control, health and metrics.
+  - name: Documentation
+
 paths:
-  /upload:
-    post:
-      summary: Upload an image
-      description: Uploads a new image from a file, a URL, or binary data. The image can be processed and stored with optional quality and format parameters.
+  /api/v1/images/{path}:
+    get:
+      tags: [Delivery]
+      summary: Retrieve and transform an image
+      description: |
+        Delivers a stored object, optionally transformed.
+
+        `path` is the image id, optionally preceded by directories
+        (`avatars/abc123`) and followed by an extension (`abc123.webp`). The
+        extension is the output format when `f` is absent; an unknown
+        extension is `400 INVALID_ID`. The directory part is validated like
+        `d`. (`path` may contain slashes; it is a wildcard route.)
+
+        Two classes of query parameter: those that change geometry or
+        encoding (`w`, `h`, `q`, `f`, `fit`, `crop_*`, `rotate`, `flip`, `wm`,
+        `wm_url`) answer `400` when malformed; the cosmetic ones fall back to
+        their default. `NaN`/`Inf` count as malformed.
+
+        Without a transformation, the stored object is streamed and not
+        cached; a format different from the stored one is converted and
+        cached. With a transformation the response comes from the cache when
+        possible, and concurrent misses share one fetch, decode and encode.
+
+        Responses honour `If-None-Match` (lists, `W/` and `*`) and
+        `If-Modified-Since` with `304`. Range requests are served on
+        transformed responses; a raw stream answers `Accept-Ranges: none`.
+      security:
+        - UrlSignature: []
       parameters:
-        - name: b
+        - $ref: '#/components/parameters/ImagePath'
+        - $ref: '#/components/parameters/Bucket'
+        - $ref: '#/components/parameters/Storage'
+        - $ref: '#/components/parameters/Directory'
+        - $ref: '#/components/parameters/Width'
+        - $ref: '#/components/parameters/Height'
+        - $ref: '#/components/parameters/Quality'
+        - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/Fit'
+        - $ref: '#/components/parameters/Gravity'
+        - $ref: '#/components/parameters/CropX'
+        - $ref: '#/components/parameters/CropY'
+        - $ref: '#/components/parameters/CropW'
+        - $ref: '#/components/parameters/CropH'
+        - $ref: '#/components/parameters/Rotate'
+        - $ref: '#/components/parameters/Flip'
+        - $ref: '#/components/parameters/Brightness'
+        - $ref: '#/components/parameters/Contrast'
+        - $ref: '#/components/parameters/Gamma'
+        - $ref: '#/components/parameters/Saturation'
+        - $ref: '#/components/parameters/Hue'
+        - $ref: '#/components/parameters/Blur'
+        - $ref: '#/components/parameters/Sharpen'
+        - $ref: '#/components/parameters/Trim'
+        - $ref: '#/components/parameters/TrimThreshold'
+        - $ref: '#/components/parameters/PadTop'
+        - $ref: '#/components/parameters/PadRight'
+        - $ref: '#/components/parameters/PadBottom'
+        - $ref: '#/components/parameters/PadLeft'
+        - $ref: '#/components/parameters/PadColor'
+        - $ref: '#/components/parameters/Orient'
+        - $ref: '#/components/parameters/Meta'
+        - $ref: '#/components/parameters/MaxAge'
+        - $ref: '#/components/parameters/SMaxAge'
+        - $ref: '#/components/parameters/Watermark'
+        - $ref: '#/components/parameters/WatermarkURL'
+        - $ref: '#/components/parameters/WatermarkOpacity'
+        - $ref: '#/components/parameters/WatermarkPosition'
+        - $ref: '#/components/parameters/WatermarkScale'
+        - $ref: '#/components/parameters/Signature'
+        - $ref: '#/components/parameters/Expiry'
+      responses:
+        '200':
+          $ref: '#/components/responses/Image'
+        '206':
+          description: Partial content, for a Range request on a transformed response.
+        '304':
+          description: Not modified (`If-None-Match` or `If-Modified-Since` matched).
+        '400':
+          description: |
+            Malformed request: `INVALID_ID`, `INVALID_DIRECTORY`,
+            `UNKNOWN_BUCKET`, `INVALID_WIDTH`, `INVALID_HEIGHT`,
+            `INVALID_QUALITY`, `INVALID_FORMAT`, `INVALID_FIT`, `INVALID_CROP`,
+            `INVALID_ROTATE`, `INVALID_FLIP`, `INVALID_WATERMARK`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                invalid-width:
+                  value:
+                    success: false
+                    error: { code: "INVALID_WIDTH", message: "must be at least 16 pixels" }
+                unknown-bucket:
+                  value:
+                    success: false
+                    error:
+                      code: "UNKNOWN_BUCKET"
+                      message: 'requested bucket cannot be served: "archive" is not a configured bucket or alias, and the backend cannot switch to it'
+        '403':
+          description: '`INVALID_SIGNATURE` (missing, wrong or expired `sig`), or `WATERMARK_HOST_NOT_ALLOWED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                invalid-signature:
+                  value:
+                    success: false
+                    error: { code: "INVALID_SIGNATURE", message: "Invalid or missing URL signature" }
+        '404':
+          description: '`IMAGE_NOT_FOUND`, or `WATERMARK_NOT_FOUND` for a `wm` that does not exist.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              examples:
+                image-not-found:
+                  value:
+                    success: false
+                    error: { code: "IMAGE_NOT_FOUND", message: "Image not found" }
+        '415':
+          description: '`UNSUPPORTED_IMAGE`: the stored image is in a format libvips is not allowed to decode (only JPEG, PNG, WebP, GIF, HEIF, AVIF and TIFF are).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: |
+            `IMAGE_TOO_LARGE` (input or output over `MAX_MEGAPIXELS`),
+            `PROCESSING_FAILED`, `WATERMARK_NOT_AN_IMAGE` or
+            `WATERMARK_TOO_LARGE` (overlay over 2 MB).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          description: '`CONFIG_ERROR` (`HMAC_REQUIRE_EXPIRY` unset or unparseable), `RETRIEVAL_ERROR` or `WATERMARK_ERROR`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502':
+          description: '`WATERMARK_FETCH_FAILED`: the allowlisted `wm_url` host did not serve the overlay, or resolves to a private address.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: '`STORAGE_UNAVAILABLE` (the bucket''s circuit breaker is open) or `PROCESSING_BUSY` (no processing slot in time). Retry later.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    head:
+      tags: [Delivery]
+      summary: Image headers
+      description: |
+        Same handler and same headers as `GET` — content type, length, ETag,
+        cache policy — without the body. It costs the same work as a `GET`; it
+        is not a cheap probe.
+      security:
+        - UrlSignature: []
+      parameters:
+        - $ref: '#/components/parameters/ImagePath'
+        - $ref: '#/components/parameters/Bucket'
+        - $ref: '#/components/parameters/Storage'
+        - $ref: '#/components/parameters/Directory'
+        - $ref: '#/components/parameters/Width'
+        - $ref: '#/components/parameters/Height'
+        - $ref: '#/components/parameters/Quality'
+        - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/Signature'
+        - $ref: '#/components/parameters/Expiry'
+      responses:
+        '200':
+          description: Headers of the image `GET` would return.
+        '304':
+          description: Not modified.
+        '400':
+          description: As for `GET`.
+        '403':
+          description: '`INVALID_SIGNATURE`.'
+        '404':
+          description: '`IMAGE_NOT_FOUND`.'
+
+  /api/v1/proxy/{name}:
+    get:
+      tags: [Delivery]
+      summary: Fetch, transform and serve an external image
+      description: |
+        Fetches the image at `url` from an allowlisted host
+        (`PROXY_ALLOWED_HOSTS`), re-encodes it and serves it.
+
+        Authorised exactly like delivery, before anything else: with
+        `HMAC_REQUIRED=true` the path and query (including `url`) must be
+        signed. Any authenticated key may sign a proxy path with
+        `POST /api/v1/sign`.
+
+        `name` is a name of your choosing with an optional extension; the
+        extension (`webp`, `jpg`, `jpeg`, `png`, `avif`) is the output format
+        when `f` is absent, and no extension means `DEFAULT_FORMAT`. An
+        unknown extension is `400 INVALID_EXTENSION`.
+
+        With neither `w` nor `h`, width is capped at `PROXY_MAX_WIDTH` (600);
+        quality defaults to `PROXY_DEFAULT_QUALITY` (75).
+
+        The fetch is a single attempt (no retries, no circuit breaker), times
+        out after 10 seconds, follows redirects only to allowlisted hosts,
+        refuses to dial private, loopback and link-local addresses, and caps
+        the body at 10 MB. Upstream 404/410, non-image (or SVG) responses and
+        oversized bodies are remembered per URL for three minutes.
+
+        Responses always carry `Cache-Control: public, max-age=86400,
+        s-maxage=2592000`.
+      security:
+        - UrlSignature: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: A name with an optional image extension, e.g. `cover.webp`.
+          schema: { type: string, example: "cover.webp" }
+        - name: url
           in: query
-          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
-          required: false
-          schema:
-            type: string
-        - name: d
+          required: true
+          description: Absolute http/https URL of the image, at most 2048 characters. Its host must be allowlisted.
+          schema: { type: string, format: uri, maxLength: 2048 }
+        - $ref: '#/components/parameters/Width'
+        - $ref: '#/components/parameters/Height'
+        - $ref: '#/components/parameters/Quality'
+        - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/Fit'
+        - $ref: '#/components/parameters/Orient'
+        - $ref: '#/components/parameters/Meta'
+        - $ref: '#/components/parameters/Signature'
+        - $ref: '#/components/parameters/Expiry'
+      responses:
+        '200':
+          $ref: '#/components/responses/Image'
+        '304':
+          description: Not modified.
+        '400':
+          description: |
+            `MISSING_SEGMENT`, `INVALID_EXTENSION`, `MISSING_URL`,
+            `INVALID_URL`, `URL_TOO_LONG`, `INVALID_WIDTH`, `INVALID_HEIGHT`,
+            `INVALID_QUALITY`, `INVALID_FORMAT`, `INVALID_FIT`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: '`INVALID_SIGNATURE`, or `HOST_NOT_ALLOWED` (the host is not in the allowlist).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '413':
+          description: '`IMAGE_TOO_LARGE`: the upstream body is over 10 MB.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '415':
+          description: '`NOT_AN_IMAGE` (the upstream did not answer with a raster image) or `UNSUPPORTED_IMAGE`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: '`IMAGE_TOO_LARGE` (over `MAX_MEGAPIXELS`) or `PROCESSING_FAILED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          description: '`CONFIG_ERROR`: `HMAC_REQUIRE_EXPIRY` unset or unparseable.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502':
+          description: '`FETCH_FAILED` (unreachable, timed out, or a private address) or `UPSTREAM_ERROR` (non-2xx upstream status).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: '`PROCESSING_BUSY`. Retry later.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/v1/upload:
+    post:
+      tags: [Objects]
+      summary: Upload an image or a file
+      description: |
+        Stores an upload sent as multipart (`file` field), as a raw `image/*`
+        body, or as JSON naming a URL for falco to fetch.
+
+        An image is re-encoded to `format` or `DEFAULT_FORMAT` (webp),
+        auto-oriented and stripped of EXIF/XMP/IPTC (GPS included); the
+        original bytes are not kept. Inputs are decoded only from JPEG, PNG,
+        WebP, GIF, HEIF, AVIF and TIFF, up to `MAX_MEGAPIXELS`. A non-image is
+        stored byte for byte, except SVG, HTML and XML, which are refused
+        (`415`). The content type is sniffed from the bytes.
+
+        The id is the content hash unless `id` is given. Writing over an
+        existing key replaces it and invalidates its cached variants. For a
+        scoped key, writing over another owner's object is `409` with a custom
+        `id`; with a content-hash id the existing object is returned unchanged.
+      parameters:
+        - $ref: '#/components/parameters/Bucket'
+        - $ref: '#/components/parameters/Storage'
+        - $ref: '#/components/parameters/Directory'
+        - $ref: '#/components/parameters/OwnerId'
+        - name: id
           in: query
-          description: "Directory path (alias: dir, directory)"
           required: false
-          schema:
-            type: string
+          description: Custom id instead of the content hash. A form or JSON `id` overrides it.
+          schema: { type: string, pattern: '^[a-zA-Z0-9_-]{1,100}$' }
+        - name: quality
+          in: query
+          required: false
+          description: Encode quality, for a raw `image/*` body (multipart and JSON carry it in the body).
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - name: format
+          in: query
+          required: false
+          description: Stored format, for a raw `image/*` body.
+          schema: { $ref: '#/components/schemas/OutputFormat' }
       requestBody:
-        description: Image to upload. Can be multipart/form-data, image/*, or application/json with a URL.
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
+              required: [file]
               properties:
                 file:
                   type: string
                   format: binary
-                  description: "Image file to upload"
                 quality:
                   type: integer
                   minimum: 1
                   maximum: 100
-                  default: 80
-                  description: "Quality for the processed image (1-100)"
+                  description: Defaults to `DEFAULT_QUALITY` (85).
                 format:
-                  type: string
-                  enum: [webp, jpeg, png, avif]
-                  default: webp
-                  description: "Target format for the processed image"
+                  $ref: '#/components/schemas/OutputFormat'
                 id:
                   type: string
-                  pattern: '^[a-zA-Z0-9_-]+$'
-                  description: "Optional custom ID for the image (alphanumeric, hyphens, underscores only)"
-            examples:
-              upload-file:
-                summary: Upload image file
-                value:
-                  file: "binary image data"
-                  quality: 80
-                  format: webp
+                  pattern: '^[a-zA-Z0-9_-]{1,100}$'
+                  description: Custom id. An invalid one is ignored and the content hash used.
           image/*:
             schema:
               type: string
               format: binary
-              description: "Raw image data"
-            examples:
-              raw-image:
-                summary: Upload raw image
-                value: "binary image data"
           application/json:
             schema:
               type: object
-              required:
-                - url
+              additionalProperties: false
+              required: [url]
               properties:
                 url:
                   type: string
                   format: uri
-                  description: "URL of the image to download and process"
+                  maxLength: 2048
+                  description: http/https URL to fetch. Private addresses are refused; transient failures are retried.
                 quality:
                   type: integer
                   minimum: 1
                   maximum: 100
-                  default: 80
-                  description: "Quality for the processed image (1-100)"
                 format:
-                  type: string
-                  enum: [webp, jpeg, png, avif]
-                  default: webp
-                  description: "Target format for the processed image"
+                  $ref: '#/components/schemas/OutputFormat'
                 id:
                   type: string
-                  pattern: '^[a-zA-Z0-9_-]+$'
-                  description: "Optional custom ID for the image"
+                  pattern: '^[a-zA-Z0-9_-]{1,100}$'
             examples:
               upload-url:
-                summary: Upload from URL
                 value:
                   url: "https://example.com/image.jpg"
                   quality: 85
                   format: webp
       responses:
         '201':
-          description: Image uploaded and processed successfully.
+          description: Stored (or, for a scoped key, the identical object already stored under that content hash).
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/UploadResponse'
+              schema: { $ref: '#/components/schemas/UploadResponse' }
               examples:
                 success:
-                  summary: Successful upload
                   value:
                     success: true
                     data:
-                      id: "abc123def456"
-                      url: "http://localhost:8080/api/v1/images/abc123def456"
-                      original_name: "image.jpg"
+                      id: "6d556268ff5afc0f"
+                      url: "/api/v1/images/6d556268ff5afc0f?b=images&d=avatars"
+                      original_name: "photo.jpg"
                       format: "webp"
                       size: 245760
-                      dimensions:
-                        width: 1024
-                        height: 768
-                      created_at: "2024-01-15T10:30:00Z"
-        '200':
-          description: Image already exists (duplicate upload).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UploadResponse'
+                      dimensions: { width: 1024, height: 768 }
+                      created_at: "2026-09-03T00:33:32Z"
         '400':
-          description: Bad request (e.g., missing file, invalid parameters).
+          description: |
+            `INVALID_DIRECTORY`, `UNKNOWN_BUCKET`, `UNSUPPORTED_CONTENT_TYPE`,
+            `INVALID_REQUEST`, `MISSING_FILE`, `READ_ERROR`, `INVALID_QUALITY`, `INVALID_JSON`,
+            `MISSING_URL`, `INVALID_URL`, `DOWNLOAD_FAILED`, `INVALID_ID`.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                invalid-format:
-                  summary: Invalid format parameter
-                  value:
-                    success: false
-                    error:
-                      code: "INVALID_FORMAT"
-                      message: "Unsupported format"
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '409':
+          description: '`OBJECT_EXISTS`: a scoped key uploading with a custom `id` over an object another owner holds.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '413':
-          description: Request entity too large.
-        '429':
-          description: Too many requests (rate limited).
-        '500':
-          description: Internal server error.
+          $ref: '#/components/responses/RequestTooLarge'
+        '415':
+          description: '`DANGEROUS_CONTENT_TYPE`: SVG, HTML or XML.'
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /update:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: '`PROCESSING_FAILED`: libvips could not decode or encode the image.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          description: '`STORAGE_ERROR` or `RETRIEVAL_ERROR`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: '`STORAGE_UNAVAILABLE`: the bucket''s circuit breaker is open.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/v1/update:
     post:
-      summary: Update an existing image
-      description: Downloads an image from a URL, processes it with the specified quality and format, and overwrites an existing image at the specified key. Useful for updating images with better compression or different formats while preserving the same storage location.
+      tags: [Objects]
+      summary: Replace an existing object from a URL
+      description: |
+        Downloads an image from `url`, re-encodes it, and overwrites the
+        object at `key`. Every field but `format` and `storage` is required.
+
+        A scoped key must present the object's owner in `X-Owner-Id`; that is
+        checked before anything is downloaded, and the stored owner is kept.
+        Cached variants of the key are invalidated.
       parameters:
-        - name: b
-          in: query
-          description: "Bucket name override (optional, will use request body bucket if not specified). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET."
-          required: false
-          schema:
-            type: string
+        - $ref: '#/components/parameters/OwnerId'
       requestBody:
-        description: Details for the image update operation.
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - url
-                - bucket
-                - key
-                - quality
+              additionalProperties: false
+              required: [url, bucket, key, quality]
               properties:
                 url:
                   type: string
                   format: uri
-                  description: "URL of the new image to download and process"
+                  maxLength: 2048
                   example: "https://example.com/new-image.jpg"
                 bucket:
                   type: string
-                  description: "The storage bucket where the image resides"
+                  description: Bucket or declared alias holding the object.
                   example: "images"
+                storage:
+                  type: string
+                  description: Named backend; with `bucket`, `bucket` is the remote bucket inside it.
                 key:
                   type: string
-                  description: "The key (path/filename) of the image to overwrite"
-                  example: "products/shirt-001.jpg"
+                  description: Storage key of the object to overwrite, directories included.
+                  example: "products/6d556268ff5afc0f"
                 quality:
                   type: integer
                   minimum: 1
                   maximum: 100
-                  default: 80
-                  description: "Quality for the processed image (1-100, higher = better quality)"
                   example: 85
                 format:
-                  type: string
-                  enum: [webp, jpeg, png, avif]
-                  default: webp
-                  description: "Target format for the processed image"
-                  example: webp
-            examples:
-              update-product-image:
-                summary: Update product image with better compression
-                value:
-                  url: "https://cdn.example.com/products/new-shirt-design.jpg"
-                  bucket: "products"
-                  key: "shirts/red-shirt-2024.jpg"
-                  quality: 90
-                  format: webp
-              optimize-existing-image:
-                summary: Convert existing image to modern format
-                value:
-                  url: "https://old-cdn.example.com/images/photo.png"
-                  bucket: "gallery"
-                  key: "vacation-2023/beach.jpg"
-                  quality: 80
-                  format: avif
+                  $ref: '#/components/schemas/OutputFormat'
       responses:
         '200':
-          description: Image updated successfully with compression savings.
+          description: Replaced.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/UpdateResponse'
+              schema: { $ref: '#/components/schemas/UpdateResponse' }
               examples:
                 successful-update:
-                  summary: Successful image update with savings
                   value:
                     success: true
                     updated:
-                      - key: "products/shirt-001.jpg"
+                      - key: "products/6d556268ff5afc0f"
                         url_size: 2048576
                         bucket_size: 512000
                         new_size: 184320
                         saved_bytes: 327680
-                        saved_percent: 63.9
+                        saved_percent: 64
                         format: webp
                         quality: 85
         '400':
-          description: Bad request (e.g., invalid JSON, missing parameters, invalid URL).
+          description: |
+            `INVALID_JSON`, `MISSING_URL`, `MISSING_BUCKET`, `MISSING_KEY`,
+            `INVALID_QUALITY`, `INVALID_FORMAT`, `INVALID_URL`,
+            `UNKNOWN_BUCKET`, `DOWNLOAD_FAILED`.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
               examples:
-                missing-parameters:
-                  summary: Missing required parameters
+                missing-bucket:
                   value:
                     success: false
-                    error:
-                      code: "MISSING_BUCKET"
-                      message: "Bucket is required"
-                invalid-url:
-                  summary: Invalid URL format
-                  value:
-                    success: false
-                    error:
-                      code: "INVALID_URL"
-                      message: "Invalid URL format"
-                invalid-quality:
-                  summary: Quality out of range
-                  value:
-                    success: false
-                    error:
-                      code: "INVALID_QUALITY"
-                      message: "Quality must be between 1 and 100"
+                    error: { code: "MISSING_BUCKET", message: "Bucket is required" }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`ACCESS_DENIED` (bucket outside the key''s scope) or `FORBIDDEN` (a scoped key that does not own the object).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '404':
-          description: Image key not found in storage.
+          description: '`NOT_FOUND`: no object at `key`.'
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                image-not-found:
-                  summary: Image key does not exist
-                  value:
-                    success: false
-                    error:
-                      code: "NOT_FOUND"
-                      message: "Image not found"
-        '413':
-          description: Downloaded image too large.
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: '`PROCESSING_FAILED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '429':
-          description: Too many requests (rate limited).
+          $ref: '#/components/responses/RateLimited'
         '500':
-          description: Internal server error (e.g., download failed, processing error).
+          description: '`STORAGE_ERROR`, or `RETRIEVAL_ERROR` when the ownership lookup fails.'
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                download-failed:
-                  summary: Failed to download image from URL
-                  value:
-                    success: false
-                    error:
-                      code: "DOWNLOAD_FAILED"
-                      message: "Failed to download image from URL"
-                processing-failed:
-                  summary: Image processing error
-                  value:
-                    success: false
-                    error:
-                      code: "PROCESSING_FAILED"
-                      message: "Failed to process image"
-  /list:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: '`STORAGE_UNAVAILABLE`: the bucket''s circuit breaker is open.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/v1/list:
     get:
+      tags: [Objects]
       summary: List files and directories
       description: |
-        Lists files and directories under a prefix.
+        Lists one directory level under a prefix. A prefix is a directory:
+        `users/1` never includes `users/10/…`.
 
         Pagination is opt-in: without `limit` or `cursor` the whole prefix is
-        returned, as before. With either of them the backend's own pagination is
-        used and the response carries `truncated` and `next_cursor`.
-
-        `truncated` is always present. It used to be absent while the jay
-        backend answered at most 1000 keys and dropped the truncation flag, so a
-        large prefix came back short and silent.
+        returned (up to 100 000 objects; beyond that `400 LISTING_TOO_LARGE`)
+        and `truncated` is false. With either of them the backend's own
+        pagination is used and the response carries `truncated` and
+        `next_cursor`; a backend that cannot page answers `501`.
 
         In a paginated response `file_count` is null on each directory: those
-        come from the backend's delimiter roll-up, which carries no count, and a
-        zero would read as "empty folder".
+        come from the backend's delimiter roll-up, which carries no count, and
+        a zero would read as "empty folder".
       parameters:
+        - $ref: '#/components/parameters/Bucket'
+        - $ref: '#/components/parameters/Storage'
+        - name: p
+          in: query
+          description: "Directory to list (aliases: prefix, d, dir, directory)."
+          required: false
+          schema: { type: string, example: "products" }
         - name: limit
           in: query
           required: false
@@ -343,258 +622,226 @@ paths:
           in: query
           required: false
           schema: { type: string }
-          description: Opaque cursor from a previous response's next_cursor.
-        - name: b
-          in: query
-          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
-          required: false
-          schema:
-            type: string
-            example: "images"
-        - name: p
-          in: query
-          description: "Path prefix to list (alias: prefix, d, dir, directory)"
-          required: false
-          schema:
-            type: string
-            example: "products/"
-        - name: d
-          in: query
-          description: "Directory path (alias: dir, directory)"
-          required: false
-          schema:
-            type: string
-            example: "products/shirts"
+          description: Opaque cursor from a previous response's `next_cursor`. Turns on paginated mode.
       responses:
         '200':
-          description: A list of files and directories with metadata.
+          description: The files and directories directly under the prefix.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ListResponse'
+              schema: { $ref: '#/components/schemas/ListResponse' }
               examples:
                 directory-listing:
-                  summary: List directory contents
                   value:
                     success: true
-                    prefix: "products/"
+                    prefix: "products"
                     count: 15
                     files:
-                      - key: "shirt-red.jpg"
+                      - key: "6d556268ff5afc0f"
                         size: 245760
-                        modified: "2024-01-15T10:30:00Z"
-                      - key: "shirt-blue.jpg"
-                        size: 198656
-                        modified: "2024-01-15T09:15:00Z"
+                        modified: "2026-09-03T00:33:32Z"
                     directories:
                       - name: "shirts"
                         path: "products/shirts"
                         file_count: 8
-                      - name: "pants"
-                        path: "products/pants"
-                        file_count: 5
-                root-directory:
-                  summary: List root directory
-                  value:
-                    success: true
-                    prefix: ""
-                    count: 3
-                    files: []
-                    directories:
-                      - name: "products"
-                        path: "products"
-                        file_count: 15
-                      - name: "gallery"
-                        path: "gallery"
-                        file_count: 42
-                      - name: "thumbnails"
-                        path: "thumbnails"
-                        file_count: 128
+                    truncated: false
         '400':
-          description: Invalid parameters.
+          description: '`INVALID_PREFIX`, `INVALID_LIMIT`, `LISTING_TOO_LARGE`, `UNKNOWN_BUCKET`.'
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                unknown-bucket:
-                  summary: Bucket is neither declared nor aliased
-                  value:
-                    success: false
-                    error:
-                      code: "UNKNOWN_BUCKET"
-                      message: 'requested bucket cannot be served: "archive" is not a configured bucket or alias, and the backend cannot switch to it'
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '500':
-          description: Internal server error (e.g., storage backend error).
+          description: '`LIST_ERROR`: the backend failed.'
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                storage-error:
-                  summary: Storage backend error
-                  value:
-                    success: false
-                    error:
-                      code: "STORAGE_ERROR"
-                      message: "Failed to list files"
-  /delete:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: '`PAGINATION_UNSUPPORTED`: `limit`/`cursor` on a backend that cannot page.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/v1/delete:
     delete:
-      summary: Delete images or directories
-      description: Deletes one or more images by their keys, or all images within a directory prefix. Supports both individual file deletion and bulk directory deletion.
+      tags: [Objects]
+      summary: Delete objects or a directory
+      description: |
+        Deletes the listed `keys`, every object under `prefix`, or both.
+
+        A prefix is a directory (`users/1` leaves `users/10/…` alone); one that
+        normalises to nothing (`/`) is refused, since deleting a whole bucket
+        is not supported. A key that is already gone is neither deleted nor
+        failed. A scoped key can only delete objects whose owner it presents
+        in `X-Owner-Id`; the rest land in `failed`.
+
+        Cached variants of every key touched are invalidated.
       parameters:
-        - name: b
-          in: query
-          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
-          required: false
-          schema:
-            type: string
-            example: "images"
+        - $ref: '#/components/parameters/OwnerId'
       requestBody:
-        description: Deletion parameters - either specific keys or a prefix for bulk deletion.
         required: true
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 keys:
                   type: array
-                  items:
-                    type: string
-                  description: "Array of image keys to delete"
-                  example: ["abc123def456", "products/shirt-001.jpg"]
+                  items: { type: string }
+                  example: ["6d556268ff5afc0f", "products/f3a9c1"]
                 prefix:
                   type: string
-                  description: "Directory prefix to delete all files within (alternative to keys)"
-                  example: "temp/"
+                  example: "temp"
                 bucket:
                   type: string
-                  description: "Bucket name override (if not specified in query parameter)"
+                  description: Bucket or declared alias. The default bucket when omitted.
                   example: "images"
+                storage:
+                  type: string
+                  description: Named backend.
             examples:
-              delete-single-file:
-                summary: Delete a single image
+              delete-keys:
                 value:
-                  keys: ["abc123def456"]
-              delete-multiple-files:
-                summary: Delete multiple images
-                value:
-                  keys: ["abc123def456", "def789ghi012", "products/old-shirt.jpg"]
+                  keys: ["6d556268ff5afc0f", "products/f3a9c1"]
               delete-directory:
-                summary: Delete all files in a directory
                 value:
-                  prefix: "temp/"
+                  prefix: "temp"
       responses:
         '200':
-          description: Images deleted successfully.
+          description: Everything asked for is gone.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/DeleteResponse'
+              schema: { $ref: '#/components/schemas/DeleteResponse' }
               examples:
-                single-file-deleted:
-                  summary: Single file deletion
+                deleted:
                   value:
                     success: true
-                    deleted: ["abc123def456"]
-                    count: 1
-                multiple-files-deleted:
-                  summary: Multiple files deletion
-                  value:
-                    success: true
-                    deleted: ["abc123def456", "def789ghi012", "products/old-shirt.jpg"]
-                    count: 3
-                directory-deleted:
-                  summary: Directory bulk deletion
-                  value:
-                    success: true
-                    deleted: ["temp/cache1.jpg", "temp/cache2.jpg", "temp/cache3.jpg"]
-                    count: 3
-        '400':
-          description: Bad request (e.g., missing parameters, invalid keys).
+                    deleted: ["6d556268ff5afc0f", "products/f3a9c1"]
+                    count: 2
+        '207':
+          description: Some keys could not be deleted; they are listed in `failed` and `success` is false.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: { $ref: '#/components/schemas/DeleteResponse' }
+              examples:
+                partial:
+                  value:
+                    success: false
+                    deleted: ["6d556268ff5afc0f"]
+                    failed: ["products/f3a9c1"]
+                    count: 1
+        '400':
+          description: '`INVALID_JSON`, `MISSING_PARAMETERS`, `INVALID_PREFIX`, `LISTING_TOO_LARGE`, `UNKNOWN_BUCKET`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
               examples:
                 missing-parameters:
-                  summary: No keys or prefix provided
                   value:
                     success: false
-                    error:
-                      code: "MISSING_PARAMETERS"
-                      message: "Either 'keys' or 'prefix' must be provided"
-                invalid-keys:
-                  summary: Invalid key format
-                  value:
-                    success: false
-                    error:
-                      code: "INVALID_KEY"
-                      message: "Invalid key format"
-        '404':
-          description: One or more images not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                partial-not-found:
-                  summary: Some files not found
-                  value:
-                    success: false
-                    error:
-                      code: "PARTIAL_NOT_FOUND"
-                      message: "Some files were not found and could not be deleted"
+                    error: { code: "MISSING_PARAMETERS", message: "Either 'keys' or 'prefix' must be provided" }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '500':
-          description: Internal server error (e.g., storage backend error).
+          description: '`LIST_ERROR`: listing the prefix failed.'
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                storage-error:
-                  summary: Storage backend error
-                  value:
-                    success: false
-                    error:
-                      code: "STORAGE_ERROR"
-                      message: "Failed to delete files"
-  /sign:
-    post:
-      summary: Sign a delivery URL
-      description: |
-        Produces a signed delivery URL for a path.
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
-        Use the returned `signed_url` verbatim. Signing merges the expiry into
-        the query and re-encodes the parameters in sorted order, so rebuilding
-        the URL from its parts breaks the signature.
+  /api/v1/meta/{path}:
+    get:
+      tags: [Objects]
+      summary: Object metadata
+      description: |
+        Stored metadata for one object, without transferring it. `path` is
+        read exactly like a delivery path, so the URL that serves an image
+        describes it by swapping one segment.
+
+        It sits behind the API key: dimensions and owner are not part of what
+        a signed delivery URL grants. `owner_id` is only included for the
+        admin key, or for a caller already presenting that owner in
+        `X-Owner-Id`.
+      parameters:
+        - $ref: '#/components/parameters/ImagePath'
+        - $ref: '#/components/parameters/Bucket'
+        - $ref: '#/components/parameters/Storage'
+        - $ref: '#/components/parameters/Directory'
+        - $ref: '#/components/parameters/OwnerId'
+      responses:
+        '200':
+          description: Metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObjectMeta' }
+        '400':
+          description: '`INVALID_ID`, `INVALID_DIRECTORY`, `UNKNOWN_BUCKET`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          description: '`IMAGE_NOT_FOUND`, or `METADATA_NOT_FOUND` for an object stored without metadata.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: '`RETRIEVAL_ERROR`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/v1/sign:
+    post:
+      tags: [Signing]
+      summary: Sign a delivery or proxy URL
+      description: |
+        Produces a signed URL for a path.
+
+        Use the returned `signed_url` as is: it carries the `exp` the
+        signature covers, with the query re-encoded in sorted order.
+
+        The path is authorised the way delivery will resolve it: `b`,
+        `bucket` and `storage` alike, and the default bucket when it names
+        none. A proxy path (`/api/v1/proxy/…`) reads no bucket, so any
+        authenticated key may sign one. A `#` in the path is refused, and so
+        is an expiry more than 366 days away.
 
         Answers `501 SIGNING_DISABLED` when `HMAC_KEY` is not configured.
-      security:
-        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [path]
               properties:
                 path:
                   type: string
-                  description: The delivery path with its query, exactly as the client will request it.
+                  description: The path with its query, exactly as the client will request it.
                   example: "/api/v1/images/abc123?w=400&f=webp"
                 expires_in:
                   type: integer
-                  description: Seconds from now. Mutually exclusive with expires_at.
+                  description: Seconds from now. Mutually exclusive with `expires_at`.
                   example: 3600
                 expires_at:
                   type: integer
                   description: Unix timestamp. Wins if both are given.
       responses:
-        "200":
-          description: Signed URL
+        '200':
+          description: Signed URL. Without an expiry, `expires_at` is absent (accepted only under `HMAC_REQUIRE_EXPIRY=false`).
           content:
             application/json:
               schema:
@@ -607,12 +854,32 @@ paths:
                     type: string
                   expires_at:
                     type: integer
-        "400": { description: Invalid JSON, empty path, or an invalid path }
-        "403": { description: The key's scope does not cover the path's bucket }
-        "501": { description: HMAC_KEY is not configured }
+        '400':
+          description: '`INVALID_JSON`, `INVALID_REQUEST` (no path), `INVALID_PATH` (malformed, or contains `#`), `INVALID_EXPIRY` (over 366 days).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`ACCESS_DENIED`: the key''s scope does not cover the bucket the path resolves to.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: '`SIGNING_ERROR`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '501':
+          description: '`SIGNING_DISABLED`: `HMAC_KEY` is not configured.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
-  /stats:
+  /api/v1/stats:
     get:
+      tags: [Operations]
       summary: Per-bucket storage statistics
       description: |
         Object counts and sizes for every bucket the key can reach. Buckets are
@@ -625,11 +892,9 @@ paths:
 
         A bucket that could not be asked carries `error` and its numbers are
         meaningless; they must not be rendered as zeros.
-      security:
-        - ApiKeyAuth: []
       responses:
-        "200":
-          description: Statistics
+        '200':
+          description: Statistics.
           content:
             application/json:
               schema:
@@ -652,19 +917,25 @@ paths:
                         error:
                           type: string
                           description: Present when the backend could not be reached.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: '`NO_REGISTRY`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
-  /cache:
+  /api/v1/cache:
     get:
+      tags: [Operations]
       summary: Transform cache statistics
       description: |
-        The cache holds transformed variants and proxy fetches only. Delivery
-        with no transformations streams straight from storage and is never
-        cached, so it never appears in these counters.
-      security:
-        - ApiKeyAuth: []
+        The cache holds transformed variants, format conversions and proxy
+        fetches. Delivery of an object as stored streams straight from storage
+        and is never cached, so it never appears in these counters.
       responses:
-        "200":
-          description: Cache state
+        '200':
+          description: Cache state.
           content:
             application/json:
               schema:
@@ -673,8 +944,8 @@ paths:
                   success: { type: boolean }
                   enabled:
                     type: boolean
-                    description: False when CACHE_SIZE_MB is 0, in which case every transform is recomputed.
-                  backend: { type: string, example: "sharded-lru" }
+                    description: False when `CACHE_SIZE_MB` is 0 and Redis is not configured, in which case every transform is recomputed.
+                  backend: { type: string, enum: [sharded-lru, lru, redis, none], example: "sharded-lru" }
                   hits: { type: integer }
                   misses: { type: integer }
                   hit_ratio: { type: number, format: float }
@@ -684,26 +955,30 @@ paths:
                   ttl_hours: { type: integer }
                   cleanup_interval: { type: string, example: "10m0s" }
                   note: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     delete:
+      tags: [Operations]
       summary: Purge cached variants
       description: |
         Drops every cached variant, or every variant of one storage key when
-        `key` is given. Requires an admin key: cache keys are hashes of storage
-        keys, so a per-bucket scope cannot be checked against them.
+        `key` is given — in the bucket `b`/`storage` names, or the default
+        bucket when neither is given. Requires the admin key: a scoped key
+        purging the cache would degrade every other tenant's latency.
 
-        The response carries how many entries were actually dropped — answering
-        "purged" without a count cannot be told apart from a no-op.
-      security:
-        - ApiKeyAuth: []
+        The response carries how many entries were actually dropped —
+        answering "purged" without a count cannot be told apart from a no-op.
       parameters:
         - name: key
           in: query
           required: false
-          schema: { type: string }
+          schema: { type: string, example: "avatars/6d556268ff5afc0f" }
           description: Purge only this storage key's variants.
+        - $ref: '#/components/parameters/Bucket'
+        - $ref: '#/components/parameters/Storage'
       responses:
-        "200":
-          description: Purged
+        '200':
+          description: Purged.
           content:
             application/json:
               schema:
@@ -713,386 +988,499 @@ paths:
                   purged: { type: integer, example: 42 }
                   scope: { type: string, enum: [all, key] }
                   key: { type: string }
-        "403": { description: Not an admin key }
-
-  /meta/{key}:
-    get:
-      summary: Object metadata
-      description: |
-        Stored metadata for one object, without transferring it.
-
-        It lives here rather than under `/images/` because delivery owns that
-        subtree with a wildcard, and it sits behind the API key: dimensions and
-        owner are not part of what a signed delivery URL grants.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: key
-          in: path
-          required: true
-          schema: { type: string }
-          description: The storage key, read exactly like a delivery path.
-        - name: b
-          in: query
-          required: false
-          schema: { type: string }
-          description: "Bucket name (alias: bucket). Must name a configured bucket or a declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket."
-        - name: d
-          in: query
-          required: false
-          schema: { type: string }
-          description: "Directory prefix (alias: dir, directory)"
-      responses:
-        "200":
-          description: Metadata
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`ACCESS_DENIED`: not an admin key.'
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  success: { type: boolean }
-                  id: { type: string }
-                  storage_key: { type: string }
-                  bucket: { type: string }
-                  format: { type: string, example: "webp" }
-                  content_type: { type: string, example: "image/webp" }
-                  size_bytes: { type: integer }
-                  width: { type: integer }
-                  height: { type: integer }
-                  original_name: { type: string }
-                  owner_id: { type: string }
-                  etag: { type: string }
-                  created_at: { type: string, format: date-time }
-        "404": { description: No such object }
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
-  /images/{id}:
+  /health:
     get:
-      summary: Retrieve and transform an image
-      description: Delivers the processed image by its ID with optional real-time transformations. Supports resizing, cropping, format conversion, and various filters.
-      parameters:
-        - name: id
-          in: path
-          description: The ID of the image to retrieve.
-          required: true
-          schema:
-            type: string
-            pattern: '^[a-zA-Z0-9_-]+$'
-        - name: w
-          in: query
-          description: "Width in pixels (alias: width)"
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 4096
-        - name: h
-          in: query
-          description: "Height in pixels (alias: height)"
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 4096
-        - name: q
-          in: query
-          description: "Quality (1-100, alias: quality)"
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 80
-        - name: f
-          in: query
-          description: "Format (alias: format)"
-          required: false
-          schema:
-            type: string
-            enum: [webp, jpeg, png, avif]
-            default: webp
-        - name: fit
-          in: query
-          description: "Resize fit mode"
-          required: false
-          schema:
-            type: string
-            enum: [cover, contain, fill]
-            default: cover
-        - name: crop_x
-          in: query
-          description: "Crop X offset"
-          required: false
-          schema:
-            type: integer
-            minimum: 0
-        - name: crop_y
-          in: query
-          description: "Crop Y offset"
-          required: false
-          schema:
-            type: integer
-            minimum: 0
-        - name: crop_w
-          in: query
-          description: "Crop width"
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-        - name: crop_h
-          in: query
-          description: "Crop height"
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-        - name: rotate
-          in: query
-          description: "Rotation angle in degrees"
-          required: false
-          schema:
-            type: number
-        - name: flip
-          in: query
-          description: "Flip direction"
-          required: false
-          schema:
-            type: string
-            enum: [horizontal, vertical]
-        - name: brightness
-          in: query
-          description: "Brightness adjustment (-100 to 100)"
-          required: false
-          schema:
-            type: number
-            minimum: -100
-            maximum: 100
-        - name: contrast
-          in: query
-          description: "Contrast adjustment (-100 to 100)"
-          required: false
-          schema:
-            type: number
-            minimum: -100
-            maximum: 100
-        - name: saturation
-          in: query
-          description: "Saturation adjustment (-100 to 500)"
-          required: false
-          schema:
-            type: number
-            minimum: -100
-            maximum: 500
-        - name: blur
-          in: query
-          description: "Blur amount (0-100)"
-          required: false
-          schema:
-            type: number
-            minimum: 0
-            maximum: 100
-        - name: sharpen
-          in: query
-          description: "Sharpen amount (0-100)"
-          required: false
-          schema:
-            type: number
-            minimum: 0
-            maximum: 100
+      tags: [Operations]
+      summary: Liveness
+      description: Whether the process is up, pinging the default backend only. No authentication.
+      security: []
       responses:
         '200':
-          description: The processed image file.
-          content:
-            image/*:
-              schema:
-                type: string
-                format: binary
-          headers:
-            Cache-Control:
-              schema:
-                type: string
-              description: "Cache control directives"
-            ETag:
-              schema:
-                type: string
-              description: "Entity tag for caching"
-            Content-Type:
-              schema:
-                type: string
-              description: "MIME type of the image"
-        '400':
-          description: Invalid transformation parameters.
+          description: Healthy.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: { $ref: '#/components/schemas/HealthResponse' }
               examples:
-                invalid-width:
-                  summary: Invalid width parameter
+                healthy:
                   value:
-                    success: false
-                    error:
-                      code: "INVALID_WIDTH"
-                      message: "Invalid width parameter"
-                invalid-format:
-                  summary: Unsupported format
-                  value:
-                    success: false
-                    error:
-                      code: "INVALID_FORMAT"
-                      message: "Unsupported format"
-        '404':
-          description: Image not found.
+                    status: "healthy"
+                    version: "1.0.3"
+                    commit: "abc1234"
+                    uptime: "2h30m45s"
+        '503':
+          description: The default backend did not answer.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: { $ref: '#/components/schemas/HealthResponse' }
               examples:
-                image-not-found:
-                  summary: Image ID does not exist
+                unhealthy:
                   value:
-                    success: false
-                    error:
-                      code: "IMAGE_NOT_FOUND"
-                      message: "Image not found"
-        '413':
-          description: Transformation result too large.
+                    status: "unhealthy"
+                    version: "1.0.3"
+                    commit: "abc1234"
+                    uptime: "0s"
+    head:
+      tags: [Operations]
+      summary: Liveness, headers only
+      security: []
+      responses:
+        '200': { description: Healthy. }
+        '503': { description: Unhealthy. }
+
+  /health/ready:
+    get:
+      tags: [Operations]
+      summary: Readiness and diagnostics
+      description: |
+        Checks every registered backend, reports each one's circuit-breaker
+        state, the cache, and which features are off for lack of
+        configuration. It maps the deployment and returns raw backend errors,
+        so it requires the admin key (when `API_KEY_REQUIRED=true`).
+      security:
+        - AdminApiKey: []
+        - AdminBearer: []
+      responses:
+        '200':
+          description: Every backend answered.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: { $ref: '#/components/schemas/ReadyResponse' }
               examples:
-                too-large:
-                  summary: Result exceeds size limits
+                ready:
                   value:
-                    success: false
-                    error:
-                      code: "RESULT_TOO_LARGE"
-                      message: "Transformation result exceeds maximum allowed size"
-        '429':
-          description: Too many requests (rate limited).
+                    status: "ready"
+                    version: "1.0.3"
+                    uptime: "3h21m4s"
+                    backends:
+                      - { name: "jay", type: "jay", ok: true, breaker: "closed" }
+                    cache: { enabled: true, item_count: 812 }
+                    disabled:
+                      - "watermark_url: WATERMARK_ALLOWED_HOSTS is unset (?wm_url= answers 403)"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: At least one backend failed its check; `status` is `degraded`.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                rate-limited:
-                  summary: Rate limit exceeded
-                  value:
-                    success: false
-                    error:
-                      code: "RATE_LIMIT_EXCEEDED"
-                      message: "Too many requests"
-        '500':
-          description: Internal server error.
+              schema: { $ref: '#/components/schemas/ReadyResponse' }
+    head:
+      tags: [Operations]
+      summary: Readiness, headers only
+      security:
+        - AdminApiKey: []
+        - AdminBearer: []
+      responses:
+        '200': { description: Ready. }
+        '401': { description: Missing or wrong admin key. }
+        '503': { description: Degraded. }
+
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      description: |
+        Prometheus text format, every metric in the `falco_` namespace.
+        Mounted only when `ENABLE_METRICS=true` **and**
+        `API_KEY_REQUIRED=true`; otherwise this route does not exist (404).
+        Requires the admin key.
+      security:
+        - AdminApiKey: []
+        - AdminBearer: []
+      responses:
+        '200':
+          description: Metrics.
           content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                processing-error:
-                  summary: Image processing failed
-                  value:
-                    success: false
-                    error:
-                      code: "PROCESSING_FAILED"
-                      message: "Failed to process image"
-/health:
-  get:
-    summary: Health check
-    description: Returns the health status of the API and its components including storage backend and system metrics.
-    responses:
-      '200':
-        description: Service is healthy.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/HealthResponse'
-            examples:
-              healthy:
-                summary: All services healthy
-                value:
-                  status: "healthy"
-                  timestamp: "2024-01-15T10:30:00Z"
-                  version: "1.0.0"
-                  uptime: "2h30m45s"
-                  services:
-                    storage:
-                      status: "healthy"
-                      total_images: 15432
-                      total_size_bytes: 2147483648
-                      total_size_mb: 2048.0
-                      avg_image_size_bytes: 139264
-                    processor:
-                      status: "healthy"
-                      supported_formats: ["webp", "jpeg", "png", "avif"]
-                  system:
-                    go_version: "1.27+"
-                    max_file_size_mb: 10.0
-                    max_dimensions:
-                      width: 4096
-                      height: 4096
-              degraded:
-                summary: Some services unhealthy
-                value:
-                  status: "degraded"
-                  timestamp: "2024-01-15T10:30:00Z"
-                  version: "1.0.0"
-                  uptime: "2h30m45s"
-                  services:
-                    storage:
-                      status: "unhealthy"
-                      error: "Connection timeout"
-                    processor:
-                      status: "healthy"
-                      supported_formats: ["webp", "jpeg", "png", "avif"]
-      '503':
-        description: Service is unhealthy or degraded.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/HealthResponse'
-            examples:
-              unhealthy:
-                summary: Service completely unhealthy
-                value:
-                  status: "unhealthy"
-                  timestamp: "2024-01-15T10:30:00Z"
-                  version: "1.0.0"
-                  uptime: "0s"
-                  services:
-                    storage:
-                      status: "unhealthy"
-                      error: "Database connection failed"
-                    processor:
-                      status: "unhealthy"
-                      error: "Image processor not initialized"
-/docs:
-  get:
-    summary: API Documentation
-    description: Serves the interactive API documentation using ReDoc.
-    responses:
-      '200':
-        description: HTML page with API documentation.
-        content:
-          text/html:
-            schema:
-              type: string
-              example: "<!DOCTYPE html><html><head><title>Imagine API Docs</title>...</html>"
-/docs/openapi.yaml:
-  get:
-    summary: OpenAPI Specification
-    description: Returns the OpenAPI 3.1.0 specification in YAML format.
-    responses:
-      '200':
-        description: OpenAPI specification file.
-        content:
-          application/yaml:
-            schema:
-              type: string
-              description: "OpenAPI 3.1.0 specification in YAML format"
+            text/plain:
+              schema: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /docs:
+    get:
+      tags: [Documentation]
+      summary: API documentation viewer
+      description: Renders this specification with ReDoc.
+      security: []
+      responses:
+        '200':
+          description: HTML page.
+          content:
+            text/html:
+              schema: { type: string }
+
+  /docs/openapi.yaml:
+    get:
+      tags: [Documentation]
+      summary: OpenAPI specification
+      description: This document, embedded in the binary.
+      security: []
+      responses:
+        '200':
+          description: OpenAPI 3.1 specification.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /robots.txt:
+    get:
+      tags: [Documentation]
+      summary: Crawler policy
+      description: Disallows everything; falco is a CDN origin, not indexable content.
+      security: []
+      responses:
+        '200':
+          description: '`User-agent: *` / `Disallow: /`.'
+          content:
+            text/plain:
+              schema: { type: string }
+
 components:
+  parameters:
+    ImagePath:
+      name: path
+      in: path
+      required: true
+      description: Image id, optionally with directories before it and an extension (webp, jpg, jpeg, png, avif) after it. May contain slashes.
+      schema: { type: string, example: "avatars/6d556268ff5afc0f.webp" }
+    Bucket:
+      name: b
+      in: query
+      required: false
+      description: "Bucket (alias: bucket). A configured bucket or declared alias; anything else is 400 UNKNOWN_BUCKET, never a fallback to the default bucket. The default bucket when omitted."
+      schema: { type: string, example: "images" }
+    Storage:
+      name: storage
+      in: query
+      required: false
+      description: Named storage backend. Together with `b`, `b` is the remote bucket inside it (S3/R2 only).
+      schema: { type: string }
+    Directory:
+      name: d
+      in: query
+      required: false
+      description: "Directory (aliases: dir, directory). No `..`, no absolute paths."
+      schema: { type: string, example: "avatars" }
+    OwnerId:
+      name: X-Owner-Id
+      in: header
+      required: false
+      description: Opaque owner identity. Recorded on upload; required to match the stored owner for a scoped key's mutations.
+      schema: { type: string }
+    Signature:
+      name: sig
+      in: query
+      required: false
+      description: HMAC-SHA256 signature (base64url, no padding) over the path and sorted query without `sig`. Required when `HMAC_REQUIRED=true`.
+      schema: { type: string }
+    Expiry:
+      name: exp
+      in: query
+      required: false
+      description: Unix expiry, covered by the signature. Required when `HMAC_REQUIRE_EXPIRY=true`.
+      schema: { type: integer }
+    Width:
+      name: w
+      in: query
+      required: false
+      description: "Width in pixels (alias: width). 16 up to the configured ceiling (2048 by default). Malformed is 400 INVALID_WIDTH."
+      schema: { type: integer, minimum: 16, maximum: 2048 }
+    Height:
+      name: h
+      in: query
+      required: false
+      description: "Height in pixels (alias: height). 16 up to the configured ceiling (2048 by default). Malformed is 400 INVALID_HEIGHT."
+      schema: { type: integer, minimum: 16, maximum: 2048 }
+    Quality:
+      name: q
+      in: query
+      required: false
+      description: "Encode quality (alias: quality). Defaults to DEFAULT_QUALITY (85) on delivery, PROXY_DEFAULT_QUALITY (75) on the proxy."
+      schema: { type: integer, minimum: 1, maximum: 100 }
+    Format:
+      name: f
+      in: query
+      required: false
+      description: "Output format (alias: format). Wins over the path extension; without either, DEFAULT_FORMAT. `jpg` is accepted for `jpeg`."
+      schema: { type: string, enum: [webp, jpeg, jpg, png, avif, heic] }
+    Fit:
+      name: fit
+      in: query
+      required: false
+      schema: { type: string, enum: [cover, contain, fill], default: cover }
+    Gravity:
+      name: gravity
+      in: query
+      required: false
+      description: Crop anchor when both `w` and `h` are given; with one dimension it is a plain resize. `smart` and `entropy` let libvips pick the region. Unknown values are ignored.
+      schema:
+        type: string
+        enum: [center, north, south, east, west, northeast, northwest, southeast, southwest, smart, entropy]
+    CropX:
+      name: crop_x
+      in: query
+      required: false
+      description: Crop origin. Only with `crop_w` and `crop_h`.
+      schema: { type: integer, minimum: 0, default: 0 }
+    CropY:
+      name: crop_y
+      in: query
+      required: false
+      description: Crop origin. Only with `crop_w` and `crop_h`.
+      schema: { type: integer, minimum: 0, default: 0 }
+    CropW:
+      name: crop_w
+      in: query
+      required: false
+      description: Crop width. `crop_w` and `crop_h` are both required to crop; anything partial is 400 INVALID_CROP.
+      schema: { type: integer, minimum: 1, maximum: 20000 }
+    CropH:
+      name: crop_h
+      in: query
+      required: false
+      description: Crop height. See `crop_w`.
+      schema: { type: integer, minimum: 1, maximum: 20000 }
+    Rotate:
+      name: rotate
+      in: query
+      required: false
+      description: Degrees. Right angles are exact. NaN/Inf or out of range is 400 INVALID_ROTATE.
+      schema: { type: number, minimum: -360, maximum: 360 }
+    Flip:
+      name: flip
+      in: query
+      required: false
+      schema: { type: string, enum: [horizontal, vertical] }
+    Brightness:
+      name: brightness
+      in: query
+      required: false
+      description: Out of range or malformed is ignored.
+      schema: { type: number, minimum: -100, maximum: 100 }
+    Contrast:
+      name: contrast
+      in: query
+      required: false
+      description: Out of range or malformed is ignored.
+      schema: { type: number, minimum: -100, maximum: 100 }
+    Gamma:
+      name: gamma
+      in: query
+      required: false
+      description: 0 is off; 1.0 is the identity. Out of range or malformed is ignored.
+      schema: { type: number, minimum: 0, maximum: 3 }
+    Saturation:
+      name: saturation
+      in: query
+      required: false
+      description: -100 is greyscale, 100 doubles the chroma. Out of range or malformed is ignored.
+      schema: { type: number, minimum: -100, maximum: 500 }
+    Hue:
+      name: hue
+      in: query
+      required: false
+      description: Hue rotation in degrees. Out of range or malformed is ignored.
+      schema: { type: number, minimum: -180, maximum: 180 }
+    Blur:
+      name: blur
+      in: query
+      required: false
+      description: Out of range or malformed is ignored.
+      schema: { type: number, minimum: 0, maximum: 100 }
+    Sharpen:
+      name: sharpen
+      in: query
+      required: false
+      description: Out of range or malformed is ignored.
+      schema: { type: number, minimum: 0, maximum: 100 }
+    Trim:
+      name: trim
+      in: query
+      required: false
+      description: Exactly `1` trims uniform borders; any other value leaves trimming off.
+      schema: { type: string, enum: ["1"] }
+    TrimThreshold:
+      name: trim_threshold
+      in: query
+      required: false
+      description: Channel distance for `trim`. Defaults to 10.
+      schema: { type: number, minimum: 0, maximum: 255 }
+    PadTop:
+      name: pad_top
+      in: query
+      required: false
+      description: Pixels, capped at the configured height ceiling. Over it or malformed is ignored.
+      schema: { type: integer, minimum: 0, maximum: 2048 }
+    PadRight:
+      name: pad_right
+      in: query
+      required: false
+      description: Pixels, capped at the configured width ceiling. Over it or malformed is ignored.
+      schema: { type: integer, minimum: 0, maximum: 2048 }
+    PadBottom:
+      name: pad_bottom
+      in: query
+      required: false
+      description: Pixels, capped at the configured height ceiling. Over it or malformed is ignored.
+      schema: { type: integer, minimum: 0, maximum: 2048 }
+    PadLeft:
+      name: pad_left
+      in: query
+      required: false
+      description: Pixels, capped at the configured width ceiling. Over it or malformed is ignored.
+      schema: { type: integer, minimum: 0, maximum: 2048 }
+    PadColor:
+      name: pad_color
+      in: query
+      required: false
+      description: Six hex digits, optionally prefixed with `#` (sent as `%23`). Anything else is white.
+      schema: { type: string, pattern: '^#?[0-9a-fA-F]{6}$', default: "FFFFFF" }
+    Orient:
+      name: orient
+      in: query
+      required: false
+      description: "`0` disables EXIF auto-orientation (on by default)."
+      schema: { type: string, enum: ["0"] }
+    Meta:
+      name: meta
+      in: query
+      required: false
+      description: "`1` keeps EXIF/XMP/IPTC/ICC metadata (stripped by default)."
+      schema: { type: string, enum: ["1"] }
+    MaxAge:
+      name: maxage
+      in: query
+      required: false
+      description: Browser TTL in seconds for a rendered response. 0 or malformed means CACHE_DEFAULT_MAX_AGE. Ignored on a raw stream.
+      schema: { type: integer, minimum: 0 }
+    SMaxAge:
+      name: smaxage
+      in: query
+      required: false
+      description: CDN TTL in seconds for a rendered response. 0 or malformed means CACHE_DEFAULT_SMAX_AGE. Ignored on a raw stream.
+      schema: { type: integer, minimum: 0 }
+    Watermark:
+      name: wm
+      in: query
+      required: false
+      description: Id (optionally with directories) of an overlay stored in the same bucket as the image. Mutually exclusive with `wm_url`.
+      schema: { type: string, example: "logos/brand" }
+    WatermarkURL:
+      name: wm_url
+      in: query
+      required: false
+      description: Overlay URL on a host listed in WATERMARK_ALLOWED_HOSTS; refused (403) when that variable is unset. Mutually exclusive with `wm`.
+      schema: { type: string, format: uri, maxLength: 2048 }
+    WatermarkOpacity:
+      name: wm_opacity
+      in: query
+      required: false
+      description: 0 means unset, not invisible. Defaults to 1 (opaque).
+      schema: { type: number, minimum: 0, maximum: 1 }
+    WatermarkPosition:
+      name: wm_position
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [top-left, top-right, bottom-left, bottom-right, center]
+        default: bottom-right
+    WatermarkScale:
+      name: wm_scale
+      in: query
+      required: false
+      description: Overlay width as a fraction of the final image width. Defaults to 0.2.
+      schema: { type: number, exclusiveMinimum: 0, maximum: 1 }
+
+  responses:
+    Image:
+      description: The image (or, for a non-image object, the stored bytes with their content type).
+      headers:
+        Content-Type:
+          schema: { type: string }
+        Cache-Control:
+          description: '`public, max-age=…, s-maxage=…`. Never `immutable`.'
+          schema: { type: string }
+        ETag:
+          description: The same for a fresh render and its later cache hit.
+          schema: { type: string }
+        Last-Modified:
+          schema: { type: string }
+        Access-Control-Allow-Origin:
+          description: Always `*`.
+          schema: { type: string }
+      content:
+        image/*:
+          schema:
+            type: string
+            format: binary
+    Unauthorized:
+      description: '`UNAUTHORIZED`: missing or wrong API key.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            unauthorized:
+              value:
+                success: false
+                error: { code: "UNAUTHORIZED", message: "API key required" }
+    AccessDenied:
+      description: '`ACCESS_DENIED`: the key''s scope does not cover the bucket (the default bucket when none is named).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RequestTooLarge:
+      description: '`REQUEST_TOO_LARGE`: the body is over MAX_FILE_SIZE_MB.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: '`RATE_LIMITED`: over RATE_LIMIT_RPM for this client. Carries `Retry-After`.'
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            rate-limited:
+              value:
+                success: false
+                error: { code: "RATE_LIMITED", message: "Too many requests" }
+
   schemas:
+    OutputFormat:
+      type: string
+      enum: [webp, jpeg, png, avif, heic]
+      description: Defaults to DEFAULT_FORMAT (webp).
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable. Branch on this.
+          example: "INVALID_FORMAT"
+        message:
+          type: string
+          description: For humans; may change.
+          example: "Unsupported format"
     UploadResponse:
       type: object
       properties:
@@ -1101,24 +1489,21 @@ components:
           example: true
         data:
           $ref: '#/components/schemas/ImageData'
-        error:
-          $ref: '#/components/schemas/Error'
     ImageData:
       type: object
       properties:
         id:
           type: string
-          example: "abc123def456"
+          example: "6d556268ff5afc0f"
         url:
           type: string
-          format: uri
-          example: "http://localhost:8080/api/v1/images/abc123def456"
+          description: Relative, unsigned delivery path, with `b` and `d` when the upload named them.
+          example: "/api/v1/images/6d556268ff5afc0f"
         original_name:
           type: string
           example: "image.jpg"
         format:
           type: string
-          enum: [webp, jpeg, png, avif]
           example: "webp"
         size:
           type: integer
@@ -1128,7 +1513,6 @@ components:
         created_at:
           type: string
           format: date-time
-          example: "2024-01-15T10:30:00Z"
     Dimensions:
       type: object
       properties:
@@ -1138,23 +1522,26 @@ components:
         height:
           type: integer
           example: 768
-    ErrorResponse:
+    ObjectMeta:
       type: object
       properties:
-        success:
-          type: boolean
-          example: false
-        error:
-          $ref: '#/components/schemas/Error'
-    Error:
-      type: object
-      properties:
-        code:
+        success: { type: boolean }
+        id: { type: string }
+        storage_key: { type: string }
+        bucket: { type: string }
+        format: { type: string, example: "webp" }
+        content_type: { type: string, example: "image/webp" }
+        size_bytes: { type: integer }
+        width: { type: integer }
+        height: { type: integer }
+        original_name: { type: string }
+        owner_id:
           type: string
-          example: "INVALID_FORMAT"
-        message:
-          type: string
-          example: "Unsupported format"
+          description: Only for the admin key, or a caller presenting this owner in `X-Owner-Id`.
+        etag: { type: string }
+        created_at: { type: string, format: date-time }
+        maxage: { type: integer }
+        smaxage: { type: integer }
     UpdateResponse:
       type: object
       properties:
@@ -1170,29 +1557,23 @@ components:
       properties:
         key:
           type: string
-          example: "images/photo.jpg"
         url_size:
           type: integer
-          example: 512000
+          description: Bytes downloaded from the URL.
         bucket_size:
           type: integer
-          example: 245760
+          description: Size of the object it replaced.
         new_size:
           type: integer
-          example: 184320
+          description: Size of the re-encoded image now stored.
         saved_bytes:
           type: integer
-          example: 61440
         saved_percent:
           type: number
-          example: 25.0
         format:
           type: string
-          enum: [webp, jpeg, png, avif]
-          example: "webp"
         quality:
           type: integer
-          example: 80
     ListResponse:
       type: object
       properties:
@@ -1201,13 +1582,12 @@ components:
           example: true
         prefix:
           type: string
-          example: "images/"
+          example: "products"
         count:
           type: integer
           description: |
-            Number of entries in `files`. In a full listing that is every object
-            under the prefix, at any depth; in a paginated one it is the files on
-            this page only, and directories are counted separately.
+            In a full listing, every object under the prefix at any depth; in a
+            paginated one, the files on this page only.
           example: 25
         files:
           type: array
@@ -1219,24 +1599,23 @@ components:
             $ref: '#/components/schemas/DirectoryInfo'
         truncated:
           type: boolean
-          description: There is more beyond what `files` holds.
+          description: There is more beyond what `files` holds. Always false in a full listing.
           example: false
         next_cursor:
           type: string
-          description: Pass back as ?cursor= to continue. Absent on the last page.
+          description: Pass back as `?cursor=` to continue. Absent on the last page.
     ListItem:
       type: object
       properties:
         key:
           type: string
-          example: "photo.jpg"
+          example: "6d556268ff5afc0f"
         size:
           type: integer
           example: 245760
         modified:
           type: string
           format: date-time
-          example: "2024-01-15T10:30:00Z"
         content_type:
           type: string
           description: Only when the backend's listing carries it. Absent means "not reported", not "empty".
@@ -1252,7 +1631,7 @@ components:
           example: "thumbnails"
         path:
           type: string
-          example: "images/thumbnails"
+          example: "products/thumbnails"
         file_count:
           type: [integer, "null"]
           description: |
@@ -1264,50 +1643,99 @@ components:
       properties:
         success:
           type: boolean
-          example: true
+          description: False when any requested key could not be deleted.
         deleted:
           type: array
-          items:
-            type: string
-          example: ["abc123def456", "def789ghi012"]
+          items: { type: string }
+        failed:
+          type: array
+          items: { type: string }
+          description: Keys asked for that are still there. A key that was already gone is not a failure.
         count:
           type: integer
-          example: 2
+          description: Number of keys deleted.
+        truncated:
+          type: boolean
+          description: The prefix may hold more than the listing could see; repeat the delete.
     HealthResponse:
       type: object
       properties:
         status:
           type: string
           enum: [healthy, unhealthy]
-          example: "healthy"
-        timestamp:
-          type: string
-          format: date-time
-          example: "2024-01-15T10:30:00Z"
         version:
           type: string
-          example: "1.0.0"
+          example: "1.0.3"
+        commit:
+          type: string
+          description: Short git SHA of the build.
+          example: "abc1234"
         uptime:
           type: string
           example: "2h30m45s"
-        storage:
+    ReadyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, degraded]
+        version:
+          type: string
+        uptime:
+          type: string
+        backends:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              type: { type: string }
+              ok: { type: boolean }
+              error: { type: string }
+              breaker:
+                type: string
+                enum: [closed, open, half-open]
+        cache:
           type: object
           properties:
-            status:
-              type: string
-              enum: [healthy, unhealthy]
-              example: "healthy"
-            total_images:
-              type: integer
-              example: 15432
-            total_size:
-              type: integer
-              example: 2147483648
+            enabled: { type: boolean }
+            item_count: { type: integer }
+        disabled:
+          type: array
+          items: { type: string }
+          description: Features switched off for lack of configuration, and the variable that would turn each on.
+
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
       in: header
       name: X-API-Key
-      description: "API key for authentication. Can be provided in X-API-Key header or Authorization header as 'Bearer <key>'"
+      description: The admin key or a scoped key. Required when `API_KEY_REQUIRED=true`.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: "The same key as `X-API-Key`, sent as `Authorization: Bearer <key>`."
+    AdminApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: The admin key (`API_KEY`) only; scoped keys are refused with 401.
+    AdminBearer:
+      type: http
+      scheme: bearer
+      description: "The admin key as `Authorization: Bearer <key>`."
+    UrlSignature:
+      type: apiKey
+      in: query
+      name: sig
+      description: |
+        HMAC-SHA256 over the request path plus its query with `sig` removed and
+        the parameters sorted (`exp` included), keyed with `HMAC_KEY` and
+        salted with `HMAC_SALT`, truncated to `HMAC_SIGNATURE_SIZE` bytes and
+        base64url-encoded without padding. Required when `HMAC_REQUIRED=true`;
+        with `HMAC_REQUIRE_EXPIRY=true` the URL must also carry an unexpired
+        `exp`. Mint one with `POST /api/v1/sign`.
+
 security:
   - ApiKeyAuth: []
+  - BearerAuth: []

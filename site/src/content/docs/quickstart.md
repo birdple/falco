@@ -23,14 +23,15 @@ Those five variables are the minimum, and none of them has a default:
   its own storage location is a service that silently writes your images
   somewhere you did not choose.
 - **`API_KEY_REQUIRED` and `HMAC_REQUIRED`.** Both are off here because this is a
-  local trial. In any deployment reachable from outside, turn them on — see
+  local trial, and they go together: Falco refuses to start with only one of
+  them on. In any deployment reachable from outside, turn both on — see
   [Authentication](/falco/reference/authentication/).
 
 Check it answered:
 
 ```bash
 curl -s localhost:8080/health
-# {"status":"healthy","version":"0.13.0","uptime":"1.2s"}
+# {"status":"healthy","version":"0.13.0","commit":"abc1234","uptime":"1.2s"}
 ```
 
 ## Upload an image
@@ -55,8 +56,9 @@ curl -X POST localhost:8080/api/v1/upload -F "file=@photo.jpg"
 ```
 
 The upload was re-encoded to WebP on the way in — `DEFAULT_FORMAT` decides that,
-and the **original is not kept**. Pass `?format=jpeg` or `?format=png` if you
-need something else stored. The id is the hash of what you sent, so uploading the
+and the **original is not kept** — EXIF and GPS data are stripped and the
+orientation applied. Pass `?format=jpeg` or `?format=png` if you need something
+else stored. The id is the hash of what you sent, so uploading the
 same file again returns the same id instead of a second copy.
 
 ## Transform it
@@ -77,6 +79,9 @@ curl -o photo.avif "localhost:8080/api/v1/images/a1b2c3d4e5f6.avif?w=1200"
 Each distinct combination is computed once and cached in memory; concurrent
 requests for the same one share a single decode and encode.
 
+With `HMAC_REQUIRED=true` these URLs need a signature — see
+[Signed URLs](/falco/guides/signed-urls/).
+
 ## Look at what you have
 
 Falco ships a server-rendered admin panel at `/` — sign in with the API key and
@@ -85,7 +90,8 @@ operations screen showing every backend, the cache, and which features are off
 for lack of configuration.
 
 The key is exchanged for a session cookie and never stored in the browser. With
-no key configured at all, the panel refuses to serve rather than opening.
+no key configured at all — as in the trial above — the panel refuses to serve
+rather than opening; set `API_KEY` to use it.
 
 The same listing is available as JSON:
 

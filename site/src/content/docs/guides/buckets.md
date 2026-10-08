@@ -83,7 +83,8 @@ curl "localhost:8080/api/v1/images/a1b2c3d4?b=archive&w=400"
 ```
 
 `?b=` and `?bucket=` are the same parameter; `?storage=` also works. Omit it and
-`storage.default` is used.
+`storage.default` is used — and, for a scoped key, checked as such: leaving `?b=`
+out does not reach the default bucket unless the key covers it.
 
 A name that is not a bucket — and not an alias for one, see below — is answered
 `400 UNKNOWN_BUCKET`. Nothing is written and nothing is read. This matters more
@@ -159,17 +160,30 @@ storage:
 
 Resolution is what you would expect: a bucket-level key reaches that bucket, a
 group-level key reaches the group's buckets (or the subset it names), and a
-subgroup key reaches the subgroup's. The admin key (`security.api_key`) reaches
-everything. Anything else is `403 ACCESS_DENIED`.
+subgroup key reaches the subgroup's (or the subset it names). The admin key
+(`security.api_key`) reaches everything. Anything else is `403 ACCESS_DENIED`.
 
 The environment-variable form follows the same pattern:
 
 ```bash
 STORAGE_GROUP_MEDIA_BUCKETS=images,archive
 STORAGE_GROUP_MEDIA_KEY_MEDIATEAM_KEY=sk-media-team
+STORAGE_GROUP_MEDIA_KEY_VIEWER_KEY=sk-viewer
+STORAGE_GROUP_MEDIA_KEY_VIEWER_BUCKETS=images
 STORAGE_GROUP_MEDIA_SUBGROUP_THUMBNAILS_BUCKETS=images
 STORAGE_GROUP_MEDIA_SUBGROUP_THUMBNAILS_KEY_THUMBSVC_KEY=sk-thumb
 ```
 
-Scoping is enforced on upload, list, delete, delivery **and** signing. See
-[Authentication](/falco/reference/authentication/).
+The key set is validated as a whole at startup, and each of these stops the
+boot rather than becoming a surprise later:
+
+| Configuration | Why |
+|---|---|
+| A key whose buckets resolve to nothing | An empty set must never read as "everything" — and at request time it grants nothing |
+| A group key naming a bucket outside the group, or a subgroup key naming one outside the subgroup | A key may narrow its scope, never widen it |
+| The same key value under two names or scopes | Only one of them could win, and which one would be an accident |
+| A scoped key equal to the admin key | The admin check would shadow it |
+
+Scoping is enforced on upload, update, list, delete, metadata, stats **and**
+signing. Delivery and the proxy carry no key at all: what a signed URL can reach
+is decided when it is signed. See [Authentication](/falco/reference/authentication/).

@@ -29,8 +29,10 @@ curl -X POST localhost:8080/api/v1/upload \
 ```
 
 The URL form goes out through the same guarded HTTP client as the
-[proxy](/falco/guides/proxy/): private and loopback addresses are refused, the
-body is capped, and the fetch retries with exponential backoff.
+[proxy](/falco/guides/proxy/): private and loopback addresses are refused at
+dial time and the body is capped at `MAX_FILE_SIZE_MB`. Unlike the proxy, a
+transient failure is retried with exponential backoff. A URL that cannot be
+fetched is `400 DOWNLOAD_FAILED`.
 
 ## Where it lands
 
@@ -41,13 +43,15 @@ body is capped, and the fetch retries with exponential backoff.
 | `d` | `dir`, `directory` | Directory inside the bucket |
 | `id` | — | Your own id instead of the content hash. Letters, digits, `-` and `_`, up to 100 characters |
 | `quality` | — | Encode quality, 1–100 |
-| `format` | — | Stored format: `jpeg`, `png`, `webp`, `avif` |
+| `format` | — | Stored format: `jpeg`, `png`, `webp`, `avif`, `heic` |
 
-`quality` and `format` also work as multipart fields or JSON keys, which is
-usually more convenient than the query string.
+`quality`, `format` and `id` also work as multipart fields or JSON keys, which is
+usually more convenient than the query string. For a raw-body upload they can
+only come from the query string.
 
 Without `b`, the write goes to `storage.default`. A key scoped to one bucket
-cannot write to another — the attempt comes back `403 ACCESS_DENIED`.
+cannot write to another — the attempt comes back `403 ACCESS_DENIED` — and that
+includes the default bucket: leaving `b` out does not get around a scope.
 
 With a `b` that names neither a bucket nor a [declared
 alias](/falco/guides/buckets/), the upload is refused with
@@ -59,12 +63,41 @@ caller never named.
 
 **The original is not kept.** An image is decoded, re-encoded to
 `DEFAULT_FORMAT` (WebP unless you changed it) or to the `format` you asked for,
-and only the result is stored. If you need the untouched file, upload it as a
-non-image (see below) or store the original elsewhere.
+and only the result is stored. If you need the untouched file, store the
+original elsewhere.
+
+**Metadata is stripped and orientation applied.** The re-encode rotates the
+pixels according to the EXIF orientation and then drops EXIF, XMP and IPTC —
+GPS coordinates included — so the stored image, and every raw delivery of it,
+carries no location. A delivery-time `meta=1` cannot bring back what the upload
+removed.
+
+**Inputs are limited.** libvips only decodes JPEG, PNG, WebP, GIF, HEIF/HEIC,
+AVIF and TIFF here, and refuses an image over `MAX_MEGAPIXELS` (100 million
+pixels by default). A failure is `422 PROCESSING_FAILED`.
 
 **The id is the hash of what you sent.** Upload the same bytes twice and you get
 the same id, with no second copy written. This is why there is no "does it exist
 already" call in the API: the answer is the id itself.
+
+Uploading under a key that already exists — always the case with a custom `id`
+reused — replaces the object and drops its cached transformations, so the next
+delivery renders the new bytes.
+
+## Owners
+
+Send `X-Owner-Id` (an opaque string, typically a user id from your own service)
+and it is stored with the object. It only matters to **scoped** keys:
+
+- `update` and `delete` by a scoped key need the same `X-Owner-Id` as the stored
+  owner. An object with no owner can only be changed by the admin key.
+- A scoped upload over an object someone else owns is refused with
+  `409 OBJECT_EXISTS` when it used a custom `id`. With a content-hash id the
+  bytes are identical by definition, so the existing object is returned
+  unchanged — its owner is not taken over by the new caller.
+
+The admin key bypasses all of it. Ownership is recorded on every backend,
+S3 and R2 included.
 
 ```json
 {
@@ -85,7 +118,7 @@ The id and url are what you store; `dimensions` describes the image **after**
 re-encoding, not what you sent.
 
 `MAX_FILE_SIZE_MB` (10 by default) caps the request body. Over it, the upload is
-refused rather than truncated.
+refused with `413 REQUEST_TOO_LARGE` rather than truncated.
 
 ## File passthrough
 
@@ -102,7 +135,8 @@ curl -X POST localhost:8080/api/v1/upload \
 
 They come back from the same delivery route, with their detected content type
 and no processing. Transformation parameters on a non-image are ignored, not
-errors.
+errors. A non-image is stored as-is, so the `format` and `quality` options do not
+apply to it.
 
 **Three types are rejected outright** with `415 DANGEROUS_CONTENT_TYPE`: SVG,
 HTML and XML. All three can carry script, and serving them from Falco's origin
@@ -112,16 +146,32 @@ sniffed from the bytes, so renaming the file changes nothing.
 ## Replacing an image
 
 `POST /api/v1/update` fetches a new version from an external URL and replaces the
-stored object under an id you already have:
+stored object under a key you already have:
 
 ```bash
 curl -X POST localhost:8080/api/v1/update \
   -H "X-API-Key: $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"id": "a1b2c3d4e5f6", "url": "https://example.com/better-photo.jpg"}'
+  -d '{"bucket": "images", "key": "avatars/a1b2c3d4e5f6", "url": "https://example.com/better-photo.jpg", "quality": 85}'
 ```
 
-Cached transformations of that id are invalidated. URLs already handed out keep
+`url`, `bucket`, `key` and `quality` (1–100) are all required; `format` and
+`storage` are optional. Unlike an upload there is nothing to infer: an update
+names an existing object. A scoped key's ownership is checked **before** the new
+image is downloaded, and the stored owner is kept.
+
+```json
+{
+  "success": true,
+  "updated": [
+    { "key": "avatars/a1b2c3d4e5f6", "url_size": 912384, "bucket_size": 842103,
+      "new_size": 401220, "saved_bytes": 440883, "saved_percent": 52.35,
+      "format": "webp", "quality": 85 }
+  ]
+}
+```
+
+Cached transformations of that key are invalidated. URLs already handed out keep
 working and start serving the new image — which is the point, and also the
 reason to think twice before using it on a CDN-fronted deployment where the old
 bytes may live on for as long as `s-maxage`.
