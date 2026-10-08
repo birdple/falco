@@ -45,12 +45,18 @@ func TestGetCacheTTL(t *testing.T) {
 	assert.Equal(t, time.Hour, cfg.GetCacheTTL())
 }
 
-func TestIsDevelopment(t *testing.T) {
+func TestCacheEnabled(t *testing.T) {
 	cfg := &Config{}
-	assert.False(t, cfg.IsDevelopment())
+	assert.False(t, cfg.CacheEnabled())
 
-	cfg.Development.Debug = true
-	assert.True(t, cfg.IsDevelopment())
+	cfg.Cache.SizeMB = 1
+	assert.True(t, cfg.CacheEnabled())
+
+	cfg.Cache.SizeMB = 0
+	cfg.Cache.EnableRedis = true
+	assert.False(t, cfg.CacheEnabled(), "Redis without a URL is not configured")
+	cfg.Cache.RedisURL = "redis://x"
+	assert.True(t, cfg.CacheEnabled())
 }
 
 func TestGetBucketConfig(t *testing.T) {

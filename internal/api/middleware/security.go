@@ -62,8 +62,8 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		// Strict CSP for API and image delivery routes — no unsafe-eval needed.
 		csp := "default-src 'self'; " +
 			"script-src 'self'; " +
-			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-			"font-src 'self' https://fonts.gstatic.com; " +
+			"style-src 'self' 'unsafe-inline'; " +
+			"font-src 'self'; " +
 			"img-src 'self' data:; " +
 			"connect-src 'self'"
 
@@ -72,20 +72,23 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		if isUIPath(r.URL.Path) {
 			csp = "default-src 'self'; " +
 				"script-src 'self' 'unsafe-eval'; " +
-				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-				"font-src 'self' https://fonts.gstatic.com; " +
+				"style-src 'self' 'unsafe-inline'; " +
+				"font-src 'self'; " +
 				"img-src 'self' data:; " +
 				"connect-src 'self'"
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/docs") {
-			csp = "default-src 'self' https://cdn.redoc.ly; " +
-				"script-src 'self' https://cdn.redoc.ly blob: 'unsafe-eval'; " +
-				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-				"font-src 'self' https://fonts.gstatic.com; " +
-				"img-src 'self' data: https://cdn.redoc.ly; " +
+			// ReDoc: one pinned, integrity-checked bundle from unpkg (see
+			// handlers/docs.go); it renders with inline styles and a blob
+			// worker, and fetches only our own openapi.yaml.
+			csp = "default-src 'self'; " +
+				"script-src 'self' https://unpkg.com blob: 'unsafe-eval'; " +
+				"style-src 'self' 'unsafe-inline'; " +
+				"font-src 'self' data:; " +
+				"img-src 'self' data:; " +
 				"worker-src 'self' blob:; " +
-				"connect-src 'self' https://cdn.redoc.ly"
+				"connect-src 'self'"
 		}
 		w.Header().Set("Content-Security-Policy", csp)
 

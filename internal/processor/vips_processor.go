@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/birdple/falco/internal/cache"
@@ -85,6 +86,9 @@ type VipsProcessor struct {
 	// staleFillWindow.
 	invalidatedMu sync.Mutex
 	invalidatedAt map[string]time.Time
+
+	// gaugesRefreshedAt is when the cache gauges were last sampled (unix ns).
+	gaugesRefreshedAt atomic.Int64
 }
 
 // NewVipsProcessor creates a new vips-based image processor
@@ -174,11 +178,9 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 
 	processStart := time.Now()
 
-	// Load image from buffer
-	source := vips.NewSource(io.NopCloser(bytes.NewReader(inputData)))
-	defer source.Close()
-
-	img, err := vips.NewImageFromSource(source, nil)
+	// Loaded straight from the buffer already in memory: a Source over a
+	// bytes.Reader would pull the same bytes through cgo read callbacks.
+	img, err := vips.NewImageFromBuffer(inputData, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load image: %w", err)
 	}
@@ -231,13 +233,15 @@ func (p *VipsProcessor) Process(ctx context.Context, input io.Reader, params *Pr
 	// Cache result under the caller-provided key (skip if empty, and skip a
 	// fill that may be racing an invalidation of the same object).
 	if p.cache != nil && cacheKey != "" && !p.recentlyInvalidated(cacheKey) {
-		_ = p.cache.Set(cacheKey, processedData, p.cacheTTL)
-		m.CacheSize.Set(float64(p.cache.Size()))
-		m.CacheItemCount.Set(float64(p.cache.Len()))
+		if err := p.cache.Set(cacheKey, processedData, p.cacheTTL); err != nil {
+			logger.Debug().Err(err).Msg("Processed image not cached")
+		}
+		p.refreshCacheGauges()
 	}
 
 	return &ProcessedImage{
-		Data: io.NopCloser(bytes.NewReader(processedData)),
+		Data:  io.NopCloser(bytes.NewReader(processedData)),
+		Bytes: processedData,
 		Metadata: &ImageMetadata{
 			Format:      string(outputFormat),
 			Size:        int64(len(processedData)),
@@ -778,7 +782,7 @@ func coverSize(explicitBox bool) vips.Size {
 // Returns the encoded bytes and the actual format used (may differ from requested if fallback occurred).
 func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality int, keep vips.Keep) ([]byte, ImageFormat, error) {
 	if quality <= 0 {
-		quality = GetDefaultQuality(format)
+		quality = p.defaultQualityFor(format)
 	}
 	if quality > 100 {
 		quality = 100
@@ -875,6 +879,16 @@ func (p *VipsProcessor) encodeImage(img *vips.Image, format ImageFormat, quality
 
 	// Copy buffer data before returning to pool
 	return bytes.Clone(buf.Bytes()), format, nil
+}
+
+// defaultQualityFor is the quality used when the request names none:
+// DEFAULT_QUALITY for the lossy formats, and the per-format default for PNG,
+// whose "quality" is really a compression level and stays lossless.
+func (p *VipsProcessor) defaultQualityFor(format ImageFormat) int {
+	if format != FormatPNG && p.defaultQuality > 0 {
+		return p.defaultQuality
+	}
+	return GetDefaultQuality(format)
 }
 
 // keepMode says which metadata survives the re-encode. vips' zero value is an
@@ -1008,6 +1022,24 @@ func (p *VipsProcessor) determineOutputFormat(params *ProcessingParams, inputFor
 		return ImageFormat(params.Format)
 	}
 	return p.defaultFormat
+}
+
+// cacheGaugeInterval is how often the cache size gauges are refreshed. Reading
+// them is not free — on Redis, Len() is a full SCAN of the keyspace — so they
+// are sampled rather than recomputed on every cache fill.
+const cacheGaugeInterval = 10 * time.Second
+
+// refreshCacheGauges updates the cache size gauges at most once per
+// cacheGaugeInterval.
+func (p *VipsProcessor) refreshCacheGauges() {
+	now := time.Now().UnixNano()
+	last := p.gaugesRefreshedAt.Load()
+	if now-last < int64(cacheGaugeInterval) || !p.gaugesRefreshedAt.CompareAndSwap(last, now) {
+		return
+	}
+	m := metrics.Default()
+	m.CacheSize.Set(float64(p.cache.Size()))
+	m.CacheItemCount.Set(float64(p.cache.Len()))
 }
 
 // GenerateCacheKey builds a deterministic cache key from an object key and

@@ -87,6 +87,7 @@ func TestAuthPostIssuesSessionAndNeverReturnsTheKey(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/ui/auth", strings.NewReader(`{"key":"admin-key"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.AuthPost(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -121,6 +122,7 @@ func TestAuthCookieIsNotSecureOverPlainHTTP(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/ui/auth", strings.NewReader(`{"key":"admin-key"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.TLS = nil
 	h.AuthPost(rec, req)
 

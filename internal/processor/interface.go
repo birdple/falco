@@ -88,7 +88,11 @@ type ProcessingParams struct {
 
 // ProcessedImage holds the result of image processing
 type ProcessedImage struct {
-	Data     io.ReadCloser
+	Data io.ReadCloser
+	// Bytes is the encoded output Data reads from, when the processor has it
+	// in memory anyway. Callers that need the whole slice use it instead of
+	// copying Data again; it may be nil (mocks), so they fall back to Data.
+	Bytes    []byte
 	Metadata *ImageMetadata
 	CacheKey string
 	Cached   bool // Indicates if this result came from cache

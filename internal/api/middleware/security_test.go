@@ -43,7 +43,8 @@ func TestSecurityHeaders_DocsPath(t *testing.T) {
 
 	csp := w.Header().Get("Content-Security-Policy")
 	assert.Contains(t, csp, "unsafe-eval")
-	assert.Contains(t, csp, "cdn.redoc.ly")
+	assert.Contains(t, csp, "https://unpkg.com")
+	assert.NotContains(t, csp, "cdn.redoc.ly")
 }
 
 func TestRestrictedFileServer_AllowedExtensions(t *testing.T) {

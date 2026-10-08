@@ -201,16 +201,16 @@ func WithAnyPublicHost(ctx context.Context) context.Context {
 // allowlist all stop the chain.
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
-		return errors.New("too many redirects")
+		return fmt.Errorf("%w: too many redirects", errBlocked)
 	}
 
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-		return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+		return fmt.Errorf("%w: redirect to unsupported scheme: %s", errBlocked, req.URL.Scheme)
 	}
 
 	policy, ok := req.Context().Value(redirectPolicyKey{}).(redirectPolicy)
 	if !ok {
-		return errors.New("redirect refused: no redirect policy declared for this fetch")
+		return fmt.Errorf("%w: redirect refused: no redirect policy declared for this fetch", errBlocked)
 	}
 	if policy.anyPublicHost {
 		return nil
@@ -218,7 +218,7 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 
 	host := strings.ToLower(req.URL.Hostname())
 	if _, allowed := policy.allowedHosts[host]; !allowed {
-		return fmt.Errorf("redirect to host outside the allowlist: %s", host)
+		return fmt.Errorf("%w: redirect to host outside the allowlist: %s", errBlocked, host)
 	}
 	return nil
 }
@@ -261,7 +261,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 
 				for _, ip := range ips {
 					if isPrivateOrReservedIP(ip.IP) {
-						return nil, fmt.Errorf("resolved to private/reserved IP: %s", ip.IP)
+						return nil, fmt.Errorf("%w: resolved to private/reserved IP: %s", errBlocked, ip.IP)
 					}
 				}
 
@@ -399,8 +399,17 @@ func downloadOnce(ctx context.Context, client *http.Client, url string, maxSize 
 	return data, contentType, nil
 }
 
-// isTransientError checks if an error is likely transient and worth retrying
+// errBlocked marks a fetch the SSRF guard or the redirect policy refused. It is
+// a property of the destination, so it is never retried.
+var errBlocked = errors.New("destination blocked")
+
+// isTransientError checks if an error is likely transient and worth retrying.
+// A refusal by the SSRF guard or the redirect policy, and a context that is
+// already done, are not: retrying them only delays the same answer.
 func isTransientError(err error) bool {
+	if errors.Is(err, errBlocked) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "server error:") ||
 		strings.Contains(msg, "failed to download:") ||

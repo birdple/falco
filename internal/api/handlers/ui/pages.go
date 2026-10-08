@@ -225,7 +225,7 @@ func (h *Handler) Ops(w http.ResponseWriter, r *http.Request) {
 
 	stats := h.processor.GetCacheStats()
 	data.Cache = views.CacheView{
-		Enabled:         h.cfg.Cache.SizeMB > 0,
+		Enabled:         h.cfg.CacheEnabled(),
 		Backend:         stats.Backend,
 		Hits:            stats.Hits,
 		Misses:          stats.Misses,

@@ -34,6 +34,7 @@ type Handler struct {
 	api       *handlers.Handler
 	processor processor.ImageProcessor
 	sessions  *SessionStore
+	logins    *loginThrottle
 	started   time.Time
 
 	// keys is the flattened scoped-key table, computed once at startup.
@@ -53,6 +54,7 @@ func NewHandler(
 		api:       api,
 		processor: imageProcessor,
 		sessions:  NewSessionStore(sessionTTL),
+		logins:    newLoginThrottle(),
 		started:   time.Now(),
 		keys:      cfg.CollectAllKeys(),
 	}
