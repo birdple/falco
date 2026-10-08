@@ -178,6 +178,52 @@ func TestJayStorage_Retrieve_NotFound(t *testing.T) {
 	}
 }
 
+// TestJayStorage_Stat reads metadata through HeadObject and never opens a body:
+// a GetObject call fails the test, since the fake has no getFn.
+func TestJayStorage_Stat(t *testing.T) {
+	fc := &fakeJayClient{
+		headFn: func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {
+			if key == "missing" {
+				return nil, &jayclient.Error{Code: "NoSuchKey"}
+			}
+			return &jayclient.ObjectInfo{
+				ContentType: "image/webp", Size: 77, ETag: "etag-h",
+				Metadata: metaToMap(&ImageMetadata{
+					ID: "s-1", Format: "webp", Width: 3, Height: 4, OwnerID: "owner-1", MaxAge: 60,
+				}),
+			}, nil
+		},
+	}
+	js := newJayStorageWithClient(fc, "falco-images")
+
+	meta, err := js.Stat(context.Background(), "s-1")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if meta.ID != "s-1" || meta.OwnerID != "owner-1" || meta.MaxAge != 60 || meta.Size != 77 ||
+		meta.ContentType != "image/webp" || meta.StorageKey != "s-1" || meta.ETag != "etag-h" {
+		t.Fatalf("bad meta: %+v", meta)
+	}
+
+	if _, err := js.Stat(context.Background(), "missing"); !errors.Is(err, ErrImageNotFound) {
+		t.Fatalf("expected ErrImageNotFound, got %v", err)
+	}
+}
+
+// TestJayStorage_Close releases the client: JayStorage is a storage.Closer, so
+// Registry.CloseAll returns the connection pool at shutdown.
+func TestJayStorage_Close(t *testing.T) {
+	closeErr := errors.New("closed")
+	var backend StorageBackend = newJayStorageWithClient(&fakeJayClient{closeErr: closeErr}, "bk")
+	closer, ok := backend.(Closer)
+	if !ok {
+		t.Fatal("JayStorage must implement Closer")
+	}
+	if err := closer.Close(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("Close did not reach the client: %v", err)
+	}
+}
+
 func TestJayStorage_Exists_TrueFalse(t *testing.T) {
 	exists := &fakeJayClient{
 		headFn: func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {

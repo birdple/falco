@@ -159,6 +159,30 @@ func (s *JayStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *
 	return res.Body, meta, nil
 }
 
+// Stat returns an object's metadata via HeadObject, without opening its body.
+func (s *JayStorage) Stat(ctx context.Context, key string) (*ImageMetadata, error) {
+	info, err := s.client.HeadObject(ctx, s.bucket, key)
+	if err != nil {
+		if isJayNotFound(err) {
+			return nil, ErrImageNotFound
+		}
+		return nil, fmt.Errorf("jay: head %s: %w", key, err)
+	}
+	meta := mapToMeta(info.Metadata, info.Size, info.ETag)
+	meta.StorageKey = key
+	if meta.ContentType == "" {
+		meta.ContentType = info.ContentType
+	}
+	return meta, nil
+}
+
+// Close releases the client's connection pool. The client makes it idempotent,
+// which matters: the same JayStorage can be reached through more than one
+// registry entry (as a bucket and as another bucket's backup target).
+func (s *JayStorage) Close(context.Context) error {
+	return s.client.Close()
+}
+
 // Exists checks for presence via HeadObject.
 func (s *JayStorage) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := s.client.HeadObject(ctx, s.bucket, key)

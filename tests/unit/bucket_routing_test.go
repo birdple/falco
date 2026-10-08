@@ -264,6 +264,10 @@ func (s *switchingBackend) Retrieve(context.Context, string) (io.ReadCloser, *st
 	return nil, nil, storage.ErrImageNotFound
 }
 
+func (s *switchingBackend) Stat(context.Context, string) (*storage.ImageMetadata, error) {
+	return nil, storage.ErrImageNotFound
+}
+
 func (s *switchingBackend) Exists(_ context.Context, key string) (bool, error) {
 	return (*s.stored)[key] == s.bucket, nil
 }

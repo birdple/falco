@@ -90,6 +90,30 @@ func TestPageFromListing_PrefixIsMatchedVerbatim(t *testing.T) {
 	eq(t, "verbatim prefix", keysOf(page.Objects), []string{"img.webp", "img/nested.webp"})
 }
 
+// A folder spanning a page boundary used to come back on several pages: the
+// cursor pointed at the folder's FIRST key, so the next page resumed inside the
+// folder and rolled it up again.
+func TestPageFromListing_FolderAppearsOnceAcrossPages(t *testing.T) {
+	all := listing("a/1", "a/2", "a/3", "b", "c/1", "c/2", "d")
+
+	var prefixes, objects []string
+	cursor := ""
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("paging did not terminate")
+		}
+		page := pageFromListing(all, ListOptions{Delimiter: "/", MaxKeys: 1, Cursor: cursor})
+		prefixes = append(prefixes, page.CommonPrefixes...)
+		objects = append(objects, keysOf(page.Objects)...)
+		if !page.IsTruncated {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	eq(t, "folders", prefixes, []string{"a/", "c/"})
+	eq(t, "objects", objects, []string{"b", "d"})
+}
+
 // --- filesystem ---
 
 func TestFilesystemStorage_ListPage(t *testing.T) {

@@ -24,7 +24,13 @@ func NewMetadataEncoder() MetadataEncoder {
 	return &defaultMetadataEncoder{}
 }
 
-// Encode converts ImageMetadata to a string map for storage
+// Encode converts ImageMetadata to a string map for storage.
+//
+// The keys match jay's metaToMap, so an object carries the same fields on S3/R2
+// as on jay. id, owner-id, maxage and smaxage used to be dropped here, which
+// left every S3/R2 object unowned — and an unowned image can only be mutated
+// by an admin key — and lost its per-image cache lifetimes.
+//
 // Note: content-type is NOT included as it's a reserved HTTP header
 func (e *defaultMetadataEncoder) Encode(metadata *ImageMetadata) (map[string]string, error) {
 	if metadata == nil {
@@ -38,6 +44,18 @@ func (e *defaultMetadataEncoder) Encode(metadata *ImageMetadata) (map[string]str
 		"height":        strconv.Itoa(metadata.Height),
 		"created-at":    metadata.CreatedAt.Format(time.RFC3339),
 	}
+	if metadata.ID != "" {
+		result["id"] = metadata.ID
+	}
+	if metadata.MaxAge > 0 {
+		result["maxage"] = strconv.Itoa(metadata.MaxAge)
+	}
+	if metadata.SMaxAge > 0 {
+		result["smaxage"] = strconv.Itoa(metadata.SMaxAge)
+	}
+	if metadata.OwnerID != "" {
+		result["owner-id"] = metadata.OwnerID
+	}
 
 	return result, nil
 }
@@ -48,9 +66,23 @@ func (e *defaultMetadataEncoder) Decode(data map[string]string) (*ImageMetadata,
 		return &ImageMetadata{}, nil
 	}
 
+	// Every key added after the first version is optional: objects written
+	// before it existed simply do not carry it, and decode to the zero value
+	// (unowned, default cache lifetimes, no id).
 	metadata := &ImageMetadata{
+		ID:           data["id"],
 		OriginalName: data["original-name"],
 		Format:       data["format"],
+		OwnerID:      data["owner-id"],
+	}
+
+	// Lenient, like jay's mapToMeta: a malformed cache lifetime falls back to
+	// the default rather than making the object unreadable.
+	if ma, err := strconv.Atoi(data["maxage"]); err == nil {
+		metadata.MaxAge = ma
+	}
+	if sm, err := strconv.Atoi(data["smaxage"]); err == nil {
+		metadata.SMaxAge = sm
 	}
 
 	if widthStr, ok := data["width"]; ok {

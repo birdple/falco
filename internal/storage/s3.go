@@ -139,19 +139,12 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 		return nil, nil, fmt.Errorf("failed to get object: %w", err)
 	}
 
-	// Decode metadata from S3 metadata
-	metadata, err := s.metadataEncoder.Decode(result.Metadata)
+	metadata, err := s.objectMetadata(key, result.Metadata, result.ContentType, result.ContentLength, result.ETag)
 	if err != nil {
 		_ = result.Body.Close()
 		cancel()
-		return nil, nil, fmt.Errorf("failed to decode metadata: %w", err)
+		return nil, nil, err
 	}
-
-	// Update metadata with S3-specific fields
-	metadata.ID = key
-	metadata.ContentType = aws.ToString(result.ContentType)
-	metadata.Size = aws.ToInt64(result.ContentLength)
-	metadata.ETag = strings.Trim(aws.ToString(result.ETag), `"`)
 
 	return &cancelOnClose{ReadCloser: result.Body, cancel: cancel}, metadata, nil
 }
@@ -167,6 +160,46 @@ func (c *cancelOnClose) Close() error {
 	err := c.ReadCloser.Close()
 	c.cancel()
 	return err
+}
+
+// Stat returns an object's metadata with a HeadObject: no body is transferred.
+func (s *S3Storage) Stat(ctx context.Context, key string) (*ImageMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
+	defer cancel()
+
+	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, ErrImageNotFound
+		}
+		return nil, fmt.Errorf("failed to head object: %w", err)
+	}
+
+	return s.objectMetadata(key, result.Metadata, result.ContentType, result.ContentLength, result.ETag)
+}
+
+// objectMetadata builds ImageMetadata from what GetObject and HeadObject both
+// answer, so Retrieve and Stat cannot disagree about an object.
+func (s *S3Storage) objectMetadata(key string, userMeta map[string]string, contentType *string, contentLength *int64, etag *string) (*ImageMetadata, error) {
+	metadata, err := s.metadataEncoder.Decode(userMeta)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode metadata: %w", err)
+	}
+
+	// Objects written before the encoder stored the id have none; for those
+	// the key is all there is, which is what was always used here.
+	if metadata.ID == "" {
+		metadata.ID = key
+	}
+	metadata.StorageKey = key
+	metadata.ContentType = aws.ToString(contentType)
+	metadata.Size = aws.ToInt64(contentLength)
+	metadata.ETag = strings.Trim(aws.ToString(etag), `"`)
+
+	return metadata, nil
 }
 
 // Delete deletes an image by key

@@ -428,6 +428,74 @@ func (_c *MockStorageBackend_Retrieve_Call) RunAndReturn(run func(ctx context.Co
 	return _c
 }
 
+// Stat provides a mock function for the type MockStorageBackend
+func (_mock *MockStorageBackend) Stat(ctx context.Context, key string) (*storage.ImageMetadata, error) {
+	ret := _mock.Called(ctx, key)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Stat")
+	}
+
+	var r0 *storage.ImageMetadata
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (*storage.ImageMetadata, error)); ok {
+		return returnFunc(ctx, key)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) *storage.ImageMetadata); ok {
+		r0 = returnFunc(ctx, key)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*storage.ImageMetadata)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = returnFunc(ctx, key)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockStorageBackend_Stat_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Stat'
+type MockStorageBackend_Stat_Call struct {
+	*mock.Call
+}
+
+// Stat is a helper method to define mock.On call
+//   - ctx context.Context
+//   - key string
+func (_e *MockStorageBackend_Expecter) Stat(ctx any, key any) *MockStorageBackend_Stat_Call {
+	return &MockStorageBackend_Stat_Call{Call: _e.mock.On("Stat", ctx, key)}
+}
+
+func (_c *MockStorageBackend_Stat_Call) Run(run func(ctx context.Context, key string)) *MockStorageBackend_Stat_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockStorageBackend_Stat_Call) Return(imageMetadata *storage.ImageMetadata, err error) *MockStorageBackend_Stat_Call {
+	_c.Call.Return(imageMetadata, err)
+	return _c
+}
+
+func (_c *MockStorageBackend_Stat_Call) RunAndReturn(run func(ctx context.Context, key string) (*storage.ImageMetadata, error)) *MockStorageBackend_Stat_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Store provides a mock function for the type MockStorageBackend
 func (_mock *MockStorageBackend) Store(ctx context.Context, key string, data io.Reader, metadata *storage.ImageMetadata) error {
 	ret := _mock.Called(ctx, key, data, metadata)
