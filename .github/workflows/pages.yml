@@ -10,46 +10,52 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Nunca cancelar un deploy en vuelo: el sitio quedaría en el estado parcial que
-# haya subido la corrida cancelada.
+# Never cancel a deploy in flight: the site would be left in whatever partial
+# state the cancelled run had uploaded.
 concurrency:
   group: pages
   cancel-in-progress: false
 
+# Third-party actions are pinned by commit SHA (the tag is in the comment).
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: site
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version: "1.4.2"
 
       - run: bun install --frozen-lockfile
 
-      # El build falla ante un enlace interno roto (starlight-links-validator),
-      # así que un enlace muerto no llega al sitio publicado.
+      # The build fails on a broken internal link (starlight-links-validator),
+      # so a dead link never reaches the published site.
       - run: bun run build
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           path: site/dist
 
+  # Only the job that publishes gets the publishing permissions; the build,
+  # which runs third-party code from the lockfile, does not.
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

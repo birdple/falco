@@ -1,32 +1,50 @@
+# Local development stack. Every published port is bound to 127.0.0.1: none of
+# this is meant to be reachable from the network.
+#
+#   docker compose --profile app up -d --build          # falco alone
+#   docker compose --profile app --profile monitoring up -d --build
+#
+# falco runs with authentication ON, using development keys, so the stack
+# behaves like production: uploads and /sign need the API key, delivery needs a
+# signed URL (sign one with POST /api/v1/sign, or use the panel at
+# http://localhost:8080, which signs for you). Override the keys through the
+# environment or a .env file next to this one.
+
 services:
   falco-service:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
       - PORT=8080
       - HOST=0.0.0.0
-      - ENV=development
-      # Un bucket es obligatorio: sin STORAGE_DEFAULT y su bucket, la
-      # validación de arranque falla. Las variables viejas (STORAGE_PRIMARY,
-      # STORAGE_LOCAL_PATH) ya no existen y dejaban este compose sin arrancar.
+      # A bucket is mandatory: without STORAGE_DEFAULT and its bucket, startup
+      # validation fails.
       - STORAGE_DEFAULT=local
       - STORAGE_BUCKET_LOCAL_TYPE=filesystem
       - STORAGE_BUCKET_LOCAL_PATH=/app/data/images
       - CACHE_SIZE_MB=256
+      # Start the with-cache profile and set FALCO_ENABLE_REDIS=true to cache
+      # in Valkey instead of in process.
+      - ENABLE_REDIS=${FALCO_ENABLE_REDIS:-false}
+      - REDIS_URL=redis://valkey:6379/0
       - LOG_LEVEL=debug
       - LOG_FORMAT=text
-      # Ninguna de las dos tiene default en viper: ausentes valen false y falco
-      # arranca abierto. Acá van explícitas porque esto es un compose local.
-      - API_KEY_REQUIRED=false
-      - HMAC_REQUIRED=false
-      - CORS_ORIGINS=*
+      # Development keys — never reuse them anywhere else.
+      - API_KEY_REQUIRED=true
+      - API_KEY=${FALCO_API_KEY:-falco-dev-api-key-not-for-production}
+      - HMAC_REQUIRED=true
+      - HMAC_KEY=${FALCO_HMAC_KEY:-6465762d686d61632d6b65792d6e6f742d666f722d70726f64756374696f6e21}
+      - HMAC_SALT=${FALCO_HMAC_SALT:-6465762d686d61632d73616c742d6e6f742d666f722d70726f64756374696f6e}
+      - HMAC_REQUIRE_EXPIRY=false
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8080
       - RATE_LIMIT_RPM=1000
+      # Behind the API key; Prometheus (monitoring profile) scrapes with it.
       - ENABLE_METRICS=true
     restart: unless-stopped
     healthcheck:
@@ -44,7 +62,7 @@ services:
   valkey:
     image: valkey/valkey:8-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - valkey_data:/data
     command: valkey-server --appendonly yes
@@ -54,32 +72,13 @@ services:
     profiles:
       - with-cache
 
-  # PostgreSQL for metadata (optional)
-  postgres:
-    image: postgres:18-alpine
-    ports:
-      - "5433:5432"
-    environment:
-      - POSTGRES_DB=falco
-      - POSTGRES_USER=falco
-      - POSTGRES_PASSWORD=falco_password
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    restart: unless-stopped
-    networks:
-      - falco-network
-    profiles:
-      - with-db
-
   # Nginx reverse proxy
   nginx:
     image: nginx:alpine
     ports:
-      - "80:80"
-      - "443:443"
+      - "127.0.0.1:80:80"
     volumes:
       - ./deployments/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deployments/nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
       - falco-service
@@ -89,39 +88,34 @@ services:
     profiles:
       - with-nginx
 
-  # Prometheus - Metrics Collection
+  # Prometheus - metrics collection. It scrapes falco's /metrics with the same
+  # development API key (deployments/monitoring/prometheus/prometheus.yml).
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:v3.14.0
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./deployments/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle'
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
       - falco-network
     profiles:
       - monitoring
 
-  # Grafana - Metrics Visualization
+  # Grafana - metrics visualization
   grafana:
-    image: grafana/grafana:10.2.0
+    image: grafana/grafana:13.2.2
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=falco123
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-falco-dev}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SERVER_ROOT_URL=http://localhost:3001
-      - GF_INSTALL_PLUGINS=
     volumes:
       - ./deployments/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
@@ -135,7 +129,6 @@ services:
 
 volumes:
   valkey_data:
-  postgres_data:
   nginx_logs:
   prometheus_data:
   grafana_data:

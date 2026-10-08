@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Arranca una imagen de falco y exige que /health conteste con la versión que se
-# le inyectó al compilar.
+# Starts a falco image and requires /health to answer with the version injected
+# at build time.
 #
 #   scripts/smoke-image.sh falco:ci 0.0.0-ci
 #
-# Una imagen que se publica sin haber arrancado nunca es una promesa rota: el
-# release la anuncia y el primer `docker pull` descubre que no levanta.
+# An image published without ever being started is a broken promise: the
+# release announces it and the first `docker pull` finds out it does not come up.
 set -euo pipefail
 
-IMAGE="${1:?falta la imagen}"
-EXPECTED="${2:?falta la versión esperada}"
+IMAGE="${1:?missing image}"
+EXPECTED="${2:?missing expected version}"
 PORT="${SMOKE_PORT:-18081}"
 NAME="falco-smoke-$$"
 
@@ -41,13 +41,13 @@ done
 docker logs "$NAME"
 
 if [ "$ready" -ne 1 ]; then
-  echo "la imagen nunca respondió en /health" >&2
+  echo "the image never answered on /health" >&2
   exit 1
 fi
 
 BODY="$(curl -fsS "http://127.0.0.1:${PORT}/health")"
 if ! printf '%s' "$BODY" | grep -q "\"version\":\"${EXPECTED}\""; then
-  echo "la imagen reporta otra versión: se esperaba ${EXPECTED}" >&2
+  echo "the image reports another version: expected ${EXPECTED}" >&2
   echo "$BODY" >&2
   exit 1
 fi

@@ -1,9 +1,10 @@
-# Los mocks de tests/mocks/ salen de aquí: `go tool mockery` (fijado como tool en go.mod).
-# No se editan a mano.
+# The mocks in tests/mocks/ come from here: `make mocks` (go tool mockery,
+# pinned as a tool in go.mod). They are never edited by hand; `make mocks-check`
+# (part of `make check` and CI) fails when they drift from the interfaces.
 #
-# pkgname es obligatorio: sin él mockery v3 nombra el paquete como el de la
-# interfaz de origen (processor, storage) y deja dos paquetes distintos en el
-# mismo directorio, que no compila.
+# pkgname is required: without it mockery v3 names the package after the source
+# interface's (processor, storage) and leaves two different packages in one
+# directory, which does not compile.
 all: false
 pkgname: mocks
 packages:

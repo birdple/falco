@@ -1,16 +1,17 @@
 # ----------------------------------------
-# Build stage (Etapa de Compilación)
+# Build stage
 # ----------------------------------------
-# Pin explícito a Alpine 3.24 (no el "alpine" flotante de la imagen de Go) para
-# que el builder y el runtime queden siempre en la misma versión de Alpine.
-FROM golang:1.27-alpine3.24 AS builder
+# Alpine 3.24 is pinned explicitly (not the Go image's floating "alpine") so the
+# builder and the runtime are always the same Alpine release, and both images
+# are pinned by digest so a rebuild of the same commit uses the same bases.
+# Dependabot proposes digest bumps.
+FROM golang:1.27-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 
-# Instala las dependencias necesarias para compilar con vips
-# - gcc, g++, musl-dev: Compilador C/C++ para CGO
-# - vips-dev: Librería libvips y sus headers (necesita 8.17+ para vipsgen 1.1+)
-# - pkgconf: pkg-config para detectar librerías
-# Alpine 3.24 trae vips-dev 8.18.2 en el repo community (habilitado por defecto),
-# ya no hace falta el repo edge que usábamos cuando 3.22 traía 8.16.1.
+# Build dependencies for CGO against libvips:
+# - gcc, g++, musl-dev: the C/C++ toolchain CGO needs
+# - vips-dev: libvips and its headers; github.com/cshum/vipsgen needs 8.18.x,
+#   which Alpine 3.24 ships in community (enabled by default)
+# - pkgconf: pkg-config, to locate the libraries
 RUN apk add --no-cache \
         gcc \
         g++ \
@@ -18,35 +19,27 @@ RUN apk add --no-cache \
         vips-dev \
         pkgconf
 
-# Establece el directorio de trabajo
 WORKDIR /app
 
-# Copia los archivos de módulo
+# Modules first, so the download layer is cached across source changes.
 COPY go.mod go.sum ./
-
-# Descarga las dependencias
 RUN go mod download
 
-# Copia el código fuente completo (¡Necesario para que CGO encuentre todo!)
 COPY . .
 
-# Copia el archivo OpenAPI (excluido por .dockerignore pero necesario para /docs)
-COPY docs/openapi.yaml ./docs/openapi.yaml
-
-# Versión y commit que reporta /health. Vacíos por omisión: sin ellos el binario
-# conserva el valor compilado en internal/version, en vez de reportar "dev" y
-# hacer que un build local mienta sobre qué es.
+# Version and commit reported by /health. Empty by default: without them the
+# binary keeps the value compiled into internal/version instead of reporting
+# "dev" and making a local build lie about what it is.
 ARG VERSION=""
 ARG COMMIT=""
 
-# Compila el binario con optimizaciones
 # Build tags:
-#   - netgo: Usa DNS resolver nativo de Go (portable en Alpine)
-#   - osusergo: Usa implementación Go para user/group ops (portable)
+#   - netgo: Go's own DNS resolver (portable on Alpine)
+#   - osusergo: Go's own user/group lookups (portable)
 # Flags:
-#   - ldflags "-w -s": Omite debug info y symbol table (reduce ~40% tamaño)
-#   - -trimpath: quita las rutas absolutas del builder del binario
-# Nota: No se puede hacer build estático porque vipsgen requiere CGO y libvips dinámica
+#   - -ldflags "-w -s": no debug info or symbol table (about 40% smaller)
+#   - -trimpath: no absolute builder paths in the binary
+# A static build is not possible: vipsgen needs CGO and a dynamic libvips.
 RUN set -eux; \
     LDFLAGS="-w -s"; \
     if [ -n "$VERSION" ]; then \
@@ -63,53 +56,48 @@ RUN set -eux; \
       ./cmd/server
 
 # ----------------------------------------
-# Runtime stage (Etapa de Ejecución)
+# Runtime stage
 # ----------------------------------------
-# Misma versión de Alpine que el builder (3.24) para que la vips runtime
-# coincida en versión (ABI) con la vips-dev usada al compilar.
-FROM alpine:3.24
+# Same Alpine release as the builder, so the runtime libvips matches (ABI) the
+# vips-dev the binary was compiled against.
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
-# Instala las dependencias de ejecución
-# - ca-certificates: Certificados SSL
-# - tzdata: Zonas horarias
-# - vips: Librería libvips (runtime, sin headers de desarrollo) - versión 8.17+
-# - wget: Para healthcheck
+# Runtime dependencies:
+# - ca-certificates: TLS roots for jay/S3 and the proxy's outbound fetches
+# - tzdata: time zones
+# - vips: libvips, runtime only
+# - wget: GNU wget for the healthcheck (busybox's lacks --no-verbose)
 RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    vips \
-    wget \
-    && rm -rf /var/cache/apk/* && \
+        ca-certificates \
+        tzdata \
+        vips \
+        wget && \
     addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup && \
     mkdir -p /app/data /app/logs && \
     chown -R appuser:appgroup /app
 
-# Establece el directorio de trabajo
 WORKDIR /app
 
-# Copia el binario desde la etapa 'builder'
-COPY --from=builder /app/falco-server .
+# The API description (docs/openapi.yaml) and the panel assets (web/static) are
+# NOT copied: they travel INSIDE the binary through go:embed (docs/embed.go,
+# web/embed.go).
+COPY --from=builder --chown=appuser:appgroup /app/falco-server .
 
-# La documentación de la API (docs/openapi.yaml) y los assets del panel
-# (web/static) NO se copian: viajan DENTRO del binario por go:embed
-# (docs/embed.go, web/embed.go). Copiarlos aquí hacía creer que se sirven del
-# disco y que editarlos en el contenedor cambiaría algo.
+# libvips refuses the loaders it marks as untrusted (ImageMagick, PDF, matrix
+# and friends). falco sets this itself when it is unset; it is stated here too
+# so the image's policy is visible without reading the code.
+ENV VIPS_BLOCK_UNTRUSTED=1
 
-# Cambia la propiedad de todos los archivos copiados
-RUN chown -R appuser:appgroup /app
-
-# Cambia al usuario sin privilegios
 USER appuser
 
-# Expone el puerto con el que se despliega en birdple-v2 (el compose de la raíz
-# inyecta PORT=4009). Ojo: el default interno del binario sigue siendo 8080, por
-# eso el healthcheck de abajo cae a 8080 cuando PORT no viene seteado.
+# The port birdple-v2 deploys on (the root compose injects PORT=4009). The
+# binary's own default is still 8080, which is why the healthcheck falls back
+# to 8080 when PORT is unset.
 EXPOSE 4009
 
-# Healthcheck — usa $PORT para respetar el puerto real del deploy (PaaS suelen inyectar PORT=3000)
+# Uses $PORT to follow the real deploy port (PaaS platforms often inject one).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider "http://localhost:${PORT:-8080}/health" || exit 1
 
-# Comando de ejecución
 CMD ["./falco-server"]

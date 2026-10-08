@@ -596,7 +596,7 @@
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "🖼️ Imagine - Image Processing Dashboard",
+  "title": "falco - Image Processing Dashboard",
   "uid": "falco-dashboard",
   "version": 1,
   "weekStart": ""
