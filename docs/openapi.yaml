@@ -30,7 +30,7 @@ info:
     Every error, from a handler or from the middleware, is
     `{"success": false, "error": {"code": "...", "message": "..."}}` with
     `Cache-Control: no-store`. Branch on `code`, never on `message`.
-  version: "1.0.3"
+  version: "1.0.4"
   license:
     name: GPL-3.0
     url: https://www.gnu.org/licenses/gpl-3.0.html
@@ -1012,7 +1012,7 @@ paths:
                 healthy:
                   value:
                     status: "healthy"
-                    version: "1.0.3"
+                    version: "1.0.4"
                     commit: "abc1234"
                     uptime: "2h30m45s"
         '503':
@@ -1024,7 +1024,7 @@ paths:
                 unhealthy:
                   value:
                     status: "unhealthy"
-                    version: "1.0.3"
+                    version: "1.0.4"
                     commit: "abc1234"
                     uptime: "0s"
     head:
@@ -1057,7 +1057,7 @@ paths:
                 ready:
                   value:
                     status: "ready"
-                    version: "1.0.3"
+                    version: "1.0.4"
                     uptime: "3h21m4s"
                     backends:
                       - { name: "jay", type: "jay", ok: true, breaker: "closed" }
@@ -1665,7 +1665,7 @@ components:
           enum: [healthy, unhealthy]
         version:
           type: string
-          example: "1.0.3"
+          example: "1.0.4"
         commit:
           type: string
           description: Short git SHA of the build.
