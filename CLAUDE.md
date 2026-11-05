@@ -102,10 +102,10 @@ Lo que hay que saber antes de tocarla:
   grupo autenticado (scoped keys si hay alguna configurada, si no la `API_KEY`
   única).
 - `/api/v1/images/*` (delivery) y `/api/v1/proxy/*` quedan **fuera** de ese
-  grupo a propósito y se autorizan solas con `authorizeDelivery`: firma HMAC
-  cuando `HMAC_REQUIRED=true`, abiertas cuando auth está apagada. No hay régimen
-  "API key en delivery": el validador lo hace imposible. No las muevas al grupo
-  autenticado.
+  grupo a propósito y se autorizan solas: delivery exige firma HMAC cuando
+  `HMAC_REQUIRED=true`; el proxy es público para navegadores (protegido por
+  `PROXY_ALLOWED_HOSTS` y SSRF), o exige firma HMAC si `PROXY_HMAC_REQUIRED=true`.
+  No las muevas al grupo autenticado.
 - **Qué bucket toca un request lo decide `authorizeBucket` (`base.go`), y sólo
   esa función.** Canonicaliza aliases y chequea el scope; un request sin `?b=` ni
   `?storage=` se chequea contra el bucket por defecto. `/sign` la usa también,
@@ -213,8 +213,9 @@ frecuencia del barrido: son knobs distintos y confundirlos deja
 minuto no se cachea. Con varias réplicas y cache en proceso, la invalidación
 sólo llega a la que atendió el request: para eso está Redis.
 
-**El proxy se autoriza igual que delivery** (firma HMAC). Cualquier key
-autenticada puede firmar un path de proxy, porque no lee ningún bucket.
+**El proxy es público por defecto para navegadores** (protegido por `PROXY_ALLOWED_HOSTS`
+y guardias SSRF). Si se activa `PROXY_HMAC_REQUIRED=true`, exige firma HMAC igual que
+delivery. Cualquier key autenticada puede firmar un path de proxy con `/sign`.
 
 ## Quién consume falco
 

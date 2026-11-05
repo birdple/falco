@@ -77,6 +77,9 @@ func (v *validator) validateSecurity(config *Config) error {
 		return errors.New("security.hmac_required=true requires security.api_key_required=true " +
 			"because /api/v1/sign would otherwise mint signatures for anyone")
 	}
+	if config.Security.ProxyHMACRequired && !config.Security.HMACRequired {
+		return errors.New("security.proxy_hmac_required=true requires security.hmac_required=true")
+	}
 	if err := validateHMACMaterial(config); err != nil {
 		return err
 	}

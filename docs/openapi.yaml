@@ -10,13 +10,11 @@ info:
 
     Two routes authorise themselves rather than sitting behind the API key,
     because a browser cannot attach a header to an `<img>` URL:
-    `/api/v1/images/*` and `/api/v1/proxy/*` require an HMAC signature
-    (`sig`, plus `exp` under `HMAC_REQUIRE_EXPIRY=true`) covering their path
-    and query when `HMAC_REQUIRED=true`. With `HMAC_REQUIRED=false` they are
-    open; the server only accepts that setting together with
-    `API_KEY_REQUIRED=false`, so there is no "API key instead of signature"
-    mode. Signatures are minted with `POST /api/v1/sign` or computed by the
-    caller.
+    `/api/v1/images/*` requires an HMAC signature (`sig`, plus `exp` under
+    `HMAC_REQUIRE_EXPIRY=true`) covering its path and query when `HMAC_REQUIRED=true`.
+    `/api/v1/proxy/*` is protected by `PROXY_ALLOWED_HOSTS` and SSRF guards,
+    and optionally requires HMAC with `PROXY_HMAC_REQUIRED=true`. Signatures
+    are minted with `POST /api/v1/sign` or computed by the caller.
 
     Every other `/api/v1` route needs an API key (`X-API-Key` or
     `Authorization: Bearer`) when `API_KEY_REQUIRED=true`: the admin key, or a
@@ -30,7 +28,7 @@ info:
     Every error, from a handler or from the middleware, is
     `{"success": false, "error": {"code": "...", "message": "..."}}` with
     `Cache-Control: no-store`. Branch on `code`, never on `message`.
-  version: "1.0.4"
+  version: "1.0.5"
   license:
     name: GPL-3.0
     url: https://www.gnu.org/licenses/gpl-3.0.html
@@ -236,10 +234,10 @@ paths:
         Fetches the image at `url` from an allowlisted host
         (`PROXY_ALLOWED_HOSTS`), re-encodes it and serves it.
 
-        Authorised exactly like delivery, before anything else: with
-        `HMAC_REQUIRED=true` the path and query (including `url`) must be
-        signed. Any authenticated key may sign a proxy path with
-        `POST /api/v1/sign`.
+        Protected by the host allowlist (`PROXY_ALLOWED_HOSTS`) and SSRF guards.
+        When `PROXY_HMAC_REQUIRED=true` (or when `sig` is provided), the path
+        and query (including `url`) must be signed. Any authenticated key may sign
+        a proxy path with `POST /api/v1/sign`.
 
         `name` is a name of your choosing with an optional extension; the
         extension (`webp`, `jpg`, `jpeg`, `png`, `avif`) is the output format
@@ -1012,7 +1010,7 @@ paths:
                 healthy:
                   value:
                     status: "healthy"
-                    version: "1.0.4"
+                    version: "1.0.5"
                     commit: "abc1234"
                     uptime: "2h30m45s"
         '503':
@@ -1024,7 +1022,7 @@ paths:
                 unhealthy:
                   value:
                     status: "unhealthy"
-                    version: "1.0.4"
+                    version: "1.0.5"
                     commit: "abc1234"
                     uptime: "0s"
     head:
@@ -1057,7 +1055,7 @@ paths:
                 ready:
                   value:
                     status: "ready"
-                    version: "1.0.4"
+                    version: "1.0.5"
                     uptime: "3h21m4s"
                     backends:
                       - { name: "jay", type: "jay", ok: true, breaker: "closed" }
@@ -1665,7 +1663,7 @@ components:
           enum: [healthy, unhealthy]
         version:
           type: string
-          example: "1.0.4"
+          example: "1.0.5"
         commit:
           type: string
           description: Short git SHA of the build.

@@ -7,7 +7,7 @@ package version
 
 var (
 	// Version is the semantic version of the service.
-	Version = "1.0.4"
+	Version = "1.0.5"
 	// Commit is the short git SHA baked in at build time.
 	Commit = "dev"
 )

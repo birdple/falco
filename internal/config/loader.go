@@ -189,6 +189,7 @@ func (l *loader) getEnvMappings() map[string]string {
 		"HMAC_SALT":               "security.hmac_salt",
 		"HMAC_SIGNATURE_SIZE":     "security.hmac_signature_size",
 		"HMAC_REQUIRED":           "security.hmac_required",
+		"PROXY_HMAC_REQUIRED":     "security.proxy_hmac_required",
 		"LOG_LEVEL":               "logging.level",
 		"LOG_FORMAT":              "logging.format",
 		"LOG_OUTPUT":              "logging.output",

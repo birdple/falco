@@ -148,6 +148,7 @@ type SecurityConfig struct {
 	HMACKeySalt       string `mapstructure:"hmac_salt"`
 	HMACSignatureSize int    `mapstructure:"hmac_signature_size"`
 	HMACRequired      bool   `mapstructure:"hmac_required"`
+	ProxyHMACRequired bool   `mapstructure:"proxy_hmac_required"`
 }
 
 // CORSConfig and RateLimitConfig are named types for the same reason as
