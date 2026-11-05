@@ -5,7 +5,7 @@
 # builder and the runtime are always the same Alpine release, and both images
 # are pinned by digest so a rebuild of the same commit uses the same bases.
 # Dependabot proposes digest bumps.
-FROM golang:1.27-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+FROM golang:1.27-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 # Build dependencies for CGO against libvips:
 # - gcc, g++, musl-dev: the C/C++ toolchain CGO needs
