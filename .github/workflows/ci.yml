@@ -28,7 +28,7 @@ env:
   GO_VERSION: "1.27.3"
   # Same version as scripts/lint-in-container.sh: `make lint-linux` and CI must
   # agree, or a finding shows up in only one of them.
-  GOLANGCI_LINT_VERSION: "v2.13.2"
+  GOLANGCI_LINT_VERSION: "v2.15.0"
   GOVULNCHECK_VERSION: "v1.8.0"
 
 jobs:

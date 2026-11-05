@@ -12,7 +12,7 @@ LDFLAGS      := -X github.com/birdple/falco/internal/version.Version=$(VERSION) 
                 -X github.com/birdple/falco/internal/version.Commit=$(COMMIT)
 
 # Kept in step with scripts/lint-in-container.sh and .github/workflows/ci.yml.
-GOLANGCI_LINT_VERSION := v2.13.2
+GOLANGCI_LINT_VERSION := v2.15.0
 
 .DEFAULT_GOAL := help
 

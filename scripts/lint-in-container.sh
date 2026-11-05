@@ -15,7 +15,7 @@
 # downloads are checked against their published SHA-256 before they run.
 set -euo pipefail
 
-GOLANGCI_VERSION="${GOLANGCI_VERSION:-2.13.2}"
+GOLANGCI_VERSION="${GOLANGCI_VERSION:-2.15.0}"
 GO_VERSION="$(awk '/^go /{print $2; exit}' go.mod)"
 ARCH="$(docker version --format '{{.Server.Arch}}')"
 
