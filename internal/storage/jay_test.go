@@ -178,6 +178,52 @@ func TestJayStorage_Retrieve_NotFound(t *testing.T) {
 	}
 }
 
+// TestJayStorage_Stat reads metadata through HeadObject and never opens a body:
+// a GetObject call fails the test, since the fake has no getFn.
+func TestJayStorage_Stat(t *testing.T) {
+	fc := &fakeJayClient{
+		headFn: func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {
+			if key == "missing" {
+				return nil, &jayclient.Error{Code: "NoSuchKey"}
+			}
+			return &jayclient.ObjectInfo{
+				ContentType: "image/webp", Size: 77, ETag: "etag-h",
+				Metadata: metaToMap(&ImageMetadata{
+					ID: "s-1", Format: "webp", Width: 3, Height: 4, OwnerID: "owner-1", MaxAge: 60,
+				}),
+			}, nil
+		},
+	}
+	js := newJayStorageWithClient(fc, "falco-images")
+
+	meta, err := js.Stat(context.Background(), "s-1")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if meta.ID != "s-1" || meta.OwnerID != "owner-1" || meta.MaxAge != 60 || meta.Size != 77 ||
+		meta.ContentType != "image/webp" || meta.StorageKey != "s-1" || meta.ETag != "etag-h" {
+		t.Fatalf("bad meta: %+v", meta)
+	}
+
+	if _, err := js.Stat(context.Background(), "missing"); !errors.Is(err, ErrImageNotFound) {
+		t.Fatalf("expected ErrImageNotFound, got %v", err)
+	}
+}
+
+// TestJayStorage_Close releases the client: JayStorage is a storage.Closer, so
+// Registry.CloseAll returns the connection pool at shutdown.
+func TestJayStorage_Close(t *testing.T) {
+	closeErr := errors.New("closed")
+	var backend StorageBackend = newJayStorageWithClient(&fakeJayClient{closeErr: closeErr}, "bk")
+	closer, ok := backend.(Closer)
+	if !ok {
+		t.Fatal("JayStorage must implement Closer")
+	}
+	if err := closer.Close(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("Close did not reach the client: %v", err)
+	}
+}
+
 func TestJayStorage_Exists_TrueFalse(t *testing.T) {
 	exists := &fakeJayClient{
 		headFn: func(ctx context.Context, bucket, key string) (*jayclient.ObjectInfo, error) {
@@ -259,10 +305,8 @@ func TestJayStorage_Health(t *testing.T) {
 	}
 }
 
-// TestJayStorage_ContextReachesClient pins the reason jay was bumped to a
-// client that takes a context: before it, the caller's ctx stopped at this
-// layer and the 30 s timeout around Retrieve in the delivery handler cancelled
-// nothing. Every operation must hand the exact ctx it received to the client.
+// TestJayStorage_ContextReachesClient: every operation must hand the client
+// the exact ctx it received, or the handler's timeout cancels nothing.
 func TestJayStorage_ContextReachesClient(t *testing.T) {
 	type ctxKey struct{}
 	want := context.WithValue(context.Background(), ctxKey{}, "marker")
@@ -322,10 +366,10 @@ func TestJayStorage_ContextReachesClient(t *testing.T) {
 }
 
 func TestJayStorage_GetStats_HTTP(t *testing.T) {
-	// NewTestServer (Go 1.27): limpieza automática y el test falla si el
-	// handler paniquea. Start() lo deja en loopback porque GetStats arma su
-	// propio http.Client contra adminAddr y no podría hablar con la red
-	// in-memory.
+	// NewTestServer (Go 1.27): automatic cleanup, and the test fails if the
+	// handler panics. Start() keeps it on loopback because GetStats builds its
+	// own http.Client against adminAddr and could not talk to the in-memory
+	// network.
 	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/_stats/falco-images" {
 			http.Error(w, "wrong path: "+r.URL.Path, http.StatusNotFound)

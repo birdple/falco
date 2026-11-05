@@ -15,16 +15,8 @@ import (
 	"strings"
 )
 
-// GetQueryParam returns the first non-empty value from multiple parameter names.
-//
-// Parses the query ONCE: the previous version called r.URL.Query() inside the
-// loop, so GetQueryParam(r, "p", "prefix", "d", "dir", "directory") reparsed
-// RawQuery up to five times per call.
-func GetQueryParam(r *http.Request, names ...string) string {
-	return QueryParam(r.URL.Query(), names...)
-}
-
-// QueryParam is GetQueryParam over an already-parsed url.Values, for handlers
+// QueryParam returns the first non-empty value among several parameter names
+// (aliases such as w|width), over an already-parsed url.Values, for handlers
 // that hoisted r.URL.Query() into a local.
 func QueryParam(query url.Values, names ...string) string {
 	for _, name := range names {
@@ -118,6 +110,17 @@ func NormalizeDirectoryPath(path string) string {
 	}
 
 	return path
+}
+
+// DirectoryListPrefix turns a normalised directory path into the prefix that
+// lists exactly that directory. Backends match prefixes verbatim, so without the
+// trailing slash "users/1" would also match "users/10/..." and "users/1abc".
+// The empty path (the bucket root) stays empty.
+func DirectoryListPrefix(dir string) string {
+	if dir == "" || strings.HasSuffix(dir, "/") {
+		return dir
+	}
+	return dir + "/"
 }
 
 // ValidateDirectoryPath validates a directory path against path traversal attacks

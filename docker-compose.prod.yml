@@ -1,44 +1,60 @@
-version: '3.8'
+# Single-host production stack: falco behind nginx, Redis as the shared cache,
+# optional Prometheus + Grafana (profile with-monitoring).
+#
+# Required in the environment (or a .env next to this file):
+#   API_KEY, HMAC_KEY, HMAC_SALT   — openssl rand -hex 32 for each
+#   GRAFANA_PASSWORD               — with the with-monitoring profile
+#
+# Only nginx is published. falco, Redis, Prometheus and Grafana are reachable
+# from the compose network (Prometheus and Grafana also on 127.0.0.1, for an
+# SSH tunnel). Put TLS in front of nginx (a load balancer, Cloudflare, or a TLS
+# server block in deployments/nginx/nginx.conf) and set COOKIE_SECURE=true.
 
 services:
   falco-service:
     build:
       context: .
       dockerfile: Dockerfile
-      target: production
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./logs:/app/logs
     environment:
       - PORT=8080
       - HOST=0.0.0.0
-      - ENV=production
-      # Las variables viejas (STORAGE_PRIMARY, STORAGE_LOCAL_PATH) ya no
-      # existen: sin un bucket declarado, falco se niega a arrancar.
+      # Without a declared bucket falco refuses to start.
       - STORAGE_DEFAULT=local
       - STORAGE_BUCKET_LOCAL_TYPE=filesystem
       - STORAGE_BUCKET_LOCAL_PATH=/app/data/images
       - CACHE_SIZE_MB=512
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
       - LOG_LEVEL=info
       - LOG_FORMAT=json
       - API_KEY_REQUIRED=true
-      - API_KEY=${API_KEY}
-      # API_KEY_REQUIRED=true OBLIGA a HMAC_REQUIRED=true: un <img> no puede
-      # mandar una API key, así que sin firma la ruta de delivery quedaría sin
-      # ninguna protección. La validación de arranque lo exige.
+      - API_KEY=${API_KEY:?set API_KEY}
+      # API_KEY_REQUIRED=true REQUIRES HMAC_REQUIRED=true (and the reverse): an
+      # <img> cannot send an API key, so without a signature delivery would be
+      # unprotected. Startup validation enforces it.
       - HMAC_REQUIRED=true
-      - HMAC_KEY=${HMAC_KEY}
-      - HMAC_SALT=${HMAC_SALT}
-      # Sin esta variable el delivery contesta 500: el default sería aceptar
-      # URLs firmadas que no caducan nunca.
+      - HMAC_KEY=${HMAC_KEY:?set HMAC_KEY}
+      - HMAC_SALT=${HMAC_SALT:?set HMAC_SALT}
+      # Without this variable delivery answers 500: the default would be to
+      # accept signed URLs that never expire.
       - HMAC_REQUIRE_EXPIRY=${HMAC_REQUIRE_EXPIRY:-true}
+      # nginx is the only peer; its forwarded headers are believed from this
+      # network and nowhere else.
+      - TRUSTED_PROXIES=172.28.0.0/16
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - CORS_ORIGINS=${CORS_ORIGINS:-https://yourdomain.com}
       - RATE_LIMIT_RPM=1000
       - MAX_FILE_SIZE_MB=10
       - DEFAULT_QUALITY=85
       - DEFAULT_FORMAT=webp
+      - ENABLE_METRICS=true
+      # Below the 10s Docker gives a container to stop.
+      - SERVER_SHUTDOWN_TIMEOUT=8s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
@@ -54,11 +70,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 120s
     logging:
       driver: "json-file"
       options:
@@ -69,10 +80,14 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    depends_on:
+      - redis
+    networks:
+      - falco-network
 
-  # Redis for distributed caching
+  # Redis, the transform cache shared by every falco replica.
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -91,55 +106,13 @@ services:
     networks:
       - falco-network
 
-  # Monitoring with Prometheus metrics
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./deployments/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    restart: unless-stopped
-    networks:
-      - falco-network
-    profiles:
-      - with-monitoring
-
-  # Grafana for visualization
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./deployments/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    restart: unless-stopped
-    depends_on:
-      - prometheus
-    networks:
-      - falco-network
-    profiles:
-      - with-monitoring
-
-  # Nginx with SSL termination
+  # Nginx, the only published service.
   nginx:
     image: nginx:alpine
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./deployments/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deployments/nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
       - falco-service
@@ -152,6 +125,46 @@ services:
     networks:
       - falco-network
 
+  # Prometheus. Its falco job needs the API key: point it at a credentials_file
+  # (see deployments/monitoring/prometheus/prometheus.yml) before enabling.
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deployments/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=200h'
+    restart: unless-stopped
+    networks:
+      - falco-network
+    profiles:
+      - with-monitoring
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deployments/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      # Compose interpolates every service, profile or not, so this cannot be
+      # a hard requirement. Unset, Grafana falls back to admin/admin and forces
+      # a change at first login; it is only bound to 127.0.0.1 either way.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - falco-network
+    profiles:
+      - with-monitoring
+
 volumes:
   redis_data:
   prometheus_data:
@@ -161,3 +174,6 @@ volumes:
 networks:
   falco-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

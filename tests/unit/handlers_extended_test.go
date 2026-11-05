@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ import (
 // Additional Upload tests
 func TestHandleUpload_MultipartWithFile(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -79,7 +80,7 @@ func TestHandleUpload_MultipartWithFile(t *testing.T) {
 
 func TestHandleUpload_JSONWithURL(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -112,7 +113,7 @@ func TestHandleUpload_JSONWithURL(t *testing.T) {
 
 func TestHandleUpload_InvalidQuality(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -138,7 +139,7 @@ func TestHandleUpload_InvalidQuality(t *testing.T) {
 // Additional Delivery tests
 func TestHandleDelivery_WithTransformations(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 
@@ -191,7 +192,7 @@ func TestHandleDelivery_WithTransformations(t *testing.T) {
 
 func TestHandleDelivery_InvalidWidth(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 
@@ -213,7 +214,7 @@ func TestHandleDelivery_InvalidWidth(t *testing.T) {
 
 func TestHandleDelivery_InvalidFormat(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 
@@ -238,7 +239,7 @@ func TestHandleDelivery_InvalidFormat(t *testing.T) {
 // Additional Delete tests
 func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -254,7 +255,7 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Mock listing files with prefix
-	mockStorage.On("List", mock.Anything, "images/2024").Return([]storage.ListResult{
+	mockStorage.On("List", mock.Anything, "images/2024/").Return([]storage.ListResult{
 		{Key: "images/2024/img1.jpg"},
 		{Key: "images/2024/img2.jpg"},
 	}, nil)
@@ -262,15 +263,13 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 	mockStorage.On("Delete", mock.Anything, "images/2024/img1.jpg").Return(nil)
 	mockStorage.On("Delete", mock.Anything, "images/2024/img2.jpg").Return(nil)
 
-	// Borrar el original tiene que tirar también sus variantes cacheadas, o la
-	// imagen se sigue sirviendo desde RAM hasta 24 h después de "borrada".
-	mockProcessor.On("InvalidateCacheForKey", "images/2024/img1.jpg").Return(0)
-	mockProcessor.On("InvalidateCacheForKey", "images/2024/img2.jpg").Return(0)
-
 	w := httptest.NewRecorder()
 	h.HandleDelete(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	// Deleting the originals has to drop their cached variants too, in one
+	// pass, or the images keep being served from RAM for up to a TTL.
+	mockProcessor.AssertCalled(t, "InvalidateCache", []string{"\x00images/2024/img1.jpg", "\x00images/2024/img2.jpg"})
 
 	var response types.DeleteResponse
 	json.Unmarshal(w.Body.Bytes(), &response)
@@ -281,7 +280,7 @@ func TestHandleDelete_WithPrefix(t *testing.T) {
 
 func TestHandleDelete_MissingParameters(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -304,7 +303,7 @@ func TestHandleDelete_MissingParameters(t *testing.T) {
 // Additional List tests
 func TestHandleList_WithPrefix(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -315,23 +314,42 @@ func TestHandleList_WithPrefix(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/list?prefix=images/", nil)
 
 	expectedResults := []storage.ListResult{
-		{Key: "photo1.jpg", Size: 1024},
-		{Key: "photo2.jpg", Size: 2048},
+		// Backends return full keys; a sibling directory sharing the prefix
+		// text must not leak into this one.
+		{Key: "images/photo1.jpg", Size: 1024},
+		{Key: "images/photo2.jpg", Size: 2048},
+		{Key: "images-archive/old.jpg", Size: 10},
 	}
 
-	mockStorage.On("List", mock.Anything, "images").Return(expectedResults, nil)
+	mockStorage.On("List", mock.Anything, "images/").Return(expectedResults, nil)
 
 	w := httptest.NewRecorder()
 	h.HandleList(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "photo1.jpg")
+	assert.NotContains(t, w.Body.String(), "old.jpg")
 	mockStorage.AssertExpectations(t)
+}
+
+func TestHandleDelete_RootPrefixIsRejected(t *testing.T) {
+	for _, prefix := range []string{"/", "//", "///"} {
+		mockStorage := new(mocks.MockStorageBackend)
+		h := handlers.NewHandler(&config.Config{}, mockStorage, newProcessorMock(), time.Now())
+
+		req := httptest.NewRequest(http.MethodDelete, "/delete", strings.NewReader(`{"prefix":"`+prefix+`"}`))
+		w := httptest.NewRecorder()
+		h.HandleDelete(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "prefix %q", prefix)
+		assert.Contains(t, w.Body.String(), "INVALID_PREFIX")
+		mockStorage.AssertNotCalled(t, "List", mock.Anything, mock.Anything)
+	}
 }
 
 func TestHandleList_StorageError(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -354,7 +372,7 @@ func TestHandleList_StorageError(t *testing.T) {
 // listing: the caller is told to page through it.
 func TestHandleList_ListingTooLarge(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	h := handlers.NewHandler(&config.Config{}, mockStorage, mockProcessor, time.Now())
 
@@ -380,7 +398,7 @@ func TestHandleList_ListingTooLarge(t *testing.T) {
 // fits and reporting success is the exact failure this endpoint exists to avoid.
 func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	h := handlers.NewHandler(&config.Config{}, mockStorage, mockProcessor, time.Now())
 
@@ -389,7 +407,7 @@ func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/delete", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 
-	mockStorage.On("List", mock.Anything, "images").
+	mockStorage.On("List", mock.Anything, "images/").
 		Return([]storage.ListResult{}, fmt.Errorf("jay: %w", storage.ErrListingTooLarge))
 
 	w := httptest.NewRecorder()
@@ -409,7 +427,7 @@ func TestHandleDelete_ListingTooLargeDeletesNothing(t *testing.T) {
 // Additional Health tests
 func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -429,13 +447,10 @@ func TestHandleHealth_StorageUnhealthy(t *testing.T) {
 	mockStorage.AssertExpectations(t)
 }
 
-// Removed TestHandleHealth_GetStatsError: health endpoint no longer calls GetStats()
-// (health is a lean load-balancer probe; verbose stats belong in /metrics).
-
 // Tests for HandleUpdate
 func TestHandleUpdate_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -481,7 +496,7 @@ func TestHandleUpdate_Success(t *testing.T) {
 
 func TestHandleUpdate_InvalidJSON(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -501,7 +516,7 @@ func TestHandleUpdate_InvalidJSON(t *testing.T) {
 
 func TestHandleUpdate_MissingURL(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -527,7 +542,7 @@ func TestHandleUpdate_MissingURL(t *testing.T) {
 
 func TestHandleUpdate_MissingBucket(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -553,7 +568,7 @@ func TestHandleUpdate_MissingBucket(t *testing.T) {
 
 func TestHandleUpdate_MissingKey(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -579,7 +594,7 @@ func TestHandleUpdate_MissingKey(t *testing.T) {
 
 func TestHandleUpdate_InvalidQuality(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -606,7 +621,7 @@ func TestHandleUpdate_InvalidQuality(t *testing.T) {
 
 func TestHandleUpdate_InvalidFormat(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -637,7 +652,7 @@ func TestHandleUpdate_InvalidFormat(t *testing.T) {
 // Test HandleDocs
 func TestHandleDocs(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 
@@ -656,13 +671,9 @@ func TestHandleDocs(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "redoc")
 }
 
-// TestHandleUpload_CustomID cubre las tres procedencias del id de una imagen:
-// el ?id= de la URL, el campo "id" de un multipart y el "id" de un body JSON.
-//
-// Existe porque la implementación reescribía r.URL.RawQuery a mitad del
-// handler para que las tres desembocaran en una única lectura del query. Al
-// quitar ese truco (y hoistear r.URL.Query()) hacía falta algo que afirmara
-// que las tres siguen llegando a la clave de storage correcta.
+// TestHandleUpload_CustomID covers the three sources of an image id: the
+// URL's ?id=, a multipart "id" field and the "id" of a JSON body. All three
+// have to reach the correct storage key.
 func TestHandleUpload_CustomID(t *testing.T) {
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0} // JPEG header
 
@@ -697,32 +708,30 @@ func TestHandleUpload_CustomID(t *testing.T) {
 		wantKey string
 	}{
 		{
-			name:    "id del query",
-			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload?id=desde-query", "") },
-			wantKey: "desde-query",
+			name:    "id from the query",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload?id=from-query", "") },
+			wantKey: "from-query",
 		},
 		{
-			name:    "id del multipart",
-			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "desde-form") },
-			wantKey: "desde-form",
+			name:    "id from the multipart",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "from-form") },
+			wantKey: "from-form",
 		},
 		{
-			// Con los dos presentes gana el del query, y no es una decisión de
-			// falco: r.FormValue lee de r.Form, que net/http arma poniendo
-			// primero los valores del query y anexando después los del
-			// multipart — o sea que devuelve el del query. Es la precedencia
-			// que ya había antes del refactor y el test la deja escrita.
-			name: "con ambos presentes gana el del query",
+			// With both present the query one wins, and that is not falco's
+			// decision: r.FormValue reads r.Form, which net/http builds with
+			// the query values first and the multipart ones after.
+			name: "with both present the query one wins",
 			request: func(t *testing.T) *http.Request {
-				return newMultipartReq(t, "/upload?id=desde-query", "desde-form")
+				return newMultipartReq(t, "/upload?id=from-query", "from-form")
 			},
-			wantKey: "desde-query",
+			wantKey: "from-query",
 		},
 		{
-			// Un id de form inválido no es un 400: se ignora y el id sale del
-			// hash del contenido, igual que si no se hubiera mandado.
-			name:    "id de multipart inválido cae al hash del contenido",
-			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "no vale/esto") },
+			// An invalid form id is not a 400: it is ignored and the id comes
+			// from the content hash, as if it had never been sent.
+			name:    "invalid multipart id falls back to the content hash",
+			request: func(t *testing.T) *http.Request { return newMultipartReq(t, "/upload", "not valid/this") },
 			wantKey: hashutil.GenerateImageIDFromData(imageData),
 		},
 	}
@@ -730,7 +739,7 @@ func TestHandleUpload_CustomID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockStorage := new(mocks.MockStorageBackend)
-			mockProcessor := new(mocks.MockImageProcessor)
+			mockProcessor := newProcessorMock()
 
 			cfg := &config.Config{
 				Processing: config.ProcessingConfig{

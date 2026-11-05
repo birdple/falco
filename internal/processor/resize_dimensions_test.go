@@ -2,13 +2,9 @@ package processor
 
 import "testing"
 
-// TestSafeResizeDimensions pins the box-versus-cap rule, which is the reason
-// this function exists and the source of a measured regression: a 150x150
-// source asked for at w=600 used to come back 600x600 and 48% heavier.
-//
-// The rule: giving BOTH dimensions is an exact box and may upscale up to the
-// configured maximum; giving ONE is a cap and must never exceed the source's
-// native resolution.
+// TestSafeResizeDimensions pins the box-versus-cap rule: giving both
+// dimensions is an exact box and may upscale up to the configured maximum;
+// giving one is a cap and must never exceed the source's native resolution.
 func TestSafeResizeDimensions(t *testing.T) {
 	p := &VipsProcessor{maxDimensions: struct{ width, height int }{width: 4000, height: 4000}}
 

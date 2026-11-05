@@ -17,16 +17,11 @@ import (
 const (
 	// deleteWorkers is the number of concurrent goroutines used for prefix deletes.
 	deleteWorkers = 10
-	// listCap is the point past which a listing stops being trustworthy: the
-	// safety cap storage.List enforces while walking a prefix.
-	//
-	// It used to be the 1000-key page size, back when List asked for one page
-	// and dropped the truncation flag. Now List walks every page, so a listing
-	// of 1000 is simply a listing of 1000 — comparing against the page size
-	// would flag every prefix over it as truncated and teach callers to ignore
-	// the field. A prefix bigger than the cap fails outright; a prefix that
-	// fills it exactly comes back without an error and is the one case left
-	// where "there may be more" cannot be ruled out, which is what this reports.
+	// listCap is the cap storage.List enforces while walking a prefix, not the
+	// page size: List walks every page, so comparing against the page size
+	// would flag any large prefix as truncated. A prefix that fills the cap
+	// exactly comes back without an error and is the one case where "there may
+	// be more" cannot be ruled out; that is what this reports.
 	listCap = storage.MaxFullListingObjects
 )
 
@@ -51,26 +46,31 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// What the response has to carry, beyond the count: the keys that were asked
-	// for and are still there, and whether the listing this delete worked from
-	// could have left objects out.
-	//
-	// Both used to end up in the log alone while the response said
-	// `success: true`. With jay down, a user asking to "delete my photos" got
-	// back `{"success":true,"count":0}`, birdple-api recorded the photos as
-	// deleted, and they were still in the bucket with nothing left to retry
-	// from.
+	// Beyond the count, the response carries the keys that were asked for and
+	// are still there, and whether the listing this delete worked from could
+	// have left objects out. Without that, a delete against a backend that is
+	// down reports success and the caller has nothing left to retry from.
 	var tally deleteTally
 	var truncated bool
+	var touched []string
 
 	if req.Prefix != "" {
 		prefix := utils.NormalizeDirectoryPath(req.Prefix)
+		// "/" and "//" normalise to "", which would list — and delete — the
+		// whole bucket. The non-empty check above ran on the raw value, so it
+		// has to be repeated on the normalised one.
+		if prefix == "" {
+			h.sendError(w, http.StatusBadRequest, "INVALID_PREFIX",
+				"Prefix must name a directory; deleting a whole bucket is not supported")
+			return
+		}
 		if err := utils.ValidateDirectoryPath(prefix); err != nil {
 			h.sendError(w, http.StatusBadRequest, "INVALID_PREFIX", fmt.Sprintf("Invalid prefix path: %v", err))
 			return
 		}
 
-		results, err := storageBackend.List(ctx, prefix)
+		// Directory semantics: "users/1" must not also take "users/10/...".
+		results, err := storageBackend.List(ctx, utils.DirectoryListPrefix(prefix))
 		if err != nil {
 			if storage.IsListingTooLarge(err) {
 				// Not a backend failure, and deleting the part that fits would
@@ -91,11 +91,19 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 			listedKeys = append(listedKeys, item.Key)
 		}
 		h.deleteKeysParallel(ctx, r, storageBackend, listedKeys, &tally)
+		touched = append(touched, listedKeys...)
 	}
 
 	for _, key := range req.Keys {
 		h.deleteKey(ctx, r, storageBackend, key, &tally)
 	}
+	touched = append(touched, req.Keys...)
+
+	// Every key touched is invalidated, in one pass over the cache, whether it
+	// was deleted, already gone, or failed: a stale variant of a missing
+	// object is exactly what must not be served, and a needless invalidation
+	// only costs one re-render.
+	h.invalidateCache(h.backendNamespace(req.Storage, req.Bucket), touched...)
 
 	deletedKeys, failedKeys := tally.results()
 
@@ -121,15 +129,20 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, response)
 }
 
-// invalidateCache drops every cached variant of a key that no longer exists (or
-// whose bytes changed). Without this, LRUCache.Delete existed and nothing ever
-// called it: a deleted image kept being served from RAM for up to 24 hours.
-func (h *Handler) invalidateCache(key string) {
-	if h.imageProcessor == nil {
+// invalidateCache drops every cached variant of keys that no longer exist or
+// whose bytes changed; otherwise the deleted image keeps being served from RAM
+// until its TTL expires.
+func (h *Handler) invalidateCache(namespace string, keys ...string) {
+	if h.imageProcessor == nil || len(keys) == 0 {
 		return
 	}
-	if n := h.imageProcessor.InvalidateCacheForKey(key); n > 0 {
-		logger.Debug().Str("key", key).Int("variants", n).Msg("Invalidated cached variants")
+	objects := make([]string, len(keys))
+	for i, key := range keys {
+		objects[i] = cacheObjectKey(namespace, key)
+	}
+	if n := h.imageProcessor.InvalidateCache(objects...); n > 0 {
+		logger.Debug().Str("namespace", namespace).Int("keys", len(keys)).Int("variants", n).
+			Msg("Invalidated cached variants")
 	}
 }
 
@@ -215,6 +228,5 @@ func (h *Handler) deleteKey(
 		return
 	}
 
-	h.invalidateCache(key)
 	tally.recordDeleted(key)
 }

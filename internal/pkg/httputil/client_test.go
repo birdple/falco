@@ -2,6 +2,7 @@ package httputil
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -37,8 +38,33 @@ func TestGetClientIP_XForwardedFor(t *testing.T) {
 	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("X-Forwarded-For", "203.0.113.50, 70.41.3.18")
 
+	// The proxy appended the address it saw last; everything to its left is
+	// whatever the client sent.
 	ip := GetClientIP(req)
-	assert.Equal(t, "203.0.113.50", ip)
+	assert.Equal(t, "70.41.3.18", ip)
+}
+
+func TestClientIP_WalksFromTheRight(t *testing.T) {
+	oldProxies := trustedProxyCIDRs
+	SetTrustedProxies([]string{"10.0.0.0/8"})
+	defer func() { trustedProxyCIDRs = oldProxies }()
+
+	cases := []struct {
+		name, remote, xff, xri, want string
+	}{
+		{"untrusted peer ignores headers", "198.51.100.7", "1.2.3.4", "5.6.7.8", "198.51.100.7"},
+		{"spoofed leftmost entry is ignored", "10.0.0.1", "1.1.1.1, 203.0.113.9", "", "203.0.113.9"},
+		{"trusted hops are skipped", "10.0.0.1", "203.0.113.9, 10.0.0.2, 10.0.0.3", "", "203.0.113.9"},
+		{"a spoofed loopback cannot pose as a proxy", "10.0.0.1", "127.0.0.1, 203.0.113.9", "", "203.0.113.9"},
+		{"malformed hop stops the walk", "10.0.0.1", "203.0.113.9, garbage, 10.0.0.2", "", "10.0.0.1"},
+		{"x-real-ip fallback", "10.0.0.1", "", "203.0.113.9", "203.0.113.9"},
+		{"all trusted falls back to the peer", "10.0.0.1", "10.0.0.2", "", "10.0.0.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ClientIP(tc.remote, tc.xff, tc.xri))
+		})
+	}
 }
 
 func TestGetClientIP_XRealIP(t *testing.T) {
@@ -149,12 +175,6 @@ func TestGetUserAgent(t *testing.T) {
 func TestGetUserAgent_Empty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	assert.Equal(t, "", GetUserAgent(req))
-}
-
-func TestNewHTTPClient(t *testing.T) {
-	client := NewHTTPClient(30 * time.Second)
-	require.NotNil(t, client)
-	assert.Equal(t, 30*time.Second, client.Timeout)
 }
 
 func TestNewSafeHTTPClient(t *testing.T) {
@@ -394,5 +414,22 @@ func BenchmarkIsPrivateOrReservedIP_Public(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		isPrivateOrReservedIP(ip)
+	}
+}
+
+// A refusal by the SSRF guard is a property of the destination: retrying it
+// with backoff only delays the same answer by 1.5s.
+func TestDownloadURL_DoesNotRetryBlockedDestinations(t *testing.T) {
+	client := NewSafeHTTPClient(5 * time.Second)
+	start := time.Now()
+	_, _, err := DownloadURL(WithAnyPublicHost(context.Background()), client, "http://127.0.0.1:1/x.png", 1024)
+	if err == nil {
+		t.Fatal("a loopback fetch was allowed")
+	}
+	if !errors.Is(err, errBlocked) {
+		t.Fatalf("got %v, want a blocked-destination error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+		t.Fatalf("took %v: the refusal was retried", elapsed)
 	}
 }

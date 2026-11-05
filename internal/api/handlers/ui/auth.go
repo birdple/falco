@@ -4,6 +4,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	apimw "github.com/birdple/falco/internal/api/middleware"
@@ -37,11 +38,9 @@ func themeFrom(r *http.Request) string {
 	return "light"
 }
 
-// RequireSession guards every authenticated panel route.
-//
-// This replaces the per-handler guards the panel used to have. Those drifted:
-// the dashboard checked the bucket scope and the HTMX partial that rendered the
-// very same data did not.
+// RequireSession guards every authenticated panel route. It is one guard, not
+// one per handler: two guards over the same data (page and HTMX partial) end
+// up checking different things.
 func (h *Handler) RequireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !h.enabled() {
@@ -100,11 +99,10 @@ func (h *Handler) deny(w http.ResponseWriter, r *http.Request, status int, messa
 // wantsHTML reports whether the caller is a navigation rather than a
 // programmatic call, so a denial can be a redirect instead of a JSON body.
 //
-// The test is what the caller ASKED FOR, not what it merely tolerates: a
-// browser navigating sends "text/html" in Accept, while fetch() from the panel
-// sends "application/json". Treating the wildcard "*/*" as HTML matters — that
-// is what curl and most HTTP clients send by default, and answering them with
-// a bare 401 body made a plain `curl /dashboard` look broken.
+// The test is what the caller asked for, not what it merely tolerates: a
+// browser sends "text/html" in Accept and the panel's fetch() sends
+// "application/json". The wildcard "*/*" counts as HTML because it is what
+// curl and most HTTP clients send by default.
 func wantsHTML(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -133,9 +131,25 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // AuthPost exchanges an API key for a session.
+//
+// It only accepts a same-origin JSON body: a cross-site form cannot send
+// application/json without a preflight, so another site cannot sign a visitor
+// into the panel under the attacker's key (login CSRF). Failed attempts are
+// throttled per client, on top of the global rate limiter.
 func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 	if !h.enabled() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": h.disabledReason()})
+		return
+	}
+	if !sameOrigin(r) || !isJSONRequest(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Cross-site request refused"})
+		return
+	}
+
+	clientIP := httputil.GetClientIP(r)
+	if wait := h.logins.blocked(clientIP); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "Too many failed sign-ins, try again later"})
 		return
 	}
 
@@ -149,10 +163,12 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 
 	scope := h.resolveKey(body.Key)
 	if scope == nil {
-		logger.Warn().Str("ip", httputil.GetClientIP(r)).Msg("Panel sign-in rejected")
+		h.logins.fail(clientIP)
+		logger.Warn().Str("ip", clientIP).Msg("Panel sign-in rejected")
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid API key"})
 		return
 	}
+	h.logins.succeed(clientIP)
 
 	sess, err := h.sessions.Create(body.Key, scope)
 	if err != nil {
@@ -160,7 +176,7 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not start a session"})
 		return
 	}
-	setSessionCookie(w, r, sess)
+	setSessionCookie(w, sess, h.secureCookies(r))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
@@ -172,20 +188,29 @@ func (h *Handler) AuthPost(w http.ResponseWriter, r *http.Request) {
 // LogoutPost ends the session. It must happen server-side: the cookie is
 // HttpOnly and the session itself lives in the store, so clearing anything in
 // the browser alone would leave it usable.
+//
+// Same-origin only, so another site cannot sign a visitor out.
 func (h *Handler) LogoutPost(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Cross-site request refused"})
+		return
+	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		h.sessions.Delete(c.Value)
 	}
-	clearSessionCookie(w, r)
+	clearSessionCookie(w, h.secureCookies(r))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // ThemePost remembers the light/dark choice server-side.
 //
-// The theme is applied during server rendering, which is what removes the
-// first-paint flash: the old panel did it from an inline script that the
-// panel's own CSP blocked.
+// The theme is applied during server rendering: an inline script is blocked
+// by the panel's own CSP, and applying it late paints the first frame white.
 func (h *Handler) ThemePost(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "Cross-site request refused"})
+		return
+	}
 	theme := r.URL.Query().Get("theme")
 	if theme != "light" {
 		theme = "dark"
@@ -195,7 +220,7 @@ func (h *Handler) ThemePost(w http.ResponseWriter, r *http.Request) {
 		Value:    theme,
 		Path:     "/",
 		HttpOnly: false, // read by the client too, to avoid a round-trip on toggle
-		Secure:   isSecureRequest(r),
+		Secure:   h.secureCookies(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   365 * 24 * 60 * 60,
 	})
@@ -208,7 +233,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	data, err := jsonv2.Marshal(v)
 	if err != nil {
 		logger.Error().Err(err).Int("status_code", status).Msg("Failed to marshal panel JSON")
-		http.Error(w, `{"ok":false,"error":"Failed to encode response"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"Failed to encode response"}`))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

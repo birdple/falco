@@ -1,11 +1,9 @@
 package hashutil
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateSHA256(t *testing.T) {
@@ -31,21 +29,6 @@ func TestGenerateSHA256_EmptyInput(t *testing.T) {
 	hash := GenerateSHA256([]byte{})
 	assert.Len(t, hash, 64)
 	// Known SHA256 of empty string
-	assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", hash)
-}
-
-func TestGenerateSHA256FromReader(t *testing.T) {
-	reader := strings.NewReader("hello world")
-	hash, err := GenerateSHA256FromReader(reader)
-	require.NoError(t, err)
-	assert.Len(t, hash, 64)
-	assert.Equal(t, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", hash)
-}
-
-func TestGenerateSHA256FromReader_EmptyReader(t *testing.T) {
-	reader := strings.NewReader("")
-	hash, err := GenerateSHA256FromReader(reader)
-	require.NoError(t, err)
 	assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", hash)
 }
 
@@ -97,15 +80,6 @@ func BenchmarkGenerateSHA256_Large(b *testing.B) {
 	}
 }
 
-func BenchmarkGenerateSHA256FromReader(b *testing.B) {
-	b.SetBytes(int64(len(mediumData)))
-	b.ResetTimer()
-	for b.Loop() {
-		r := strings.NewReader(string(mediumData))
-		GenerateSHA256FromReader(r)
-	}
-}
-
 func BenchmarkGenerateImageIDFromData(b *testing.B) {
 	b.SetBytes(int64(len(smallData)))
 	b.ResetTimer()
@@ -114,18 +88,18 @@ func BenchmarkGenerateImageIDFromData(b *testing.B) {
 	}
 }
 
-// TestGenerateImageID_ShortHash: la función está exportada y antes hacía
-// `hash[:16]` sin guarda, así que cualquier cadena corta la hacía paniquear.
+// TestGenerateImageID_ShortHash: the function is exported, and an unguarded
+// `hash[:16]` panics on any short string.
 func TestGenerateImageID_ShortHash(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{"vacío", "", ""},
-		{"más corto que 16", "abc", "abc"},
-		{"exactamente 16", "0123456789abcdef", "0123456789abcdef"},
-		{"más largo que 16", "0123456789abcdefGHIJ", "0123456789abcdef"},
+		{"empty", "", ""},
+		{"shorter than 16", "abc", "abc"},
+		{"exactly 16", "0123456789abcdef", "0123456789abcdef"},
+		{"longer than 16", "0123456789abcdefGHIJ", "0123456789abcdef"},
 	}
 
 	for _, tt := range tests {

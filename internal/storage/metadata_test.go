@@ -104,6 +104,51 @@ func TestMetadataEncoder_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.CreatedAt, decoded.CreatedAt)
 }
 
+// TestMetadataEncoder_RoundTrip_OwnershipAndCacheFields guards the fields the
+// S3/R2 encoder used to drop. Losing owner-id made every S3/R2 image unowned,
+// which only an admin key may delete or update.
+func TestMetadataEncoder_RoundTrip_OwnershipAndCacheFields(t *testing.T) {
+	encoder := NewMetadataEncoder()
+	original := &ImageMetadata{
+		ID:      "abc123",
+		Format:  "webp",
+		MaxAge:  3600,
+		SMaxAge: 86400,
+		OwnerID: "user-42",
+	}
+
+	encoded, err := encoder.Encode(original)
+	require.NoError(t, err)
+	// Same keys jay writes, so both backends store an object the same way.
+	jay := metaToMap(original)
+	for _, k := range []string{"id", "maxage", "smaxage", "owner-id"} {
+		assert.Equal(t, jay[k], encoded[k], "key %q", k)
+	}
+
+	decoded, err := encoder.Decode(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, "abc123", decoded.ID)
+	assert.Equal(t, 3600, decoded.MaxAge)
+	assert.Equal(t, 86400, decoded.SMaxAge)
+	assert.Equal(t, "user-42", decoded.OwnerID)
+}
+
+// TestMetadataEncoder_Decode_LegacyObject is the backward-compatibility half:
+// an object written before those keys existed still decodes, as unowned and
+// with default cache lifetimes, and a malformed lifetime is ignored.
+func TestMetadataEncoder_Decode_LegacyObject(t *testing.T) {
+	decoded, err := NewMetadataEncoder().Decode(map[string]string{
+		"original-name": "old.jpg",
+		"format":        "jpeg",
+		"maxage":        "not-a-number",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decoded.ID)
+	assert.Empty(t, decoded.OwnerID)
+	assert.Zero(t, decoded.MaxAge)
+	assert.Zero(t, decoded.SMaxAge)
+}
+
 func TestImageMetadata_MarshalJSON(t *testing.T) {
 	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	metadata := &ImageMetadata{
@@ -246,10 +291,9 @@ func TestImageMetadata_JSON_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.CreatedAt, decoded.CreatedAt)
 }
 
-// TestImageMetadata_MarshalJSON_Golden congela los bytes exactos que produce
-// MarshalJSON. Son el formato del metadata guardado en Jay y en disco: si esta
-// cadena cambia, cambió el formato de datos, no el estilo del código. Se
-// escribió al migrar a encoding/json/v2 comparando contra la salida de v1.
+// TestImageMetadata_MarshalJSON_Golden freezes the exact bytes MarshalJSON
+// produces. They are the metadata format stored in Jay and on disk: if this
+// string changes, the data format changed, not the code style.
 func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
 	stamp := time.Date(2026, 8, 21, 15, 4, 5, 0, time.UTC)
 
@@ -259,33 +303,33 @@ func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
 		want string
 	}{
 		{
-			name: "cero",
+			name: "zero",
 			in:   &ImageMetadata{},
 			want: `{"id":"","original_name":"","format":"","size":0,"width":0,` +
 				`"height":0,"content_type":"","created_at":"0001-01-01T00:00:00Z"}`,
 		},
 		{
-			name: "campos opcionales omitidos",
+			name: "optional fields omitted",
 			in: &ImageMetadata{
 				ID: "i", OriginalName: `a&b <x> "q" ñ 🐦`, Format: "webp",
 				Size: 1, Width: 2, Height: 3, ContentType: "image/webp",
 				CreatedAt: stamp,
 			},
-			// v1 escapaba &, < y > como \u00XX; Wire lo sigue haciendo.
+			// v1 escaped &, < and > as \u00XX; Wire still does.
 			want: `{"id":"i","original_name":"a\u0026b \u003cx\u003e \"q\" ñ 🐦",` +
 				`"format":"webp","size":1,"width":2,"height":3,` +
 				`"content_type":"image/webp","created_at":"2026-08-21T15:04:05Z"}`,
 		},
 		{
-			name: "todos los campos",
+			name: "all fields",
 			in: &ImageMetadata{
 				ID: "i", StorageKey: "k/<a>&b", OriginalName: `a&b <x> "q" ñ 🐦`,
 				Format: "webp", Size: 1024, Width: 800, Height: 600,
 				ContentType: "image/webp", MaxAge: 31536000, SMaxAge: 7200,
 				CreatedAt: stamp, ETag: `"abc"`, OwnerID: "o",
 			},
-			// created_at va al final: el campo del struct externo tiene
-			// precedencia sobre el del *Alias embebido y se emite después.
+			// created_at goes last: the outer struct's field takes precedence
+			// over the embedded *Alias one and is emitted after it.
 			want: `{"id":"i","storage_key":"k/\u003ca\u003e\u0026b",` +
 				`"original_name":"a\u0026b \u003cx\u003e \"q\" ñ 🐦","format":"webp",` +
 				`"size":1024,"width":800,"height":600,"content_type":"image/webp",` +
@@ -300,7 +344,7 @@ func TestImageMetadata_MarshalJSON_Golden(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(got))
 
-			// Y el round-trip tiene que devolver el mismo valor.
+			// And the round-trip must return the same value.
 			var back ImageMetadata
 			require.NoError(t, back.UnmarshalJSON(got))
 			assert.Equal(t, *tt.in, back)

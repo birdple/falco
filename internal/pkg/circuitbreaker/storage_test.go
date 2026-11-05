@@ -40,6 +40,15 @@ func (m *mockBackend) Retrieve(ctx context.Context, key string) (io.ReadCloser, 
 	return reader, meta, args.Error(2)
 }
 
+func (m *mockBackend) Stat(ctx context.Context, key string) (*storage.ImageMetadata, error) {
+	args := m.Called(ctx, key)
+	var meta *storage.ImageMetadata
+	if args.Get(0) != nil {
+		meta = args.Get(0).(*storage.ImageMetadata)
+	}
+	return meta, args.Error(1)
+}
+
 func (m *mockBackend) Delete(ctx context.Context, key string) error {
 	args := m.Called(ctx, key)
 	return args.Error(0)
@@ -260,28 +269,26 @@ func TestGetCurrentBucket_NonBucketAware(t *testing.T) {
 	assert.Equal(t, "", cb.GetCurrentBucket())
 }
 
-// Un objeto que no existe no es una avería del backend, y contarlo como tal
-// tumbaba el bucket entero: cinco lecturas seguidas de imágenes cuyas filas
-// sobrevivieron a sus bytes abrían el breaker, y la siguiente **subida** moría
-// con "circuit breaker is open" durante los 30 s del timeout.
+// A missing object is not a backend failure: counting it would open the
+// breaker over a few reads and take down uploads for the whole bucket.
 func TestNotFoundDoesNotTripTheBreaker(t *testing.T) {
 	mb := new(mockBackend)
 	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, storage.ErrImageNotFound)
 
 	cb := NewStorageBackend(mb, DefaultSettings("test"))
 
-	// Muy por encima del umbral de 5 fallos consecutivos.
+	// Well above the threshold of 5 consecutive failures.
 	for range 10 {
 		_, _, err := cb.Retrieve(context.Background(), "missing")
-		// El error se sigue reportando a quien llama: sólo no cuenta acá.
+		// The error is still reported to the caller: it just does not count here.
 		require.ErrorIs(t, err, storage.ErrImageNotFound)
 	}
 
-	assert.False(t, cb.IsOpen(), "un 404 no puede abrir el breaker")
+	assert.False(t, cb.IsOpen(), "a 404 must not open the breaker")
 	assert.Equal(t, gobreaker.StateClosed, cb.State())
 }
 
-// Y la subida que venía detrás sigue pasando, que es lo que de verdad se rompía.
+// And the upload that came next still goes through, which is what actually broke.
 func TestStoreStillWorksAfterManyNotFounds(t *testing.T) {
 	mb := new(mockBackend)
 	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, storage.ErrImageNotFound)
@@ -292,21 +299,21 @@ func TestStoreStillWorksAfterManyNotFounds(t *testing.T) {
 		_, _, _ = cb.Retrieve(context.Background(), "missing")
 	}
 
-	err := cb.Store(context.Background(), "nueva", strings.NewReader("bytes"), nil)
+	err := cb.Store(context.Background(), "new", strings.NewReader("bytes"), nil)
 	assert.NoError(t, err)
 }
 
-// La contracara: una avería de verdad tiene que seguir abriéndolo.
+// The flip side: a real outage must still open it.
 func TestRealFailuresStillTripTheBreaker(t *testing.T) {
 	mb := new(mockBackend)
 	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, errors.New("connection refused"))
 
 	cb := NewStorageBackend(mb, DefaultSettings("test"))
 	for range 5 {
-		_, _, _ = cb.Retrieve(context.Background(), "cualquiera")
+		_, _, _ = cb.Retrieve(context.Background(), "any")
 	}
 
-	assert.True(t, cb.IsOpen(), "un backend caído SÍ debe abrir el breaker")
+	assert.True(t, cb.IsOpen(), "a down backend MUST open the breaker")
 }
 
 func TestIsBackendFailure(t *testing.T) {
@@ -319,4 +326,113 @@ func TestIsBackendFailure(t *testing.T) {
 	assert.False(t, IsBackendFailure(fmt.Errorf("jay: %w", storage.ErrListingTooLarge)))
 	assert.True(t, IsBackendFailure(errors.New("connection refused")))
 	assert.True(t, IsBackendFailure(storage.ErrStorageUnavailable))
+	// Cancellation is whoever asked giving up, never the backend.
+	assert.False(t, IsBackendFailure(context.Canceled))
+	assert.False(t, IsBackendFailure(fmt.Errorf("jay client: %w", context.Canceled)))
+}
+
+// A caller hanging up is not the backend failing. The jay client reports a
+// cancelled context wrapped, so this goes through errors.Is.
+func TestCallerCancellationDoesNotTripTheBreaker(t *testing.T) {
+	mb := new(mockBackend)
+	mb.On("Retrieve", mock.Anything, mock.Anything).
+		Return(nil, nil, fmt.Errorf("jay: get k: jay client: %w", context.Canceled))
+
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 10 {
+		_, _, err := cb.Retrieve(ctx, "k")
+		require.ErrorIs(t, err, context.Canceled, "the caller still sees its own error")
+	}
+	assert.False(t, cb.IsOpen())
+
+	// context.Canceled never counts, even if the caller's ctx is still alive.
+	for range 10 {
+		_, _, _ = cb.Retrieve(context.Background(), "k")
+	}
+	assert.False(t, cb.IsOpen())
+}
+
+// A deadline is the caller's when the caller's context is the one that ran out,
+// and then it does not count. The same error with the caller's context alive
+// came from a deadline further down — the backend being too slow — and counts.
+func TestDeadlineCountsOnlyWhenItIsNotTheCallers(t *testing.T) {
+	deadline := fmt.Errorf("jay client: %w", context.DeadlineExceeded)
+
+	mb := new(mockBackend)
+	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, deadline)
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	for range 10 {
+		_, _, err := cb.Retrieve(expired, "k")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	}
+	assert.False(t, cb.IsOpen(), "the caller's own deadline must not open the breaker")
+
+	for range 5 {
+		_, _, _ = cb.Retrieve(context.Background(), "k")
+	}
+	assert.True(t, cb.IsOpen(), "a backend deadline with the caller still waiting is a failure")
+}
+
+// An open breaker answers with storage.ErrStorageUnavailable, so a handler can
+// map it to 503 without importing gobreaker; the gobreaker error stays in the
+// chain.
+func TestOpenBreakerReportsStorageUnavailable(t *testing.T) {
+	mb := new(mockBackend)
+	mb.On("Retrieve", mock.Anything, mock.Anything).Return(nil, nil, errors.New("connection refused"))
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+	for range 5 {
+		_, _, _ = cb.Retrieve(context.Background(), "k")
+	}
+	require.True(t, cb.IsOpen())
+
+	_, err := cb.Stat(context.Background(), "k")
+	assert.True(t, storage.IsUnavailable(err), "got %v", err)
+	assert.ErrorIs(t, err, gobreaker.ErrOpenState)
+	mb.AssertNotCalled(t, "Stat", mock.Anything, mock.Anything)
+}
+
+func TestStat(t *testing.T) {
+	mb := new(mockBackend)
+	want := &storage.ImageMetadata{ID: "k", OwnerID: "o"}
+	mb.On("Stat", mock.Anything, "k").Return(want, nil)
+	mb.On("Stat", mock.Anything, "missing").Return(nil, storage.ErrImageNotFound)
+
+	cb := NewStorageBackend(mb, DefaultSettings("test"))
+	got, err := cb.Stat(context.Background(), "k")
+	require.NoError(t, err)
+	assert.Same(t, want, got)
+
+	_, err = cb.Stat(context.Background(), "missing")
+	assert.ErrorIs(t, err, storage.ErrImageNotFound)
+}
+
+// closingBackend records the shutdown calls the wrapper forwards.
+type closingBackend struct {
+	mockBackend
+	drained, closed bool
+}
+
+func (c *closingBackend) Drain(context.Context) error { c.drained = true; return nil }
+func (c *closingBackend) Close(context.Context) error { c.closed = true; return nil }
+
+// Registry.CloseAll finds Drainer and Closer by type assertion on what it was
+// handed — this wrapper. Without forwarding it found neither, so shutdown
+// neither waited for async replications nor released jay's pool.
+func TestShutdownIsForwardedToTheWrappedBackend(t *testing.T) {
+	inner := &closingBackend{}
+	reg := storage.NewRegistry(NewStorageBackend(inner, DefaultSettings("test")))
+
+	assert.Empty(t, reg.CloseAll(context.Background()))
+	assert.True(t, inner.drained, "Drain reached the wrapped backend")
+	assert.True(t, inner.closed, "Close reached the wrapped backend")
+
+	// A backend with nothing to release is a no-op, not an error.
+	plain := NewStorageBackend(new(mockBackend), DefaultSettings("plain"))
+	assert.NoError(t, plain.Drain(context.Background()))
+	assert.NoError(t, plain.Close(context.Background()))
 }

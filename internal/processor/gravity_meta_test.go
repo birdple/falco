@@ -23,19 +23,18 @@ func newBandedImage(t *testing.T, width, height int, top, bottom color.RGBA) *vi
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, src); err != nil {
-		t.Fatalf("no se pudo codificar el png de prueba: %v", err)
+		t.Fatalf("could not encode the test png: %v", err)
 	}
 	img, err := vips.NewImageFromBuffer(buf.Bytes(), nil)
 	if err != nil {
-		t.Fatalf("no se pudo cargar la imagen de prueba: %v", err)
+		t.Fatalf("could not load the test image: %v", err)
 	}
 	return img
 }
 
-// TestSmartResizeHonoursCompassGravity is the test the defect needed: the
-// parser accepted north/south/east/west and every one of them produced a centre
-// crop, because libvips' Crop enum has no way to say "north" and the switch
-// fell through to InterestingCentre.
+// TestSmartResizeHonoursCompassGravity: libvips' Crop enum has no way to say
+// "north", so a compass point that fell through to InterestingCentre would
+// produce a centre crop with nothing said.
 func TestSmartResizeHonoursCompassGravity(t *testing.T) {
 	red := color.RGBA{R: 220, A: 255}
 	blue := color.RGBA{B: 220, A: 255}
@@ -100,9 +99,8 @@ func TestSmartResizeContentAwareStillWorks(t *testing.T) {
 	}
 }
 
-// TestEncodeImageStripsOrKeepsMetadata covers the second phantom parameter:
-// `meta=1` was parsed in delivery and proxy, travelled into ProcessingParams
-// and was never read by the encoder, so it could not change anything.
+// TestEncodeImageStripsOrKeepsMetadata asserts that `meta=1` reaches the
+// encoder and changes the bytes, not just ProcessingParams.
 func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 	p := &VipsProcessor{webpEffort: 4}
 	const field = "exif-ifd0-ImageDescription"
@@ -122,17 +120,17 @@ func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 	hasField := func(data []byte) bool {
 		img, err := vips.NewImageFromBuffer(data, nil)
 		if err != nil {
-			t.Fatalf("no se pudo releer la imagen codificada: %v", err)
+			t.Fatalf("could not reload the encoded image: %v", err)
 		}
 		defer img.Close()
 		_, err = img.GetString(field)
 		return err == nil
 	}
 
-	if hasField(encode(keepMode(&ProcessingParams{StripMetadata: true}))) {
+	if hasField(encode(keepMode(&ProcessingParams{KeepMetadata: false}))) {
 		t.Fatal("stripping is the default and it did not strip: metadata survived the re-encode")
 	}
-	if !hasField(encode(keepMode(&ProcessingParams{StripMetadata: false}))) {
+	if !hasField(encode(keepMode(&ProcessingParams{KeepMetadata: true}))) {
 		t.Fatal("meta=1 asked to keep metadata and it was dropped anyway")
 	}
 }
@@ -141,8 +139,8 @@ func TestEncodeImageStripsOrKeepsMetadata(t *testing.T) {
 // different bytes, so the two variants must not share a cache entry — otherwise
 // whichever was requested first would be served to everyone.
 func TestGenerateCacheKeySeparatesMetadataVariants(t *testing.T) {
-	stripped := &ProcessingParams{Width: 100, StripMetadata: true}
-	kept := &ProcessingParams{Width: 100, StripMetadata: false}
+	stripped := &ProcessingParams{Width: 100, KeepMetadata: false}
+	kept := &ProcessingParams{Width: 100, KeepMetadata: true}
 
 	if generateCacheKey("k", stripped) == generateCacheKey("k", kept) {
 		t.Fatal("meta variants collide in the cache: the first one requested would be served to both")
@@ -156,5 +154,20 @@ func TestGenerateCacheKeySeparatesMetadataVariants(t *testing.T) {
 	}
 	if !strings.Contains(generateCacheKey("k", kept), "meta") {
 		t.Fatal("the meta variant is not marked in its cache key")
+	}
+}
+
+// TestGravityWithOneDimensionKeepsAspect: with only ?w= there is no box to crop
+// to, so gravity must not turn a resize into a full-height strip.
+func TestGravityWithOneDimensionKeepsAspect(t *testing.T) {
+	p := NewVipsProcessor(10, 85, FormatWebP, 4096, 4096)
+	img := newTestImage(t, 100, 200, []float64{10, 20, 30})
+	defer img.Close()
+
+	if err := p.applyResize(img, &ProcessingParams{Width: 50, Gravity: "north"}); err != nil {
+		t.Fatal(err)
+	}
+	if img.Width() != 50 || img.Height() != 100 {
+		t.Fatalf("got %dx%d, want 50x100", img.Width(), img.Height())
 	}
 }

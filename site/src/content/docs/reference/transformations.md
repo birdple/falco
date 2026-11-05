@@ -10,11 +10,28 @@ Everything here applies to `GET /api/v1/images/*`. The
 
 The difference is deliberate and worth knowing before reading the tables:
 
-- **Geometry and encoding** — `w`, `h`, `q`, `f`, `fit`. A malformed value is a
+- **Geometry and encoding** — `w`, `h`, `q`, `f`, `fit`, `crop_*`, `rotate`,
+  `flip`, and the watermark source (`wm`, `wm_url`). A malformed value is a
   **400**. Silently ignoring a typo would serve an image that is not the one
   asked for, which is worse than an error.
-- **Everything else** — a malformed value **falls back to its default** and the
-  request succeeds. The useful response is still the image.
+- **Everything else** — a malformed or out-of-range value **falls back to its
+  default** and the request succeeds. The useful response is still the image.
+
+`NaN` and `Inf` count as malformed everywhere: `rotate=NaN` is a `400`, and
+`blur=Inf` is ignored like any other bad value.
+
+## Where the image is
+
+| Parameter | Aliases | Meaning |
+|---|---|---|
+| `b` | `bucket` | Bucket to read from. A bucket name or a [declared alias](/falco/guides/buckets/); anything else is `400 UNKNOWN_BUCKET` |
+| `storage` | — | Named backend; with `b`, `b` is the remote bucket inside it (S3/R2) |
+| `d` | `dir`, `directory` | Directory the id lives in. Same as putting it in the path |
+
+`/images/avatars/a1b2c3d4` and `/images/a1b2c3d4?d=avatars` name the same
+object. The directory part of the path is validated like `d` — no `..`, no
+absolute path — and may not contain empty segments; a bad one is
+`400 INVALID_ID`. Omit `b` and `storage` and the default bucket is used.
 
 ## Size and framing
 
@@ -36,9 +53,10 @@ render.
 
 `gravity` covers two different mechanisms. The compass points (`north`,
 `southeast`, …) scale the image to cover the box and then take the crop from
-that position. `smart`/`attention` and `entropy` hand the choice to libvips,
-which picks the region by content. Both need a `w` or an `h` to have anything to
-crop to.
+that position. `smart` and `entropy` hand the choice to libvips, which picks the
+region by content. Both need **both** `w` and `h` to have a box to crop to: with
+only one dimension there is nothing to crop away, and the request is a plain
+proportional resize. An unrecognised value (including `attention`) is ignored.
 
 `smart` and `entropy` are libvips' attention and entropy strategies: they pick
 the crop window by looking at the image rather than by a fixed anchor.
@@ -48,12 +66,18 @@ the crop window by looking at the image rather than by a fixed anchor.
 | Parameter | Aliases | Values | Default |
 |---|---|---|---|
 | `q` | `quality` | 1 … 100 | `DEFAULT_QUALITY` (85) |
-| `f` | `format` | `webp`, `jpeg`, `png`, `avif`, `heic` | Path extension, else `DEFAULT_FORMAT` (`webp`) |
+| `f` | `format` | `webp`, `jpeg` (or `jpg`), `png`, `avif`, `heic` | Path extension, else `DEFAULT_FORMAT` (`webp`) |
 
 The path extension is the format when `f` is absent: `/images/abc.webp`. As an
 extension, `webp`, `jpg`, `jpeg`, `png` and `avif` are recognised — `heic` is
 only reachable through `f=heic`. An unrecognised extension is a `400`, never a
 guess.
+
+Those are the **output** formats. As input, libvips is only allowed to decode
+JPEG, PNG, WebP, GIF, HEIF/HEIC, AVIF and TIFF; anything else is
+`415 UNSUPPORTED_IMAGE`. Both the input and the output are capped at
+`MAX_MEGAPIXELS` (100 million pixels by default): above it the answer is
+`422 IMAGE_TOO_LARGE`.
 
 ## Cropping, rotation and flip
 
@@ -61,7 +85,7 @@ guess.
 |---|---|---|
 | `crop_x`, `crop_y` | Non-negative pixels | 0 |
 | `crop_w`, `crop_h` | Positive pixels, both required to crop | Unset |
-| `rotate` | -360 … 360 degrees | 0 |
+| `rotate` | -360 … 360 degrees, finite | 0 |
 | `flip` | `horizontal`, `vertical` | Unset |
 
 A manual crop is all-or-nothing: `crop_w` and `crop_h` are both required, and an
@@ -97,11 +121,18 @@ that is not the one asked for, and gives the caller no way to notice.
 |---|---|---|
 | `trim` | `1` to enable | Off |
 | `trim_threshold` | 0 … 255 | 10 |
-| `pad_top`, `pad_right`, `pad_bottom`, `pad_left` | Non-negative pixels | 0 |
-| `pad_color` | Hex without `#`, e.g. `F5F5F5` | `FFFFFF` |
+| `pad_top`, `pad_bottom` | 0 … the height ceiling (2048) | 0 |
+| `pad_right`, `pad_left` | 0 … the width ceiling (2048) | 0 |
+| `pad_color` | Six hex digits, e.g. `F5F5F5` (a leading `#`, sent as `%23`, is allowed) | `FFFFFF` |
 
 `trim` is enabled by the exact string `1`. `trim=true` does nothing — it is not
 an error, it just leaves trimming off.
+
+Each side of padding is capped at the configured maximum dimension, because
+padding is applied after every resize limit; a value over it is ignored, like
+any other out-of-range cosmetic. A `pad_color` that is not exactly six hex
+digits falls back to white, and spellings that mean the same colour (`f5f5f5`,
+`F5F5F5`) share one cache entry.
 
 ## EXIF and metadata
 
@@ -114,6 +145,10 @@ Both of these opt *out* rather than in. The defaults are what you want almost
 always: photos come out the right way up, and location data does not leak with
 an avatar.
 
+Uploads get the same defaults: the stored image is auto-oriented and stripped of
+EXIF (GPS included), so a raw delivery of an upload carries no location either.
+`meta=1` on delivery cannot bring back what the upload already removed.
+
 `meta=1` keeps EXIF, XMP, IPTC and the ICC profile, so the response is larger
 than the stripped one. The two are cached separately: keeping metadata produces
 different bytes, so it is part of the cache key.
@@ -122,8 +157,16 @@ different bytes, so it is part of the cache key.
 
 | Parameter | Values | Default |
 |---|---|---|
-| `maxage` | Seconds | `CACHE_DEFAULT_MAX_AGE` |
-| `smaxage` | Seconds | `CACHE_DEFAULT_SMAX_AGE` |
+| `maxage` | Positive seconds | `CACHE_DEFAULT_MAX_AGE` |
+| `smaxage` | Positive seconds | `CACHE_DEFAULT_SMAX_AGE` |
+
+`0` and malformed values mean "use the default". Without either parameter, a
+response of 1 MB or more gets at least a day of `max-age` and a week of
+`s-maxage` even if the configured defaults are lower.
+
+They apply to every image response, rendered or not. On their own they are
+not a transformation: `/images/a1b2c3d4?maxage=60` still streams the stored
+object untouched, only with the TTLs you asked for.
 
 ## Watermark
 
@@ -131,9 +174,9 @@ different bytes, so it is part of the cache key.
 |---|---|---|
 | `wm` | Id of an image stored in Falco, optionally with a directory | Unset |
 | `wm_url` | Absolute `http`/`https` URL, allowlisted | Unset |
-| `wm_opacity` | 0 … 1 | 1 (opaque) |
+| `wm_opacity` | 0 … 1. `0` means unset, not invisible | 1 (opaque) |
 | `wm_position` | `top-left`, `top-right`, `bottom-left`, `bottom-right`, `center` | `bottom-right` |
-| `wm_scale` | 0 … 1, relative to the final image width | 0.2 |
+| `wm_scale` | Above 0, up to 1, relative to the final image width | 0.2 |
 
 ```
 ?w=800&wm=logos/brand&wm_opacity=0.6&wm_position=bottom-right
@@ -142,15 +185,17 @@ different bytes, so it is part of the cache key.
 `wm` and `wm_url` are mutually exclusive: naming both is a `400`, not a
 precedence rule nobody would remember.
 
-`wm` is read through the **same backend as the image itself**, so a scoped key
-cannot reach a bucket it is not allowed to read by asking for a watermark out of
-it.
+`wm` is read through the **same backend as the image itself** — the one `b` and
+`storage` select — so a signed URL cannot reach into another bucket by asking
+for a watermark out of it.
 
 `wm_url` requires `WATERMARK_ALLOWED_HOSTS`. With that variable unset, external
 watermarks are refused with a `403`: the feature does not quietly degrade into
 fetching from anywhere. The host is checked *before* the name is resolved — DNS
 resolution is itself an outbound request — and the client will not dial a
-private or reserved address even for an allowed host.
+private or reserved address even for an allowed host (that fails as
+`502 WATERMARK_FETCH_FAILED`). Redirects are only followed to hosts on the same
+allowlist.
 
 :::caution[A watermark that cannot be loaded is an error]
 A missing id, a disallowed host, an unreachable URL, a file that is not an

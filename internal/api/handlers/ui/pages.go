@@ -28,6 +28,9 @@ func (h *Handler) Object(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := strings.TrimPrefix(query.Get("key"), "/")
+	if !safePanelPath(key) {
+		key = ""
+	}
 	name := key
 	if idx := strings.LastIndex(name, "/"); idx >= 0 {
 		name = name[idx+1:]
@@ -53,10 +56,7 @@ func (h *Handler) Object(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Retrieve is the only interface call that returns stored metadata. The
-	// body is closed unread: backends stream on demand, so nothing beyond the
-	// response header is transferred.
-	reader, meta, err := backend.Retrieve(r.Context(), key)
+	meta, err := backend.Stat(r.Context(), key)
 	if err != nil {
 		if storage.IsNotFound(err) {
 			data.Error = "This object does not exist (any more) in " + bucket + "."
@@ -66,7 +66,6 @@ func (h *Handler) Object(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, "object", views.ObjectPage(data))
 		return
 	}
-	_ = reader.Close()
 
 	if meta != nil {
 		data.Format = strings.ToUpper(meta.Format)
@@ -106,6 +105,9 @@ func (h *Handler) Playground(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := strings.TrimPrefix(query.Get("key"), "/")
+	if !safePanelPath(key) {
+		key = ""
+	}
 	names := h.accessibleBuckets(sess.Scope)
 
 	data := views.PlaygroundData{
@@ -123,8 +125,7 @@ func (h *Handler) Playground(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if backend, err := h.registry.Get(bucket); err == nil {
-		if reader, meta, err := backend.Retrieve(r.Context(), key); err == nil {
-			_ = reader.Close()
+		if meta, err := backend.Stat(r.Context(), key); err == nil {
 			if meta != nil {
 				data.OriginalSizeHuman = views.HumanizeBytes(meta.Size)
 				data.OriginalWidth = meta.Width
@@ -219,7 +220,7 @@ func (h *Handler) Ops(w http.ResponseWriter, r *http.Request) {
 
 	stats := h.processor.GetCacheStats()
 	data.Cache = views.CacheView{
-		Enabled:         h.cfg.Cache.SizeMB > 0,
+		Enabled:         h.cfg.CacheEnabled(),
 		Backend:         stats.Backend,
 		Hits:            stats.Hits,
 		Misses:          stats.Misses,

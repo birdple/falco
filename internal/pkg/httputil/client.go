@@ -1,5 +1,5 @@
-// Package httputil holds HTTP helpers: a hardened client for outbound fetches,
-// trusted-proxy resolution and JSON response writing.
+// Package httputil holds HTTP helpers: a hardened client for outbound fetches
+// and trusted-proxy resolution.
 //
 // Trusted-proxy handling is fail-closed: with no TRUSTED_PROXIES configured only
 // loopback is believed, so a forwarded header cannot be used to spoof a client
@@ -93,52 +93,48 @@ func GetClientIP(r *http.Request) string {
 	if err != nil {
 		remoteIP = r.RemoteAddr
 	}
+	return ClientIP(remoteIP, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP"))
+}
 
-	if IsTrustedProxy(remoteIP) {
-		xff := r.Header.Get("X-Forwarded-For")
-		if xff != "" {
-			ips := strings.Split(xff, ",")
-			if len(ips) > 0 {
-				ip := strings.TrimSpace(ips[0])
-				if net.ParseIP(ip) != nil {
-					return ip
-				}
+// ClientIP resolves the client address behind a chain of proxies.
+//
+// Forwarded headers count only when the direct peer is a trusted proxy. Then
+// X-Forwarded-For is walked from the RIGHT, skipping trusted proxies, and the
+// first address that is not one of them is the client. Taking the leftmost
+// entry, as this used to, believes whatever the client wrote: every common
+// proxy (nginx's $proxy_add_x_forwarded_for, Cloudflare, Traefik) appends to
+// the header it received, so the leftmost entry is attacker-controlled and
+// rotating it defeated the per-IP rate limiter. X-Real-IP is the fallback when
+// X-Forwarded-For names nothing usable.
+func ClientIP(remoteIP, xff, xRealIP string) string {
+	if !IsTrustedProxy(remoteIP) {
+		return remoteIP
+	}
+
+	if xff != "" {
+		entries := strings.Split(xff, ",")
+		for i := len(entries) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(entries[i])
+			if net.ParseIP(candidate) == nil {
+				// A malformed hop means the chain cannot be trusted past
+				// this point; stop rather than skip over it.
+				break
 			}
-		}
-
-		xri := r.Header.Get("X-Real-IP")
-		if xri != "" {
-			if net.ParseIP(xri) != nil {
-				return xri
+			if !IsTrustedProxy(candidate) {
+				return candidate
 			}
 		}
 	}
 
+	if xri := strings.TrimSpace(xRealIP); net.ParseIP(xri) != nil {
+		return xri
+	}
 	return remoteIP
 }
 
 // GetUserAgent returns the User-Agent header from the request
 func GetUserAgent(r *http.Request) string {
 	return r.Header.Get("User-Agent")
-}
-
-// NewHTTPClient creates a new HTTP client with sensible timeouts
-func NewHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-		},
-	}
 }
 
 // redirectPolicyKey is the context key under which an outbound fetch declares
@@ -186,16 +182,16 @@ func WithAnyPublicHost(ctx context.Context) context.Context {
 // allowlist all stop the chain.
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
-		return errors.New("too many redirects")
+		return fmt.Errorf("%w: too many redirects", errBlocked)
 	}
 
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-		return fmt.Errorf("redirect to unsupported scheme: %s", req.URL.Scheme)
+		return fmt.Errorf("%w: redirect to unsupported scheme: %s", errBlocked, req.URL.Scheme)
 	}
 
 	policy, ok := req.Context().Value(redirectPolicyKey{}).(redirectPolicy)
 	if !ok {
-		return errors.New("redirect refused: no redirect policy declared for this fetch")
+		return fmt.Errorf("%w: redirect refused: no redirect policy declared for this fetch", errBlocked)
 	}
 	if policy.anyPublicHost {
 		return nil
@@ -203,7 +199,7 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 
 	host := strings.ToLower(req.URL.Hostname())
 	if _, allowed := policy.allowedHosts[host]; !allowed {
-		return fmt.Errorf("redirect to host outside the allowlist: %s", host)
+		return fmt.Errorf("%w: redirect to host outside the allowlist: %s", errBlocked, host)
 	}
 	return nil
 }
@@ -246,7 +242,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 
 				for _, ip := range ips {
 					if isPrivateOrReservedIP(ip.IP) {
-						return nil, fmt.Errorf("resolved to private/reserved IP: %s", ip.IP)
+						return nil, fmt.Errorf("%w: resolved to private/reserved IP: %s", errBlocked, ip.IP)
 					}
 				}
 
@@ -384,8 +380,17 @@ func downloadOnce(ctx context.Context, client *http.Client, url string, maxSize 
 	return data, contentType, nil
 }
 
-// isTransientError checks if an error is likely transient and worth retrying
+// errBlocked marks a fetch the SSRF guard or the redirect policy refused. It is
+// a property of the destination, so it is never retried.
+var errBlocked = errors.New("destination blocked")
+
+// isTransientError checks if an error is likely transient and worth retrying.
+// A refusal by the SSRF guard or the redirect policy, and a context that is
+// already done, are not: retrying them only delays the same answer.
 func isTransientError(err error) bool {
+	if errors.Is(err, errBlocked) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "server error:") ||
 		strings.Contains(msg, "failed to download:") ||

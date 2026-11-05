@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	apimw "github.com/birdple/falco/internal/api/middleware"
 	"github.com/birdple/falco/internal/api/types"
 	"github.com/birdple/falco/internal/api/utils"
 	"github.com/birdple/falco/internal/jsonx"
@@ -31,9 +33,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	storageName := query.Get("storage")
 	// customID starts as the URL's ?id= and is overridden by the form or JSON
-	// field when one arrives and is valid. This used to be done by rewriting
-	// r.URL.RawQuery halfway through the handler so a later read would see it —
-	// and the JSON branch wiped the rest of the query string in the process.
+	// field when one arrives and is valid. Never by rewriting r.URL.RawQuery.
 	customID := query.Get("id")
 	bucket := utils.QueryParam(query, "b", "bucket")
 	directory := utils.QueryParam(query, "d", "dir", "directory")
@@ -87,12 +87,25 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// mutated by an admin-scoped key.
 	ownerID := r.Header.Get("X-Owner-Id")
 
-	// Dedup-by-key: the storageKey is derived from a content hash of the raw
-	// upload, so identical uploads land on the same key. The Jay backend is
-	// idempotent by key — overwriting with the same bytes is a no-op at the
-	// storage layer. We therefore skip the previous Exists + Retrieve-discard
-	// round-trips and rely on Store alone. Callers still get the stable
-	// `{id, url}` response, which is what dedup semantics actually guarantee.
+	// Dedup by key: storageKey derives from the content hash, so identical
+	// uploads land on the same key and Store with the same bytes is a no-op at
+	// the backend. A scoped caller, though, must not replace — or take the
+	// ownership of — an object somebody else owns. With a caller-chosen id that
+	// is a conflict; with a content-hash id the bytes are identical by
+	// definition, so the existing object is the answer, left as it is.
+	foreign, err := foreignObject(r, storageBackend, storageKey)
+	switch {
+	case err != nil:
+		fe := retrieveFailure(err)
+		h.sendError(w, fe.status, fe.code, fe.message)
+		return
+	case foreign != nil && customID != "":
+		h.sendError(w, http.StatusConflict, "OBJECT_EXISTS", "An object with this id already exists and belongs to another owner")
+		return
+	case foreign != nil:
+		writeUploadResponse(w, imageID, bucket, directory, foreign.OriginalName, foreign)
+		return
+	}
 
 	storeReader, storedMeta, prepErr := h.prepareForStorage(ctx, imageData, uploadTarget{
 		imageID:  imageID,
@@ -110,26 +123,53 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusInternalServerError, "STORAGE_ERROR", fmt.Sprintf("Failed to store file: %v", err))
 		return
 	}
+	// A custom ?id= can overwrite an existing object under the same key, and
+	// the cache key does not change with the bytes.
+	h.invalidateCache(h.backendNamespace(storageName, bucket), storageKey)
 
-	fileURL := utils.BuildImageURL(imageID, bucket, directory)
+	writeUploadResponse(w, imageID, bucket, directory, filename, &storedMeta)
+}
 
-	response := types.UploadResponse{
+// writeUploadResponse answers a successful upload.
+func writeUploadResponse(w http.ResponseWriter, imageID, bucket, directory, filename string, meta *storage.ImageMetadata) {
+	writeJSON(w, http.StatusCreated, types.UploadResponse{
 		Success: true,
 		Data: types.UploadData{
 			ID:           imageID,
-			URL:          fileURL,
+			URL:          utils.BuildImageURL(imageID, bucket, directory),
 			OriginalName: filename,
-			Format:       storedMeta.Format,
-			Size:         storedMeta.Size,
+			Format:       meta.Format,
+			Size:         meta.Size,
 			Dimensions: types.Dimensions{
-				Width:  storedMeta.Width,
-				Height: storedMeta.Height,
+				Width:  meta.Width,
+				Height: meta.Height,
 			},
-			CreatedAt: storedMeta.CreatedAt,
+			CreatedAt: meta.CreatedAt,
 		},
-	}
+	})
+}
 
-	writeJSON(w, http.StatusCreated, response)
+// foreignObject returns the object already stored under key when a scoped
+// caller does not own it, or nil when the caller may write there: nothing is
+// stored, the caller owns it, or the caller is an admin (or auth is off).
+func foreignObject(r *http.Request, backend storage.StorageBackend, key string) (*storage.ImageMetadata, error) {
+	scope := apimw.GetScope(r.Context())
+	if scope == nil || scope.IsAdmin {
+		return nil, nil
+	}
+	existing, err := backend.Stat(r.Context(), key)
+	switch {
+	case storage.IsNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case existing == nil:
+		return nil, nil
+	}
+	if existing.OwnerID != "" && existing.OwnerID == r.Header.Get("X-Owner-Id") {
+		return nil, nil
+	}
+	return existing, nil
 }
 
 // uploadPayload is an upload request whose body has been read, whatever shape it
@@ -156,7 +196,7 @@ type uploadPayload struct {
 // Anything else is rejected rather than guessed at.
 func (h *Handler) parseUploadPayload(
 	ctx context.Context, r *http.Request, query url.Values, maxBytes int64,
-) (uploadPayload, *proxyError) {
+) (uploadPayload, *fetchError) {
 	contentType := r.Header.Get("Content-Type")
 
 	switch {
@@ -167,15 +207,26 @@ func (h *Handler) parseUploadPayload(
 	case contentType == "application/json":
 		return h.downloadFromJSONBody(ctx, r)
 	default:
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "UNSUPPORTED_CONTENT_TYPE", "Unsupported content type"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "UNSUPPORTED_CONTENT_TYPE", "Unsupported content type"}
 	}
 }
 
+// bodyReadFailure maps an error reading the request body: past the
+// MAX_FILE_SIZE_MB limit it is a 413, like a body the middleware refused up
+// front for its Content-Length; anything else is the caller's malformed
+// request.
+func bodyReadFailure(err error, code, message string) *fetchError {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		return &fetchError{http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Image exceeds the maximum upload size"}
+	}
+	return &fetchError{http.StatusBadRequest, code, message}
+}
+
 // readRawBody handles an upload whose body is the image itself.
-func readRawBody(r *http.Request, query url.Values, contentType string) (uploadPayload, *proxyError) {
+func readRawBody(r *http.Request, query url.Values, contentType string) (uploadPayload, *fetchError) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
+		return uploadPayload{}, bodyReadFailure(err, "READ_ERROR", "Failed to read image data")
 	}
 
 	payload := uploadPayload{
@@ -187,7 +238,7 @@ func readRawBody(r *http.Request, query url.Values, contentType string) (uploadP
 	if raw := query.Get("quality"); raw != "" {
 		quality, err := strconv.Atoi(raw)
 		if err != nil {
-			return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
+			return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
 		}
 		payload.quality = quality
 	}
@@ -195,24 +246,24 @@ func readRawBody(r *http.Request, query url.Values, contentType string) (uploadP
 }
 
 // readMultipartBody handles a browser file upload.
-func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *proxyError) {
+func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *fetchError) {
 	maxFormBytes := maxBytes
 	if maxFormBytes <= 0 {
 		maxFormBytes = defaultMaxFormBytes
 	}
 	if err := r.ParseMultipartForm(maxFormBytes); err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_REQUEST", "Failed to parse multipart form"}
+		return uploadPayload{}, bodyReadFailure(err, "INVALID_REQUEST", "Failed to parse multipart form")
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "MISSING_FILE", "No file uploaded"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "MISSING_FILE", "No file uploaded"}
 	}
 	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "READ_ERROR", "Failed to read image data"}
+		return uploadPayload{}, bodyReadFailure(err, "READ_ERROR", "Failed to read image data")
 	}
 
 	payload := uploadPayload{
@@ -224,7 +275,7 @@ func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *proxyEr
 	if raw := r.FormValue("quality"); raw != "" {
 		quality, err := strconv.Atoi(raw)
 		if err != nil {
-			return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
+			return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_QUALITY", "Invalid quality parameter"}
 		}
 		payload.quality = quality
 	}
@@ -239,7 +290,7 @@ func readMultipartBody(r *http.Request, maxBytes int64) (uploadPayload, *proxyEr
 }
 
 // downloadFromJSONBody handles an upload that names a URL for falco to fetch.
-func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (uploadPayload, *proxyError) {
+func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (uploadPayload, *fetchError) {
 	var req struct {
 		URL     string `json:"url"`
 		Quality int    `json:"quality,omitzero"`
@@ -248,20 +299,20 @@ func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (up
 	}
 
 	if err := jsonv2.UnmarshalRead(r.Body, &req, jsonx.Strict); err != nil {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_JSON", "Invalid JSON payload"}
 	}
 	if req.URL == "" {
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "MISSING_URL", "URL is required"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "MISSING_URL", "URL is required"}
 	}
 
 	parsedURL, err := url.Parse(req.URL)
 	switch {
 	case err != nil:
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_URL", "Invalid URL format"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_URL", "Invalid URL format"}
 	case parsedURL.Scheme != "https" && parsedURL.Scheme != "http":
-		return uploadPayload{}, &proxyError{http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol"}
+		return uploadPayload{}, &fetchError{http.StatusBadRequest, "INVALID_URL", "URL must use HTTP or HTTPS protocol"}
 	case len(req.URL) > MaxURLLength:
-		return uploadPayload{}, &proxyError{
+		return uploadPayload{}, &fetchError{
 			http.StatusBadRequest, "INVALID_URL",
 			fmt.Sprintf("URL too long (max %d characters)", MaxURLLength),
 		}
@@ -275,7 +326,7 @@ func (h *Handler) downloadFromJSONBody(ctx context.Context, r *http.Request) (up
 		httputil.WithAnyPublicHost(ctx), h.httpClient, req.URL, h.config.GetMaxFileSizeBytes(),
 	)
 	if err != nil {
-		return uploadPayload{}, &proxyError{
+		return uploadPayload{}, &fetchError{
 			http.StatusBadRequest, "DOWNLOAD_FAILED",
 			fmt.Sprintf("Failed to download image: %v", err),
 		}
@@ -314,12 +365,12 @@ type uploadTarget struct {
 // falco's origin would run that script with falco's origin's privileges.
 func (h *Handler) prepareForStorage(
 	ctx context.Context, imageData []byte, target uploadTarget,
-) (io.Reader, storage.ImageMetadata, *proxyError) {
+) (io.Reader, storage.ImageMetadata, *fetchError) {
 	detectedType := utils.DetectContentType(imageData)
 
 	if !utils.IsImageContentType(detectedType) {
 		if utils.IsDangerousContentType(detectedType) {
-			return nil, storage.ImageMetadata{}, &proxyError{
+			return nil, storage.ImageMetadata{}, &fetchError{
 				http.StatusUnsupportedMediaType, "DANGEROUS_CONTENT_TYPE",
 				fmt.Sprintf("Content type %q is not allowed; SVG, HTML, and XML uploads are rejected for security", detectedType),
 			}
@@ -343,7 +394,7 @@ func (h *Handler) prepareForStorage(
 		Format:  target.format,
 	}, "")
 	if err != nil {
-		return nil, storage.ImageMetadata{}, &proxyError{
+		return nil, storage.ImageMetadata{}, &fetchError{
 			http.StatusUnprocessableEntity, "PROCESSING_FAILED",
 			fmt.Sprintf("Failed to process image: %v", err),
 		}

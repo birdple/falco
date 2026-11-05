@@ -3,7 +3,6 @@ package middleware
 import (
 	"net"
 	"net/http"
-	"strings"
 
 	"github.com/birdple/falco/internal/pkg/httputil"
 )
@@ -11,20 +10,14 @@ import (
 // RealIP rewrites r.RemoteAddr based on X-Forwarded-For / X-Real-IP headers,
 // but only when the direct peer is in the httputil trusted-proxy allowlist.
 //
-// This replaces chi's middleware.RealIP, which trusts those headers
-// unconditionally. Trusting them unconditionally lets any client spoof
-// X-Forwarded-For to a random IP and defeat per-IP rate limiting.
+// chi's middleware.RealIP does not fit here: it trusts those headers
+// unconditionally, so any client could spoof X-Forwarded-For and defeat per-IP
+// rate limiting.
 //
-// Behavior:
-//   - Untrusted peer: RemoteAddr is left untouched.
-//   - Trusted peer: the leftmost non-empty, valid IP from X-Forwarded-For
-//     wins. If X-Forwarded-For is missing, X-Real-IP is used. The rewritten
-//     value preserves the original source port when possible so that
-//     downstream middleware parsing RemoteAddr with net.SplitHostPort keeps
-//     working.
-//
-// See internal/pkg/httputil/client.go for the IsTrustedProxy logic and the
-// loopback-only fail-closed default.
+// The address is resolved by httputil.ClientIP — the rightmost entry that is
+// not itself a trusted proxy — so the logger, the rate limiter and every later
+// IsTrustedProxy check see the same client. The source port is preserved so
+// that net.SplitHostPort keeps working downstream.
 func RealIP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rewritten := realIPFor(r); rewritten != "" {
@@ -44,43 +37,13 @@ func realIPFor(r *http.Request) string {
 		remotePort = ""
 	}
 
-	if !httputil.IsTrustedProxy(remoteHost) {
+	client := httputil.ClientIP(remoteHost, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP"))
+	if client == remoteHost {
 		return ""
 	}
 
-	forwarded := extractForwardedIP(r)
-	if forwarded == "" {
-		return ""
-	}
-
-	// Preserve the original port so downstream consumers of RemoteAddr (which
-	// assume host:port) keep parsing cleanly. If we had no port we still
-	// return a bare host — net.SplitHostPort will then fall back to treating
-	// the whole string as the host, matching existing behavior.
 	if remotePort != "" {
-		return net.JoinHostPort(forwarded, remotePort)
+		return net.JoinHostPort(client, remotePort)
 	}
-	return forwarded
-}
-
-// extractForwardedIP returns the leftmost valid IP from X-Forwarded-For, or
-// X-Real-IP if XFF is absent/empty. Invalid entries are rejected so that a
-// malformed header cannot corrupt RemoteAddr.
-func extractForwardedIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for candidate := range strings.SplitSeq(xff, ",") {
-			candidate = strings.TrimSpace(candidate)
-			if candidate != "" && net.ParseIP(candidate) != nil {
-				return candidate
-			}
-		}
-	}
-
-	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-		if net.ParseIP(xri) != nil {
-			return xri
-		}
-	}
-
-	return ""
+	return client
 }

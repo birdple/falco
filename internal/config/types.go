@@ -25,9 +25,9 @@ type ServerConfig struct {
 	// the stdlib allows 1 MB, which for a public image CDN is far more than
 	// any legitimate client needs.
 	MaxHeaderBytes int `mapstructure:"max_header_bytes"`
-	// MaxHeaderValueCount caps the NUMBER of header values
-	// (net/http, Go 1.27). Complementa a MaxHeaderBytes: miles de cabeceras
-	// tiny headers weigh almost nothing in bytes but are expensive to parse.
+	// MaxHeaderValueCount caps the number of header values (net/http, Go
+	// 1.27). It complements MaxHeaderBytes: thousands of tiny headers weigh
+	// almost nothing in bytes but are expensive to parse.
 	MaxHeaderValueCount int `mapstructure:"max_header_value_count"`
 }
 
@@ -118,8 +118,10 @@ type ProcessingConfig struct {
 	DefaultFormat     string        `mapstructure:"default_format"`
 	ConcurrentWorkers int           `mapstructure:"concurrent_workers"`
 	WebPEffort        int           `mapstructure:"webp_effort"`
-	SupportedFormats  []string      `mapstructure:"supported_formats"`
 	MaxDimensions     MaxDimensions `mapstructure:"max_dimensions"`
+	// MaxMegapixels caps both decoded inputs and produced outputs, in
+	// millions of pixels. libvips has no ceiling of its own for JPEG or PNG.
+	MaxMegapixels int `mapstructure:"max_megapixels"`
 }
 
 // MaxDimensions caps the output size. It is a named type rather than an
@@ -137,6 +139,10 @@ type SecurityConfig struct {
 	CORS           CORSConfig      `mapstructure:"cors"`
 	RateLimit      RateLimitConfig `mapstructure:"rate_limit"`
 	TrustedProxies []string        `mapstructure:"trusted_proxies"`
+	// CookieSecure forces the Secure flag on the panel's cookies. Without
+	// it the flag follows the request scheme, which falco can only see
+	// through X-Forwarded-Proto from a trusted proxy.
+	CookieSecure bool `mapstructure:"cookie_secure"`
 	// HMAC URL signing
 	HMACKey           string `mapstructure:"hmac_key"`
 	HMACKeySalt       string `mapstructure:"hmac_salt"`
@@ -145,7 +151,7 @@ type SecurityConfig struct {
 }
 
 // CORSConfig and RateLimitConfig are named types for the same reason as
-// MaxDimensions: como structs anónimos no se podían escribir en un literal.
+// MaxDimensions: as anonymous structs they could not be written in a literal.
 
 // CORSConfig holds the CORS policy.
 type CORSConfig struct {
@@ -170,7 +176,6 @@ type LoggingConfig struct {
 
 // DevelopmentConfig holds development-specific configuration
 type DevelopmentConfig struct {
-	Debug         bool `mapstructure:"debug"`
 	EnablePprof   bool `mapstructure:"enable_pprof"`
 	EnableMetrics bool `mapstructure:"enable_metrics"`
 }

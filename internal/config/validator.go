@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -68,7 +70,104 @@ func (v *validator) validateSecurity(config *Config) error {
 			"because the image delivery route cannot be protected by API key alone " +
 			"(browsers cannot carry API keys on image URLs)")
 	}
+	// The converse is just as hollow: /api/v1/sign sits behind the API key, so
+	// with the key off anyone can mint a valid signature and the HMAC gate on
+	// delivery protects nothing.
+	if config.Security.HMACRequired && !config.Security.APIKeyRequired {
+		return errors.New("security.hmac_required=true requires security.api_key_required=true " +
+			"because /api/v1/sign would otherwise mint signatures for anyone")
+	}
+	if err := validateHMACMaterial(config); err != nil {
+		return err
+	}
+	return validateScopedKeys(config)
+}
+
+// minSignatureSize is the shortest truncated HMAC accepted. Below 16 bytes a
+// signature is within reach of brute force against a live endpoint.
+const minSignatureSize = 16
+
+// validateHMACMaterial refuses key material that would only fail at request
+// time: a key or salt that is not hex turns every delivery into a 403, and a
+// tiny signature size makes signatures guessable.
+func validateHMACMaterial(config *Config) error {
+	sec := config.Security
+	if sec.HMACKey != "" {
+		if _, err := hex.DecodeString(sec.HMACKey); err != nil {
+			return errors.New("security.hmac_key must be hex-encoded")
+		}
+	}
+	if sec.HMACKeySalt != "" {
+		if _, err := hex.DecodeString(sec.HMACKeySalt); err != nil {
+			return errors.New("security.hmac_salt must be hex-encoded")
+		}
+	}
+	if size := sec.HMACSignatureSize; size != 0 && (size < minSignatureSize || size > sha256.Size) {
+		return fmt.Errorf("security.hmac_signature_size=%d: must be 0 (full) or %d-%d bytes",
+			size, minSignatureSize, sha256.Size)
+	}
 	return nil
+}
+
+// validateScopedKeys checks the resolved scoped keys as a whole.
+//
+// A key whose bucket set resolves to nothing is refused: it is always a
+// misconfiguration, and an empty set must never be read as "everything". A key
+// value shared by two scopes is refused too, because CollectAllKeys would keep
+// only one of them and which one is an accident of map iteration; and a scoped
+// key equal to the admin key would be shadowed by the admin check.
+func validateScopedKeys(config *Config) error {
+	owners := make(map[string]string)
+	note := func(key, owner string) error {
+		if prev, ok := owners[key]; ok {
+			return fmt.Errorf("the same key value is configured for %s and %s", prev, owner)
+		}
+		if config.Security.APIKey != "" && key == config.Security.APIKey {
+			return fmt.Errorf("%s reuses the admin API key", owner)
+		}
+		owners[key] = owner
+		return nil
+	}
+	for _, bucketName := range sortedKeys(config.Storage.Buckets) {
+		for _, k := range config.Storage.Buckets[bucketName].Keys {
+			if err := note(k.Key, fmt.Sprintf("bucket %q key %q", bucketName, k.Name)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, groupName := range sortedKeys(config.Storage.Groups) {
+		group := config.Storage.Groups[groupName]
+		for _, k := range group.Keys {
+			if err := note(k.Key, fmt.Sprintf("group %q key %q", groupName, k.Name)); err != nil {
+				return err
+			}
+		}
+		for _, subName := range sortedKeys(group.Subgroups) {
+			for _, k := range group.Subgroups[subName].Keys {
+				if err := note(k.Key, fmt.Sprintf("group %q subgroup %q key %q", groupName, subName, k.Name)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	for _, scope := range config.CollectAllKeys() {
+		if len(scope.Buckets) == 0 {
+			return fmt.Errorf("scoped key %q resolves to no bucket at all", scope.Name)
+		}
+	}
+	return nil
+}
+
+// sortedKeys returns m's keys in order, so the same broken config always names
+// the same entry first.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // validateServer validates server configuration
@@ -244,10 +343,12 @@ func (v *validator) validateGroup(config *Config, groupName string, group GroupC
 		}
 
 		// Subgroup buckets must be a subset of the parent group's buckets
+		subBucketSet := make(map[string]bool, len(sub.Buckets))
 		for _, b := range sub.Buckets {
 			if !groupBucketSet[b] {
 				return fmt.Errorf("group %q: subgroup %q references bucket %q not in parent group", groupName, subName, b)
 			}
+			subBucketSet[b] = true
 		}
 
 		// Validate subgroup keys
@@ -263,6 +364,15 @@ func (v *validator) validateGroup(config *Config, groupName string, group GroupC
 				return fmt.Errorf("group %q: subgroup %q: duplicate key name %q", groupName, subName, key.Name)
 			}
 			subSeenKeys[key.Name] = true
+
+			// Same rule as group keys, one level down: a key may only narrow
+			// its subgroup, never name a bucket outside it.
+			for _, b := range key.Buckets {
+				if !subBucketSet[b] {
+					return fmt.Errorf("group %q: subgroup %q: key %q references bucket %q not in subgroup",
+						groupName, subName, key.Name, b)
+				}
+			}
 		}
 	}
 
@@ -313,14 +423,27 @@ func (v *validator) validateBucketFields(name string, bucket BucketConfig) error
 	return nil
 }
 
-// validateCache validates cache configuration
+// validateCache validates cache configuration.
+//
+// A size of 0 is valid and disables the cache (buildCache treats it so); this
+// used to demand >= 1, which made the documented way of turning the cache off
+// refuse to boot. Only a negative size is a mistake.
+//
+// The cleanup interval may be 0 (the cache falls back to its default sweep
+// frequency) but not negative.
 func (v *validator) validateCache(config *Config) error {
-	if config.Cache.SizeMB < 1 {
-		return fmt.Errorf("invalid cache size: %d MB (must be >= 1)", config.Cache.SizeMB)
+	if config.Cache.SizeMB < 0 {
+		return fmt.Errorf("invalid cache size: %d MB (must be >= 0; 0 disables the cache)", config.Cache.SizeMB)
+	}
+	if config.Cache.CleanupInterval < 0 {
+		return fmt.Errorf("invalid cache cleanup interval: %s (must be >= 0)", config.Cache.CleanupInterval)
 	}
 
 	return nil
 }
+
+// encoderFormats are the output formats the image processor can encode.
+var encoderFormats = map[string]bool{"jpeg": true, "png": true, "webp": true, "avif": true, "heic": true}
 
 // validateProcessing validates processing configuration
 func (v *validator) validateProcessing(config *Config) error {
@@ -328,16 +451,19 @@ func (v *validator) validateProcessing(config *Config) error {
 		return fmt.Errorf("invalid max file size: %d MB (must be >= 1)", config.Processing.MaxFileSizeMB)
 	}
 
+	if config.Processing.MaxMegapixels < 0 {
+		return fmt.Errorf("invalid max megapixels: %d (must be >= 0; 0 means the built-in default)", config.Processing.MaxMegapixels)
+	}
+
 	if config.Processing.DefaultQuality < 1 || config.Processing.DefaultQuality > 100 {
 		return fmt.Errorf("invalid quality: %d (must be 1-100)", config.Processing.DefaultQuality)
 	}
 
-	// Validate supported formats
-	validFormats := map[string]bool{"jpeg": true, "png": true, "webp": true}
-	for _, format := range config.Processing.SupportedFormats {
-		if !validFormats[format] {
-			return fmt.Errorf("unsupported format: %s", format)
-		}
+	// DEFAULT_FORMAT is what every upload is re-encoded to and every
+	// transformation without ?f= produces; a value the encoder does not know
+	// would only fail on the first request.
+	if f := config.Processing.DefaultFormat; f != "" && !encoderFormats[f] {
+		return fmt.Errorf("unsupported default format: %s (must be jpeg, png, webp, avif or heic)", f)
 	}
 
 	return nil

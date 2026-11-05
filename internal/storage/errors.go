@@ -10,28 +10,19 @@ import "errors"
 // Common storage errors
 var (
 	ErrImageNotFound          = errors.New("image not found")
-	ErrImageAlreadyExists     = errors.New("image already exists")
-	ErrInvalidImageFormat     = errors.New("invalid image format")
 	ErrStorageUnavailable     = errors.New("storage backend unavailable")
 	ErrUnsupportedStorageType = errors.New("unsupported storage type")
 	ErrInvalidConfiguration   = errors.New("invalid storage configuration")
-	ErrPermissionDenied       = errors.New("permission denied")
-	ErrDiskFull               = errors.New("disk full")
-	ErrNetworkError           = errors.New("network error")
-	ErrTimeout                = errors.New("operation timeout")
-	ErrInvalidKey             = errors.New("invalid storage key")
-	ErrCorruptedData          = errors.New("corrupted data")
 	ErrBackendNotFound        = errors.New("storage backend not found")
 
 	// ErrBucketNotHonoured means the request named a bucket falco cannot serve:
 	// it is not a registered bucket, not a declared alias, and the backend it
 	// resolved to has no way to switch to it.
 	//
-	// It exists so that case stops being invisible. WithBucket returns a
-	// backend and not an error, and the circuit-breaker wrapper implements it
-	// for every backend by handing back itself — so a bucket the backend could
-	// not reach used to end up written into the default one, answered 201, and
-	// reported nowhere but a log line.
+	// It exists so that case is visible: WithBucket returns a backend and not
+	// an error, and the circuit-breaker wrapper implements it for every backend
+	// by handing back itself, so without this error an unreachable bucket
+	// would end up written into the default one with a 201.
 	ErrBucketNotHonoured = errors.New("requested bucket cannot be served")
 
 	// ErrUnsupportedOperation means the backend cannot do this at all — not that
@@ -55,11 +46,6 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrImageNotFound)
 }
 
-// IsAlreadyExists returns true if the error indicates that an image already exists
-func IsAlreadyExists(err error) bool {
-	return errors.Is(err, ErrImageAlreadyExists)
-}
-
 // IsListingTooLarge returns true if the error indicates a whole-prefix listing
 // hit the safety cap. Callers use it to answer "ask for it a page at a time"
 // instead of reporting a backend failure, which is not what happened.
@@ -70,14 +56,4 @@ func IsListingTooLarge(err error) bool {
 // IsUnavailable returns true if the error indicates that storage is unavailable
 func IsUnavailable(err error) bool {
 	return errors.Is(err, ErrStorageUnavailable)
-}
-
-// IsNetworkError returns true if the error indicates a network problem
-func IsNetworkError(err error) bool {
-	return errors.Is(err, ErrNetworkError)
-}
-
-// IsTimeout returns true if the error indicates a timeout
-func IsTimeout(err error) bool {
-	return errors.Is(err, ErrTimeout)
 }

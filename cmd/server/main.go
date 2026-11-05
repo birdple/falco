@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,14 +24,24 @@ import (
 	"github.com/birdple/falco/internal/pkg/circuitbreaker"
 	"github.com/birdple/falco/internal/pkg/httputil"
 	"github.com/birdple/falco/internal/pkg/logger"
+	"github.com/birdple/falco/internal/pkg/metrics"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
 	"github.com/birdple/falco/internal/telemetry"
 	"github.com/cshum/vipsgen/vips"
 )
 
-// defaultShutdownTimeout is used when SERVER_SHUTDOWN_TIMEOUT is unset.
-const defaultShutdownTimeout = 30 * time.Second
+const (
+	// defaultShutdownTimeout is used when SERVER_SHUTDOWN_TIMEOUT is unset.
+	// Keep SERVER_SHUTDOWN_TIMEOUT below the orchestrator's grace period
+	// (Docker's default is 10s), or the process is killed mid-drain.
+	defaultShutdownTimeout = 30 * time.Second
+
+	// telemetryFlushTimeout bounds the final span/metric flush. It runs on
+	// its own budget, after requests have drained, so an unreachable
+	// collector can never eat the time in-flight requests needed.
+	telemetryFlushTimeout = 5 * time.Second
+)
 
 func main() {
 	cfg, err := config.Load()
@@ -58,6 +69,7 @@ func main() {
 	defer vips.Shutdown()
 
 	logConfiguration(cfg)
+	warnWeakKeys(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -120,7 +132,15 @@ func configureTrustedProxies(cfg *config.Config) {
 // Config below matches nil's other defaults — the operation cache stays off,
 // which is right here because every proxied image is distinct — and flips
 // VectorEnabled on, which is the whole point of passing one.
+//
+// VIPS_BLOCK_UNTRUSTED is set before startup unless the operator set it: it
+// makes libvips refuse the loaders it marks as untrusted (ImageMagick, PDF,
+// matrix and friends), which falco never needs and which are the usual parser
+// attack surface. Process also has its own allowlist of input formats.
 func startVips() {
+	if _, set := os.LookupEnv("VIPS_BLOCK_UNTRUSTED"); !set {
+		_ = os.Setenv("VIPS_BLOCK_UNTRUSTED", "1")
+	}
 	vips.Startup(&vips.Config{
 		ConcurrencyLevel: 1,    // 1 thread per pipeline; CONCURRENT_WORKERS governs real parallelism
 		MaxCacheFiles:    0,    // operation cache off (unchanged from nil default)
@@ -161,7 +181,6 @@ func logConfiguration(cfg *config.Config) {
 		Int("rate_limit_rpm", cfg.Security.RateLimit.RequestsPerMinute).
 		Bool("hmac_required", cfg.Security.HMACRequired).
 		Bool("metrics_enabled", cfg.Development.EnableMetrics).
-		Bool("debug", cfg.Development.Debug).
 		Msg("Configuration loaded")
 }
 
@@ -187,6 +206,7 @@ func buildImageProcessor(cfg *config.Config) processor.ImageProcessor {
 		vp.SetMaxConcurrency(cfg.Processing.ConcurrentWorkers)
 		logger.Info().Int("max_concurrent", cfg.Processing.ConcurrentWorkers).Msg("Processing concurrency limit set")
 	}
+	vp.SetMaxPixels(int64(cfg.Processing.MaxMegapixels) * 1_000_000)
 	vp.SetWebPEffort(cfg.Processing.WebPEffort)
 	logger.Info().Int("webp_effort", cfg.Processing.WebPEffort).Msg("WebP encode effort set")
 	vp.SetCacheTTL(cfg.GetCacheTTL())
@@ -206,7 +226,7 @@ func buildCache(cfg *config.Config) processor.Cache {
 		if err != nil {
 			logger.Warn().Err(err).Msg("Failed to initialize Redis cache, falling back to LRU cache")
 		} else {
-			logger.Info().Str("redis_url", cfg.Cache.RedisURL).Msg("Redis cache initialized")
+			logger.Info().Str("redis_url", redactURL(cfg.Cache.RedisURL)).Msg("Redis cache initialized")
 			return redisCache
 		}
 	}
@@ -216,11 +236,8 @@ func buildCache(cfg *config.Config) processor.Cache {
 		return nil
 	}
 
-	// The second argument is the background sweep frequency, NOT the per-entry
-	// TTL — those are different knobs, and conflating them here is what once
-	// made CACHE_TTL_HOURS a no-op: it only ever reached this parameter and
-	// never the expiry actually used when writing an entry. The per-entry TTL
-	// is set by VipsProcessor.SetCacheTTL.
+	// The second argument is the background sweep frequency, not the per-entry
+	// TTL: that one is set by VipsProcessor.SetCacheTTL from CACHE_TTL_HOURS.
 	shardedCache := cache.NewShardedCache(cacheSize, cfg.Cache.CleanupInterval)
 	logger.Info().
 		Int("cache_size_mb", cfg.Cache.SizeMB).
@@ -231,9 +248,10 @@ func buildCache(cfg *config.Config) processor.Cache {
 
 // shutdownEverything tears the process down in order.
 //
-// Telemetry flushes first, so the spans describing the shutdown itself make it
-// out; then the server stops accepting requests; only then are the resources
-// those requests were using released.
+// The server stops accepting requests and drains the ones in flight first;
+// only then are the resources those requests were using released; telemetry
+// flushes last, so the spans of the drained requests make it out, and on its
+// own short budget.
 func shutdownEverything(
 	cfg *config.Config,
 	otelShutdown func(context.Context) error,
@@ -250,12 +268,6 @@ func shutdownEverything(
 
 	logger.Info().Msg("Initiating graceful shutdown...")
 
-	if otelShutdown != nil {
-		if err := otelShutdown(shutdownCtx); err != nil {
-			logger.Warn().Err(err).Msg("Telemetry shutdown error")
-		}
-	}
-
 	logger.Info().Msg("Phase 1: Stopping server (no new requests)")
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error().Err(err).Msg("Server shutdown error")
@@ -263,6 +275,15 @@ func shutdownEverything(
 
 	logger.Info().Msg("Phase 2: Cleaning up resources")
 	cleanupResources(shutdownCtx, storageReg, appCache)
+
+	if otelShutdown != nil {
+		logger.Info().Msg("Phase 3: Flushing telemetry")
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+		if err := otelShutdown(flushCtx); err != nil {
+			logger.Warn().Err(err).Msg("Telemetry shutdown error")
+		}
+		flushCancel()
+	}
 
 	logger.Info().Msg("Server shutdown complete")
 }
@@ -289,30 +310,29 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc) <-cha
 		}
 
 		cancel()
-		time.Sleep(50 * time.Millisecond)
+
+		// A second signal means the operator does not want to wait for the
+		// drain: honour it instead of swallowing it.
+		go func() {
+			sig := <-sigChan
+			logger.Warn().Str("signal", sig.String()).Msg("Second signal received, exiting without waiting for the drain")
+			os.Exit(1)
+		}()
 	}()
 
 	return shutdown
 }
 
-// cleanupResources performs cleanup of application resources.
-//
-// Actually waits on in-flight async replications via Registry.CloseAll, instead
-// of the fixed time.Sleep(100ms) this replaced: a sleep does not know whether
-// the work finished, it only pretends it did.
+// cleanupResources releases the process's resources. It waits on in-flight
+// async replications via Registry.CloseAll: a fixed sleep does not know
+// whether the work finished.
 func cleanupResources(ctx context.Context, storageReg *storage.Registry, appCache processor.Cache) {
-	if appCache != nil {
+	// The cache is only stopped, never cleared: the in-process LRU dies with
+	// the process anyway, and clearing a shared Redis cache would cold-start
+	// every other replica on each deploy.
+	if stopper, ok := appCache.(interface{ Stop() }); ok {
 		logger.Info().Msg("Stopping cache...")
-		if sharded, ok := appCache.(*cache.ShardedCache); ok {
-			sharded.Stop()
-		} else if lru, ok := appCache.(*cache.LRUCache); ok {
-			lru.Stop()
-		} else if redis, ok := appCache.(*cache.RedisCache); ok {
-			redis.Stop()
-		}
-		logger.Info().Msg("Clearing cache...")
-		appCache.Clear()
-		logger.Info().Msg("Cache cleanup completed")
+		stopper.Stop()
 	}
 
 	if storageReg != nil {
@@ -383,6 +403,11 @@ func initializeStorage(cfg *config.Config) (*storage.Registry, error) {
 				Str("from", from.String()).
 				Str("to", to.String()).
 				Msg("Circuit breaker state change")
+			open := 0.0
+			if to == gobreaker.StateOpen {
+				open = 1
+			}
+			metrics.Default().StorageCircuitBreakerOpen.WithLabelValues(cbName).Set(open)
 		}
 		finalBackends[name] = circuitbreaker.NewStorageBackend(primary, cbSettings)
 	}
@@ -447,4 +472,33 @@ func buildBucketBackend(bcfg config.BucketConfig) (storage.StorageBackend, error
 	}
 
 	return storage.NewStorageBackend(storageConfig)
+}
+
+// redactURL hides the password of a connection URL before it is logged.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable>"
+	}
+	return u.Redacted()
+}
+
+// minKeyLength is the shortest API key not flagged as weak. Keys are compared
+// in constant time and sign-ins are throttled, but a short key is still within
+// reach of guessing from a botnet.
+const minKeyLength = 24
+
+// warnWeakKeys logs every configured key shorter than minKeyLength. It warns
+// instead of refusing to start so that an existing deployment keeps running
+// while its keys are rotated.
+func warnWeakKeys(cfg *config.Config) {
+	if k := cfg.Security.APIKey; k != "" && len(k) < minKeyLength {
+		logger.Warn().Int("length", len(k)).Int("recommended", minKeyLength).Msg("API_KEY is short; use a longer random key")
+	}
+	for key, scope := range cfg.CollectAllKeys() {
+		if len(key) < minKeyLength {
+			logger.Warn().Str("key_name", scope.Name).Int("length", len(key)).Int("recommended", minKeyLength).
+				Msg("Scoped API key is short; use a longer random key")
+		}
+	}
 }

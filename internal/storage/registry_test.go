@@ -54,9 +54,8 @@ func TestRegistry_RegisterAliasRefusesBadInput(t *testing.T) {
 	assert.ErrorIs(t, reg.RegisterAlias("something", ""), ErrInvalidConfiguration)
 }
 
-// Canonical is what the scope check runs on, so an unknown name must come back
-// unchanged rather than being rewritten to the default. Silently canonicalising
-// it would re-create the very fallback this work removed.
+// Canonical is what the scope check runs on: an unknown name comes back
+// unchanged, never rewritten to the default.
 func TestRegistry_CanonicalLeavesUnknownNamesAlone(t *testing.T) {
 	backend := &fastBackend{}
 	reg := NewRegistry(backend)

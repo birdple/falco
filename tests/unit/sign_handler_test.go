@@ -17,11 +17,11 @@ import (
 func signHandler(t *testing.T) *handlers.Handler {
 	t.Helper()
 	cfg := testConfig()
-	// La clave va en hex y el tamaño de firma es el default real (32); con
-	// cualquiera de los dos mal, SignURL devuelve 500 y el test no probaría nada.
+	// The key is hex and the signature size is the real default (32); with
+	// either one wrong, SignURL returns 500 and the test would prove nothing.
 	cfg.Security.HMACKey = "6465616462656566303132333435363738396162636465663031323334353637"
 	cfg.Security.HMACSignatureSize = 32
-	return handlers.NewHandler(cfg, new(mocks.MockStorageBackend), new(mocks.MockImageProcessor), time.Now())
+	return handlers.NewHandler(cfg, new(mocks.MockStorageBackend), newProcessorMock(), time.Now())
 }
 
 func postSign(t *testing.T, body string) *httptest.ResponseRecorder {
@@ -33,49 +33,47 @@ func postSign(t *testing.T, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// Un error de decode y un path faltante son causas distintas y tienen que
-// reportarse distinto. Estaban colapsados en un solo `err != nil || Path == ""`,
-// así que un campo desconocido salía como "path is required" aunque el caller
-// sí hubiera mandado path — y con json/v2, que es case-sensitive y rechaza
-// campos desconocidos, ese caso pasó de inalcanzable a común.
+// A decode error and a missing path are different causes and have to be
+// reported differently: json/v2 is case-sensitive and rejects unknown fields,
+// so a caller that did send path can get a decode error.
 func TestHandleSignURL_DecodeErrorIsNotDisguisedAsMissingPath(t *testing.T) {
 	cases := []struct {
-		nombre string
-		body   string
-		codigo string
-		porQue string
+		name string
+		body string
+		code string
+		why  string
 	}{
 		{
-			nombre: "campo desconocido",
-			body:   `{"path":"/api/v1/images/abc","expires_in":600,"campo_inventado":1}`,
-			codigo: "INVALID_JSON",
-			porQue: "jsonx.Strict rechaza el documento entero; el path sí venía",
+			name: "unknown field",
+			body: `{"path":"/api/v1/images/abc","expires_in":600,"made_up_field":1}`,
+			code: "INVALID_JSON",
+			why:  "jsonx.Strict rejects the whole document; path was present",
 		},
 		{
-			nombre: "mayuscula que no coincide con el tag",
-			body:   `{"Path":"/api/v1/images/abc","expires_in":600}`,
-			codigo: "INVALID_JSON",
-			porQue: "json/v2 es case-sensitive donde v1 no lo era",
+			name: "capitalization that does not match the tag",
+			body: `{"Path":"/api/v1/images/abc","expires_in":600}`,
+			code: "INVALID_JSON",
+			why:  "json/v2 is case-sensitive where v1 was not",
 		},
 		{
-			nombre: "json malformado",
-			body:   `{"path":`,
-			codigo: "INVALID_JSON",
-			porQue: "no es un documento",
+			name: "malformed json",
+			body: `{"path":`,
+			code: "INVALID_JSON",
+			why:  "not a document",
 		},
 		{
-			nombre: "path ausente de verdad",
-			body:   `{"expires_in":600}`,
-			codigo: "INVALID_REQUEST",
-			porQue: "este sí es el caso que 'path is required' describe",
+			name: "path truly missing",
+			body: `{"expires_in":600}`,
+			code: "INVALID_REQUEST",
+			why:  "this is the case 'path is required' actually describes",
 		},
 	}
 
 	for _, c := range cases {
-		t.Run(c.nombre, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			rec := postSign(t, c.body)
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
-			assert.Contains(t, rec.Body.String(), c.codigo, c.porQue)
+			assert.Contains(t, rec.Body.String(), c.code, c.why)
 		})
 	}
 }

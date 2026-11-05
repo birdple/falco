@@ -16,19 +16,19 @@ func TestWatermarkOrigin(t *testing.T) {
 		wantX    int
 		wantY    int
 	}{
-		{"por omisión abajo a la derecha", "", baseW - overlayW - 8, baseH - overlayH - 8},
-		{"abajo a la derecha", WatermarkBottomRight, baseW - overlayW - 8, baseH - overlayH - 8},
-		{"arriba a la izquierda", WatermarkTopLeft, 8, 8},
-		{"arriba a la derecha", WatermarkTopRight, baseW - overlayW - 8, 8},
-		{"abajo a la izquierda", WatermarkBottomLeft, 8, baseH - overlayH - 8},
-		{"centrado", WatermarkCenter, (baseW - overlayW) / 2, (baseH - overlayH) / 2},
+		{"default bottom right", "", baseW - overlayW - 8, baseH - overlayH - 8},
+		{"bottom right", WatermarkBottomRight, baseW - overlayW - 8, baseH - overlayH - 8},
+		{"top left", WatermarkTopLeft, 8, 8},
+		{"top right", WatermarkTopRight, baseW - overlayW - 8, 8},
+		{"bottom left", WatermarkBottomLeft, 8, baseH - overlayH - 8},
+		{"centered", WatermarkCenter, (baseW - overlayW) / 2, (baseH - overlayH) / 2},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			x, y := watermarkOrigin(tc.position, baseW, baseH, overlayW, overlayH)
 			if x != tc.wantX || y != tc.wantY {
-				t.Fatalf("origen = (%d,%d), se esperaba (%d,%d)", x, y, tc.wantX, tc.wantY)
+				t.Fatalf("origin = (%d,%d), want (%d,%d)", x, y, tc.wantX, tc.wantY)
 			}
 		})
 	}
@@ -40,7 +40,7 @@ func TestWatermarkOrigin(t *testing.T) {
 func TestWatermarkOriginClampsToZero(t *testing.T) {
 	x, y := watermarkOrigin(WatermarkBottomRight, 100, 100, 200, 200)
 	if x != 0 || y != 0 {
-		t.Fatalf("origen = (%d,%d), se esperaba (0,0)", x, y)
+		t.Fatalf("origin = (%d,%d), want (0,0)", x, y)
 	}
 }
 
@@ -49,7 +49,7 @@ func TestWatermarkOriginClampsToZero(t *testing.T) {
 func TestWatermarkMarginFloor(t *testing.T) {
 	x, _ := watermarkOrigin(WatermarkTopLeft, 50, 50, 10, 10)
 	if x != minWatermarkMargin {
-		t.Fatalf("margen = %d, se esperaba el piso de %d", x, minWatermarkMargin)
+		t.Fatalf("margin = %d, want the floor of %d", x, minWatermarkMargin)
 	}
 }
 
@@ -63,13 +63,13 @@ func TestIsValidWatermarkPosition(t *testing.T) {
 	}
 	for _, position := range valid {
 		if !IsValidWatermarkPosition(position) {
-			t.Errorf("%q debería ser válida", position)
+			t.Errorf("%q should be valid", position)
 		}
 	}
 
 	for _, position := range []string{"", "diagonal", "TOP-LEFT", "north"} {
 		if IsValidWatermarkPosition(position) {
-			t.Errorf("%q no debería ser válida", position)
+			t.Errorf("%q should not be valid", position)
 		}
 	}
 }
@@ -87,7 +87,7 @@ func TestNormalizeAngle(t *testing.T) {
 
 	for input, want := range cases {
 		if got := normalizeAngle(input); got != want {
-			t.Errorf("normalizeAngle(%v) = %v, se esperaba %v", input, got, want)
+			t.Errorf("normalizeAngle(%v) = %v, want %v", input, got, want)
 		}
 	}
 }

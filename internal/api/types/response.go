@@ -6,7 +6,6 @@ import "time"
 type UploadResponse struct {
 	Success bool       `json:"success"`
 	Data    UploadData `json:"data"`
-	Error   *APIError  `json:"error,omitempty"`
 }
 
 // UploadData contains information about uploaded images
@@ -30,7 +29,6 @@ type Dimensions struct {
 type UpdateResponse struct {
 	Success bool           `json:"success"`
 	Updated []UpdateResult `json:"updated,omitempty"`
-	Error   *APIError      `json:"error,omitempty"`
 }
 
 // UpdateResult represents the result of updating a single image
@@ -53,16 +51,12 @@ type ListResponse struct {
 	Files       []ListItem      `json:"files,omitempty"`
 	Directories []DirectoryInfo `json:"directories,omitempty"`
 
-	// Truncated says there is more beyond what Files holds. It used to be
-	// absent, and jay's backend answered at most 1000 keys and dropped the
-	// truncation flag, so a listing of a large prefix came back short and
-	// silent. Delete already reported this; list did not.
+	// Truncated says there is more beyond what Files holds: a short listing
+	// without this flag is indistinguishable from a complete one.
 	Truncated bool `json:"truncated"`
 	// NextCursor is passed back as ?cursor= to continue. Empty means this is
 	// the last page.
 	NextCursor string `json:"next_cursor,omitempty"`
-
-	Error *APIError `json:"error,omitempty"`
 }
 
 // ListItem represents a single file in a list response

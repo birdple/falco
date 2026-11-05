@@ -21,6 +21,7 @@ import (
 	"github.com/birdple/falco/internal/pkg/logger"
 	"github.com/birdple/falco/internal/processor"
 	"github.com/birdple/falco/internal/storage"
+	"github.com/birdple/falco/internal/telemetry"
 )
 
 // negativeCacheSize / negativeCacheCleanup size the small side-cache used to
@@ -42,11 +43,9 @@ type Handler struct {
 	startTime       time.Time
 	httpClient      *http.Client
 
-	// sf deduplicates concurrent fetch-and-process work that shares the same
-	// cache key (proxy external-CDN fetches and delivery storage retrievals).
-	// Without this, N concurrent requests for the same cold image each pay
-	// their own network fetch, decode, and encode — measured as the
-	// dominant cost of a crawler burst hitting an uncached image.
+	// sf deduplicates concurrent fetch-and-process work that shares a cache
+	// key (proxy and delivery): N requests for the same cold image pay for one
+	// fetch, decode and encode.
 	sf singleflight.Group
 
 	// negativeCache remembers recent upstream fetch failures (dead links,
@@ -68,8 +67,27 @@ func NewHandler(
 		storage:        storageBackend,
 		imageProcessor: imageProc,
 		startTime:      startTime,
-		httpClient:     httputil.NewSafeHTTPClient(30 * time.Second),
+		httpClient:     newOutboundClient(),
 		negativeCache:  cache.NewLRUCache(negativeCacheSize, negativeCacheCleanup),
+	}
+}
+
+// newOutboundClient is the client for proxy, watermark and upload-by-URL
+// fetches: the SSRF-guarded client, with its transport traced so an outbound
+// fetch shows up as a child span of the request that caused it.
+func newOutboundClient() *http.Client {
+	client := httputil.NewSafeHTTPClient(outboundFetchTimeout)
+	client.Transport = telemetry.WrapTransport(client.Transport)
+	return client
+}
+
+// outboundFetchTimeout bounds every outbound fetch end to end.
+const outboundFetchTimeout = 30 * time.Second
+
+// Close stops the handler's background work.
+func (h *Handler) Close() {
+	if h.negativeCache != nil {
+		h.negativeCache.Stop()
 	}
 }
 
@@ -86,13 +104,16 @@ func (h *Handler) SetRegistry(r *storage.Registry) {
 // Callers should NOT log the same error before calling sendError; this is the
 // single place where the API error response is recorded.
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, code, message string) {
-	response := types.UploadResponse{
+	response := types.ErrorResponse{
 		Success: false,
 		Error: &types.APIError{
 			Code:    code,
 			Message: message,
 		},
 	}
+	// An error is never cacheable: without this a CDN may keep a 404 for an
+	// image that is uploaded a moment later.
+	w.Header().Set("Cache-Control", "no-store")
 
 	event := logger.Info()
 	switch {
@@ -133,12 +154,14 @@ func writeJSON(w http.ResponseWriter, statusCode int, v any) {
 	}
 }
 
-// fetchError carries enough context to reproduce the right HTTP response
-// after a singleflight.Do call returns. When several requests block on the
-// same in-flight key, only one goroutine actually runs the closure and logs
-// the failure; every other caller gets this error back and must still send
-// its own response to its own ResponseWriter — sendError is deliberately
-// NOT called from inside the closure.
+// fetchError is a failure with the HTTP response it maps to: status, API code
+// and message. Helpers that do I/O return it instead of writing the response
+// themselves.
+//
+// That matters most inside a singleflight closure: when several requests block
+// on the same in-flight key, only one goroutine runs the closure; every caller
+// gets this error back and sends its own response to its own ResponseWriter —
+// sendError is deliberately NOT called from inside the closure.
 type fetchError struct {
 	status  int
 	code    string
@@ -251,7 +274,10 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 		}
 	}
 
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d, immutable", maxAge, sMaxAge))
+	// Not "immutable": /api/v1/update replaces an object's bytes under the
+	// same key, and immutable tells browsers never to revalidate within
+	// max-age even on reload.
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", maxAge, sMaxAge))
 
 	// ETag set before ServeContent so it handles If-None-Match automatically.
 	etag := fmt.Sprintf(`"%s-%d-%d"`, metadata.ID, metadata.Size, metadata.CreatedAt.Unix())
@@ -277,8 +303,9 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	w.Header().Set("Accept-Ranges", "none")
 	w.Header().Set("Last-Modified", metadata.CreatedAt.UTC().Format(http.TimeFormat))
 
-	// Honor If-None-Match for the streaming path too (no body transfer on 304).
-	if match := r.Header.Get("If-None-Match"); match != "" && match == etag {
+	// Conditional requests on the streaming path too (no body transfer on 304),
+	// with the same rules ServeContent applies on the seekable one.
+	if notModified(r, etag, metadata.CreatedAt) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -296,34 +323,137 @@ func (h *Handler) serveImage(w http.ResponseWriter, r *http.Request, reader io.R
 	}
 }
 
-// getStorageBackendScoped resolves a storage backend and enforces scope from the request.
+// notModified evaluates If-None-Match and If-Modified-Since for a response
+// with the given ETag and modification time.
 //
-// Names are canonicalised through the registry's aliases BEFORE the scope
-// check, so one bucket is always authorized under one name. Checking the alias
-// instead would let the same bucket be reachable under one spelling and refused
-// under another, and a scope is configured in registry names — that is what the
-// panel and /stats enumerate.
+// If-None-Match takes precedence when present (RFC 9110 §13.2.2) and uses weak
+// comparison: it may list several tags, carry W/ prefixes, or be "*".
+// If-Modified-Since is only consulted without it, at one-second resolution,
+// and never for the zero/epoch time that cached renders carry.
+func notModified(r *http.Request, etag string, modified time.Time) bool {
+	if inm := r.Header.Get("If-None-Match"); inm != "" {
+		want := strings.TrimPrefix(etag, "W/")
+		for candidate := range strings.SplitSeq(inm, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "*" || strings.TrimPrefix(candidate, "W/") == want {
+				return true
+			}
+		}
+		return false
+	}
+	if ims := r.Header.Get("If-Modified-Since"); ims != "" && modified.Unix() > 0 {
+		t, err := http.ParseTime(ims)
+		return err == nil && !modified.Truncate(time.Second).After(t)
+	}
+	return false
+}
+
+// getStorageBackendScoped resolves a storage backend and enforces scope from the request.
 func (h *Handler) getStorageBackendScoped(r *http.Request, storageName, bucket string) (storage.StorageBackend, error) {
 	scope := apimw.GetScope(r.Context())
 
+	storageName, bucket, err := h.authorizeBucket(scope, storageName, bucket)
+	if err != nil {
+		return nil, err
+	}
+	return h.getStorageBackendWithScope(scope, storageName, bucket)
+}
+
+// authorizeBucket canonicalises a (storage, bucket) pair and checks it against
+// scope. It is the one place that decides which bucket a request reaches, so
+// every handler and /sign — which authorises a URL for later — answer the same
+// question the same way.
+//
+// Names are canonicalised through the registry's aliases BEFORE the check, so
+// one bucket is always authorized under one name. Checking the alias instead
+// would let the same bucket be reachable under one spelling and refused under
+// another, and a scope is configured in registry names — that is what the
+// panel and /stats enumerate.
+//
+// A request that names no bucket at all goes to the default one, and is
+// checked as such: skipping the check would let a key scoped to bucket B read,
+// write and delete in the default bucket just by leaving ?b= out.
+func (h *Handler) authorizeBucket(scope *apimw.APIScope, storageName, bucket string) (string, string, error) {
 	storageName = h.canonicalBucket(storageName)
 	bucket = h.canonicalBucket(bucket)
 
-	// Enforce bucket access (storageName is now the bucket name in the registry)
+	if scope == nil || scope.IsAdmin {
+		return storageName, bucket, nil
+	}
+
 	effectiveBucket := storageName
 	if effectiveBucket == "" {
 		effectiveBucket = bucket
 	}
-	if scope != nil && effectiveBucket != "" && !scope.CanAccessBucket(effectiveBucket) {
-		return nil, fmt.Errorf("access denied to bucket %q", effectiveBucket)
+	if effectiveBucket == "" {
+		effectiveBucket = h.defaultBucketName()
+	}
+	if !scope.CanAccessBucket(effectiveBucket) {
+		return "", "", fmt.Errorf("access denied to bucket %q", effectiveBucket)
 	}
 
 	// Enforce bucket-level access for the provider bucket override
-	if scope != nil && bucket != "" && !scope.CanAccessBucket(bucket) {
-		return nil, fmt.Errorf("access denied to bucket %q", bucket)
+	if bucket != "" && !scope.CanAccessBucket(bucket) {
+		return "", "", fmt.Errorf("access denied to bucket %q", bucket)
 	}
 
-	return h.getStorageBackendWithScope(scope, storageName, bucket)
+	return storageName, bucket, nil
+}
+
+// backendNamespace names the backend a (storage, bucket) pair resolves to, for
+// keys that must not be shared between buckets: the transform cache, the
+// singleflight that shares fetches, and the watermark cache.
+//
+// The storage key alone is not enough. "avatar" in bucket A and "avatar" in
+// bucket B are different objects, and keying the cache (and the singleflight
+// that shares fetches) on "avatar" served one tenant's image to another and let
+// either pre-warm the other's variants.
+//
+// It mirrors getStorageBackendWithScope: a named backend, optionally switched
+// to a remote bucket; a ?b= that is a registry name; a ?b= that switches the
+// default backend's remote bucket; or the default.
+func (h *Handler) backendNamespace(storageName, bucket string) string {
+	storageName = h.canonicalBucket(storageName)
+	bucket = h.canonicalBucket(bucket)
+
+	switch {
+	case storageName != "" && bucket != "":
+		return storageName + "/" + bucket
+	case storageName != "":
+		return storageName
+	case bucket != "" && h.isRegistryBucket(bucket):
+		return bucket
+	case bucket != "":
+		return h.defaultBucketName() + "/" + bucket
+	default:
+		return h.defaultBucketName()
+	}
+}
+
+// cacheObjectKey is the object key handed to the processor's cache API for a
+// storage key in a backend namespace. NUL cannot appear in either part.
+func cacheObjectKey(namespace, storageKey string) string {
+	return namespace + "\x00" + storageKey
+}
+
+// isRegistryBucket reports whether name is a registered backend.
+func (h *Handler) isRegistryBucket(name string) bool {
+	if h.storageRegistry == nil {
+		return false
+	}
+	_, err := h.storageRegistry.Get(name)
+	return err == nil
+}
+
+// defaultBucketName is the registry name requests without ?b= or ?storage= go
+// to.
+func (h *Handler) defaultBucketName() string {
+	if h.storageRegistry != nil {
+		if name := h.storageRegistry.DefaultName(); name != "" {
+			return name
+		}
+	}
+	return h.config.Storage.Default
 }
 
 // canonicalBucket maps a caller-supplied bucket name onto the registry name it
@@ -341,13 +471,8 @@ func (h *Handler) canonicalBucket(name string) string {
 }
 
 // sendStorageBackendError maps a getStorageBackendScoped failure onto the right
-// response.
-//
-// The two failures are genuinely different and used to collapse into the same
-// 403: a bucket the key may not touch is an authorization answer, while a
-// bucket that does not exist is a bad request. Reporting the second as
-// ACCESS_DENIED sent an operator looking at API-key scopes for a name that was
-// simply misspelt.
+// response: a bucket the key may not touch is a 403; a bucket that does not
+// exist is a 400, not a scope problem.
 func (h *Handler) sendStorageBackendError(w http.ResponseWriter, err error) {
 	if errors.Is(err, storage.ErrBucketNotHonoured) || errors.Is(err, storage.ErrBackendNotFound) {
 		h.sendError(w, http.StatusBadRequest, "UNKNOWN_BUCKET", err.Error())
@@ -355,6 +480,13 @@ func (h *Handler) sendStorageBackendError(w http.ResponseWriter, err error) {
 	}
 	h.sendError(w, http.StatusForbidden, "ACCESS_DENIED", err.Error())
 }
+
+// ownershipError is checkOwnership's refusal: the caller may not mutate the
+// object. Any other error it returns comes from the backend and says nothing
+// about the caller.
+type ownershipError struct{ reason string }
+
+func (e *ownershipError) Error() string { return e.reason }
 
 // checkOwnership verifies that the authenticated caller is allowed to mutate
 // the object at `key` in `backend`. Rules:
@@ -377,15 +509,9 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 		return nil
 	}
 
-	// Retrieve metadata. The storage interface has no Head-with-metadata, so
-	// we use Retrieve and immediately close the body — this matches the
-	// pattern already used in HandleUpdate's existing-size lookup.
-	body, metadata, err := backend.Retrieve(r.Context(), key)
+	metadata, err := backend.Stat(r.Context(), key)
 	if err != nil {
 		return err
-	}
-	if body != nil {
-		_ = body.Close()
 	}
 
 	storedOwner := ""
@@ -403,18 +529,18 @@ func (h *Handler) checkOwnership(r *http.Request, backend storage.StorageBackend
 			Str("key", key).
 			Str("key_name", scope.KeyName).
 			Msg("Denied mutation of legacy (unowned) image by scoped key")
-		return errors.New("image has no recorded owner; admin scope required")
+		return &ownershipError{"image has no recorded owner; admin scope required"}
 	}
 
 	if callerOwner == "" {
-		return errors.New("X-Owner-Id header is required")
+		return &ownershipError{"X-Owner-Id header is required"}
 	}
 	if callerOwner != storedOwner {
 		logger.Warn().
 			Str("key", key).
 			Str("key_name", scope.KeyName).
 			Msg("Owner mismatch on mutation attempt")
-		return errors.New("caller is not the owner of this image")
+		return &ownershipError{"caller is not the owner of this image"}
 	}
 	return nil
 }
@@ -430,10 +556,8 @@ func (h *Handler) defaultStorageType() string {
 	return "unknown"
 }
 
-// getStorageBackendWithScope is the internal resolver.
-//
-// It answers one question — which backend do the bytes of THIS request go to —
-// and it answers it in three steps, in this order:
+// getStorageBackendWithScope is the internal resolver. It answers which backend
+// the bytes of this request go to, in three steps, in this order:
 //
 //  1. The name is a registered bucket (or a declared alias for one): use that
 //     backend. This is what `?b=` means to a caller, and it is exact.
@@ -442,18 +566,13 @@ func (h *Handler) defaultStorageType() string {
 //     the switch actually happened.
 //  3. Neither: refuse with storage.ErrBucketNotHonoured.
 //
-// Step 3 is the whole point. WithBucket returns a backend rather than an error,
-// and the circuit-breaker wrapper implements it for EVERY backend by handing
-// back itself when the one underneath cannot switch — so the type assertion in
-// step 2 always succeeds and used to hide the failure. An upload naming a
-// bucket falco cannot reach was written into the default bucket, answered 201,
-// and even reported a URL carrying the bucket it never went to.
-//
-// Falling back to the default bucket is not an option that can be made safe:
-// the caller named a destination, and answering success from another one is a
-// lie whether or not the reader happens to land in the same place. A name that
-// has to keep working without being a bucket is declared as an alias — see
-// Registry.RegisterAlias.
+// Step 3 is the one that matters. WithBucket returns a backend, not an error,
+// and the circuit-breaker wrapper implements it for every backend by handing
+// back itself when the one underneath cannot switch: the type assertion in
+// step 2 always passes, so the switch has to be checked for real. Falling back
+// to the default bucket is not an option: a caller that named a destination
+// cannot get a 201 from another one. A name that has to keep working without
+// being a bucket is declared as an alias (Registry.RegisterAlias).
 func (h *Handler) getStorageBackendWithScope(scope *apimw.APIScope, storageName, bucket string) (storage.StorageBackend, error) {
 	var backend storage.StorageBackend
 

@@ -73,8 +73,6 @@ func NewServer(cfg *ServerConfig) *Server {
 	return s
 }
 
-// setupRouter configures the Chi router with middleware and routes
-// setupRouter builds the chi router: middleware stack first, then routes.
 // Router tuning knobs.
 const (
 	// requestTimeout caps how long any single request may run. Generous
@@ -90,6 +88,7 @@ const (
 	corsMaxAgeSeconds = 300
 )
 
+// setupRouter builds the chi router: middleware stack first, then routes.
 func (s *Server) setupRouter() {
 	r := chi.NewRouter()
 	s.useMiddleware(r)
@@ -199,9 +198,14 @@ func (s *Server) mountOperationalRoutes(r chi.Router) {
 	// /health/ready answers "what exactly is wrong": every registered backend,
 	// its circuit breaker, the cache, and which features are off for lack of
 	// configuration. That is the question actually asked when uploads fail
-	// while delivery still works.
-	r.Get("/health/ready", s.handler.HandleReady)
-	r.Head("/health/ready", s.handler.HandleReady)
+	// while delivery still works — and also a map of the deployment plus raw
+	// backend errors, and a probe of every backend per request, so it sits
+	// behind the admin key like /metrics. Orchestrators poll /health.
+	r.Group(func(r chi.Router) {
+		s.useAPIKeyAuth(r)
+		r.Get("/health/ready", s.handler.HandleReady)
+		r.Head("/health/ready", s.handler.HandleReady)
+	})
 
 	// Disallow all crawlers. Falco is a CDN origin for images, not indexable
 	// content.
@@ -222,15 +226,26 @@ func (s *Server) mountOperationalRoutes(r chi.Router) {
 		_, _ = w.Write(data)
 	})
 
+	// Metrics and profiles describe the process from the inside. Without an
+	// API key to put them behind they are not mounted at all, rather than
+	// mounted in the open with a warning in the log.
 	if s.config.Development.EnableMetrics {
-		r.Group(func(r chi.Router) {
-			s.useAPIKeyAuth(r)
-			r.Handle("/metrics", promhttp.Handler())
-		})
+		if s.config.Security.APIKeyRequired {
+			r.Group(func(r chi.Router) {
+				s.useAPIKeyAuth(r)
+				r.Handle("/metrics", promhttp.Handler())
+			})
+		} else {
+			logger.Error().Msg("ENABLE_METRICS is set but API_KEY_REQUIRED is not: /metrics is NOT mounted")
+		}
 	}
 
 	if s.config.Development.EnablePprof {
-		s.mountPprof(r)
+		if s.config.Security.APIKeyRequired {
+			s.mountPprof(r)
+		} else {
+			logger.Error().Msg("ENABLE_PPROF is set but API_KEY_REQUIRED is not: /debug/pprof is NOT mounted")
+		}
 	}
 }
 
@@ -258,7 +273,7 @@ func (s *Server) mountPprof(r chi.Router) {
 		// goroutineleak included — once the route hangs off /debug/pprof/.
 		r.Get("/debug/pprof/{profile}", pprof.Index)
 	})
-	logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ — do not enable in production without an API key")
+	logger.Warn().Msg("pprof endpoints enabled at /debug/pprof/ (behind the API key)")
 }
 
 // mountAPIRoutes mounts /api/v1.
@@ -269,10 +284,10 @@ func (s *Server) mountPprof(r chi.Router) {
 func (s *Server) mountAPIRoutes(r chi.Router) {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/images/*", s.handler.HandleDelivery)
-		// HEAD must answer the same headers as GET — content type, length,
-		// ETag and cache policy — so it runs the same handler and lets
-		// net/http drop the body. It costs the same work as a GET; it exists
-		// for correctness (405 was the old answer), not as a cheap probe.
+		// HEAD must answer the same headers as GET (content type, length,
+		// ETag, cache policy), so it runs the same handler and lets net/http
+		// drop the body. It costs the same work as a GET; it is not a cheap
+		// probe.
 		r.Head("/images/*", s.handler.HandleDelivery)
 		r.Get("/proxy/*", s.handler.HandleProxy)
 
@@ -284,10 +299,7 @@ func (s *Server) mountAPIRoutes(r chi.Router) {
 			r.Delete("/delete", s.handler.HandleDelete)
 			r.Post("/sign", s.handler.HandleSignURL)
 
-			// Metadata, statistics and cache control. These read state that
-			// was already computed in Go and had no route out: GetStats and
-			// GetCacheStats were reachable from nowhere, and a cache entry
-			// could only be dropped as a side effect of deleting its image.
+			// Metadata, statistics and cache control.
 			r.Get("/meta/*", s.handler.HandleObjectMeta)
 			r.Get("/stats", s.handler.HandleStats)
 			r.Get("/cache", s.handler.HandleCacheStats)
@@ -338,10 +350,10 @@ func (s *Server) setupServer() {
 		WriteTimeout:      s.config.Server.WriteTimeout,
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
-		// Topes de cabecera: falco es un CDN de imágenes de cara pública detrás
-		// from Cloudflare. MaxHeaderBytes caps the weight and
-		// MaxHeaderValueCount (Go 1.27) the count; without the latter, thousands
-		// of tiny headers stay under the byte cap and still cost parsing time.
+		// Header caps: falco is a public-facing image CDN behind Cloudflare.
+		// MaxHeaderBytes caps the weight and MaxHeaderValueCount (Go 1.27) the
+		// count; without the latter, thousands of tiny headers stay under the
+		// byte cap and still cost parsing time.
 		MaxHeaderBytes:      s.config.Server.MaxHeaderBytes,
 		MaxHeaderValueCount: s.config.Server.MaxHeaderValueCount,
 	}
@@ -357,14 +369,15 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	logger.Info().Msg("Initiating HTTP server shutdown")
 
-	shutdownCtx := ctx
-	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 30*time.Second {
-		var cancel context.CancelFunc
-		shutdownCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-	}
+	// The deadline is the caller's (SERVER_SHUTDOWN_TIMEOUT); capping it here
+	// as well made that setting ineffective above 30s.
+	err := s.server.Shutdown(ctx)
 
-	err := s.server.Shutdown(shutdownCtx)
+	// Background sweepers the handlers own. Stopped after the drain, since
+	// in-flight requests may still be using them.
+	s.uiHandler.Close()
+	s.handler.Close()
+
 	if err != nil {
 		logger.Warn().Err(err).Msg("HTTP server shutdown completed with errors")
 		return err

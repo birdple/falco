@@ -67,8 +67,7 @@ func TestPageFromListing_PagesWithCursor(t *testing.T) {
 }
 
 func TestPageFromListing_DelimiterRollsUpNestedFolders(t *testing.T) {
-	// The old dashboard split on the first "/" and dropped anything deeper, so
-	// avatars/2024/x was unreachable: no folder entry, and not in the listing.
+	// avatars/2024/x has to show up as a nested folder, not get lost.
 	all := listing("root.webp", "avatars/a.webp", "avatars/2024/deep.webp", "logos/b.webp")
 
 	page := pageFromListing(all, ListOptions{Delimiter: "/"})
@@ -85,12 +84,34 @@ func TestPageFromListing_DelimiterRollsUpNestedFolders(t *testing.T) {
 }
 
 func TestPageFromListing_PrefixIsMatchedVerbatim(t *testing.T) {
-	// S3 used to append a trailing slash and jay did not, so the same prefix
-	// listed differently depending on the backend.
 	all := listing("img.webp", "img/nested.webp")
 
 	page := pageFromListing(all, ListOptions{Prefix: "img"})
 	eq(t, "verbatim prefix", keysOf(page.Objects), []string{"img.webp", "img/nested.webp"})
+}
+
+// A folder spanning a page boundary used to come back on several pages: the
+// cursor pointed at the folder's FIRST key, so the next page resumed inside the
+// folder and rolled it up again.
+func TestPageFromListing_FolderAppearsOnceAcrossPages(t *testing.T) {
+	all := listing("a/1", "a/2", "a/3", "b", "c/1", "c/2", "d")
+
+	var prefixes, objects []string
+	cursor := ""
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("paging did not terminate")
+		}
+		page := pageFromListing(all, ListOptions{Delimiter: "/", MaxKeys: 1, Cursor: cursor})
+		prefixes = append(prefixes, page.CommonPrefixes...)
+		objects = append(objects, keysOf(page.Objects)...)
+		if !page.IsTruncated {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	eq(t, "folders", prefixes, []string{"a/", "c/"})
+	eq(t, "objects", objects, []string{"b", "d"})
 }
 
 // --- filesystem ---
@@ -163,7 +184,7 @@ func TestJayStorage_ListPage_ForwardsCursorAndDelimiter(t *testing.T) {
 	}
 	eq(t, "common prefixes", page.CommonPrefixes, []string{"pfx/sub/"})
 
-	// jay carries these on the wire and they used to be thrown away.
+	// jay carries these on the wire; they have to reach the result.
 	if page.Objects[0].ContentType != "image/webp" || page.Objects[0].ETag != "etag-a" {
 		t.Fatalf("content type / etag dropped: %+v", page.Objects[0])
 	}
@@ -173,9 +194,7 @@ func TestJayStorage_ListPage_ForwardsCursorAndDelimiter(t *testing.T) {
 }
 
 func TestJayStorage_List_FollowsPaginationBeyondOnePage(t *testing.T) {
-	// The regression this guards: List asked for one page of 1000 and dropped
-	// IsTruncated, so a bucket with more than that listed short and said
-	// nothing. 2500 keys is the smallest size that needs three pages.
+	// 2500 keys is the smallest size that needs three pages.
 	const total = 2500
 	fc := &fakeJayClient{
 		listFn: func(_ context.Context, _ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {
@@ -247,9 +266,8 @@ func TestJayStorage_List_FailsOnStalledCursor(t *testing.T) {
 }
 
 func TestJayStorage_List_FailsAtSafetyCap(t *testing.T) {
-	// The bound that keeps one request from pulling a whole bucket into RAM.
-	// What matters is that reaching it is an ERROR: a listing clipped at the cap
-	// is indistinguishable from a complete one, which is the original bug.
+	// Reaching the cap is an error: a listing clipped at the cap is
+	// indistinguishable from a complete one.
 	pages := 0
 	fc := &fakeJayClient{
 		listFn: func(_ context.Context, _ string, opts *jayclient.ListOptions) (*jayclient.ListResult, error) {

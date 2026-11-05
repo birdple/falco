@@ -3,6 +3,7 @@ package circuitbreaker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -37,27 +38,43 @@ type CircuitBreakerSettings struct {
 
 // IsBackendFailure reports whether err should count against the circuit breaker.
 //
-// A missing object is NOT a backend failure: the backend answered, correctly,
-// that the key does not exist. Counting it as one is how a screen listing a few
-// images whose rows outlived their bytes trips the breaker — and an open
-// breaker rejects every other operation on the bucket, uploads included.
+// The breaker exists for a backend that is down or unreachable. A missing
+// object and an oversized prefix are normal answers from the backend: counting
+// them would open the breaker over a handful of dangling URLs and take down
+// uploads for the whole bucket. They are reported to the caller either way;
+// they just do not count here.
 //
-// That is not hypothetical. With the default of 5 consecutive failures, a
-// client rendering a handful of dangling image URLs opened the breaker and the
-// next upload died with "circuit breaker is open" for the whole 30 s timeout —
-// a read problem taking writes down with it, and a self-sustaining one: failed
-// uploads leave more dangling URLs, which trip the breaker again.
-//
-// `ErrListingTooLarge` is here for the same reason: the backend answered, and
-// the answer is "that prefix is bigger than one listing". Five of those in a row
-// — a dashboard reloading the same oversized prefix — would otherwise open the
-// breaker and take uploads down with them.
-//
-// The breaker exists for a backend that is down or unreachable. Both of these
-// are normal answers and are reported to the caller either way; they just do not
-// count here.
+// context.Canceled is not one either: it means whoever asked stopped waiting,
+// and says nothing about the backend — five visitors closing a tab mid-image
+// would otherwise open the breaker for everyone. A DeadlineExceeded can be
+// either, so it is decided in the wrapper, which knows whose deadline ran out
+// (see execute).
 func IsBackendFailure(err error) bool {
-	return err != nil && !storage.IsNotFound(err) && !storage.IsListingTooLarge(err)
+	return err != nil && !storage.IsNotFound(err) && !storage.IsListingTooLarge(err) &&
+		!errors.Is(err, context.Canceled)
+}
+
+// abandoned marks an error the caller brought on itself by giving up — its own
+// context was cancelled or hit its deadline. It only travels from the wrapped
+// call to the breaker's IsSuccessful and is unwrapped again before the caller
+// sees the error.
+type abandoned struct{ err error }
+
+func (a *abandoned) Error() string { return a.err.Error() }
+func (a *abandoned) Unwrap() error { return a.err }
+
+// callerGaveUp reports whether err is the caller's own context ending rather
+// than the backend failing.
+//
+// The jay client wraps ctx.Err() into what it returns, hence errors.Is. A
+// DeadlineExceeded with the caller's context still alive came from a deadline
+// below it — S3's per-operation timeout, say — and that one IS the backend
+// being too slow, so it still counts.
+func callerGaveUp(ctx context.Context, err error) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // DefaultSettings returns default circuit breaker settings
@@ -99,7 +116,16 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 		Timeout:       settings.Timeout,
 		ReadyToTrip:   settings.ReadyToTrip,
 		OnStateChange: settings.OnStateChange,
-		IsSuccessful:  isSuccessful,
+		// A caller that gave up is never the backend's fault, whatever the
+		// configured IsSuccessful says. gobreaker v1 has no "neither" outcome,
+		// so it counts as a success: that resets the consecutive-failure run,
+		// which is the lesser evil next to tripping on cancellations.
+		IsSuccessful: func(err error) bool {
+			if _, ok := errors.AsType[*abandoned](err); ok {
+				return true
+			}
+			return isSuccessful(err)
+		},
 	}
 
 	return &StorageBackend{
@@ -115,16 +141,34 @@ func NewStorageBackend(backend storage.StorageBackend, settings CircuitBreakerSe
 // repeated the same unchecked type assertion — seven separate chances to panic
 // if one of them ever returned something else. Here the assertion happens once,
 // and it is checked.
-func (s *StorageBackend) execute[T any](fn func() (T, error)) (T, error) {
+//
+// ctx is the caller's context, consulted only to classify a failure: an error
+// that is the caller giving up goes to the breaker marked as abandoned, so it
+// is not held against the backend.
+//
+// When the breaker itself refuses the call — open, or half-open and already
+// probing — the error wraps storage.ErrStorageUnavailable, so callers can tell
+// "the backend is being shielded, try later" (a 503) from a failure of their
+// request, without importing gobreaker.
+func (s *StorageBackend) execute[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	var zero T
 	res, err := s.cb.Execute(func() (any, error) {
 		v, err := fn()
 		if err != nil {
+			if callerGaveUp(ctx, err) {
+				return nil, &abandoned{err: err}
+			}
 			return nil, err
 		}
 		return v, nil
 	})
 	if err != nil {
+		if a, ok := errors.AsType[*abandoned](err); ok {
+			return zero, a.err
+		}
+		if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+			return zero, fmt.Errorf("%w: %s: %w", storage.ErrStorageUnavailable, s.cb.Name(), err)
+		}
 		return zero, err
 	}
 	v, ok := res.(T)
@@ -135,23 +179,28 @@ func (s *StorageBackend) execute[T any](fn func() (T, error)) (T, error) {
 }
 
 // executeVoid runs an operation with no return value behind the breaker.
-func (s *StorageBackend) executeVoid(fn func() error) error {
-	_, err := s.cb.Execute(func() (any, error) {
-		return nil, fn()
+func (s *StorageBackend) executeVoid(ctx context.Context, fn func() error) error {
+	_, err := s.execute(ctx, func() (struct{}, error) {
+		return struct{}{}, fn()
 	})
 	return err
 }
 
 // Store stores an image with circuit breaker protection
 func (s *StorageBackend) Store(ctx context.Context, key string, data io.Reader, metadata *storage.ImageMetadata) error {
-	return s.executeVoid(func() error {
+	return s.executeVoid(ctx, func() error {
 		return s.backend.Store(ctx, key, data, metadata)
 	})
 }
 
+// Stat returns an object's metadata with circuit breaker protection
+func (s *StorageBackend) Stat(ctx context.Context, key string) (*storage.ImageMetadata, error) {
+	return s.execute(ctx, func() (*storage.ImageMetadata, error) { return s.backend.Stat(ctx, key) })
+}
+
 // Retrieve retrieves an image with circuit breaker protection
 func (s *StorageBackend) Retrieve(ctx context.Context, key string) (io.ReadCloser, *storage.ImageMetadata, error) {
-	r, err := s.execute(func() (*retrieveResult, error) {
+	r, err := s.execute(ctx, func() (*retrieveResult, error) {
 		reader, metadata, err := s.backend.Retrieve(ctx, key)
 		if err != nil {
 			return nil, err
@@ -171,27 +220,27 @@ type retrieveResult struct {
 
 // Delete deletes an image with circuit breaker protection
 func (s *StorageBackend) Delete(ctx context.Context, key string) error {
-	return s.executeVoid(func() error { return s.backend.Delete(ctx, key) })
+	return s.executeVoid(ctx, func() error { return s.backend.Delete(ctx, key) })
 }
 
 // Exists checks if an image exists with circuit breaker protection
 func (s *StorageBackend) Exists(ctx context.Context, key string) (bool, error) {
-	return s.execute(func() (bool, error) { return s.backend.Exists(ctx, key) })
+	return s.execute(ctx, func() (bool, error) { return s.backend.Exists(ctx, key) })
 }
 
 // Health checks the health of the storage with circuit breaker protection
 func (s *StorageBackend) Health(ctx context.Context) error {
-	return s.executeVoid(func() error { return s.backend.Health(ctx) })
+	return s.executeVoid(ctx, func() error { return s.backend.Health(ctx) })
 }
 
 // GetStats returns storage statistics with circuit breaker protection
 func (s *StorageBackend) GetStats(ctx context.Context) (*storage.StorageStats, error) {
-	return s.execute(func() (*storage.StorageStats, error) { return s.backend.GetStats(ctx) })
+	return s.execute(ctx, func() (*storage.StorageStats, error) { return s.backend.GetStats(ctx) })
 }
 
 // List lists objects with circuit breaker protection
 func (s *StorageBackend) List(ctx context.Context, prefix string) ([]storage.ListResult, error) {
-	return s.execute(func() ([]storage.ListResult, error) { return s.backend.List(ctx, prefix) })
+	return s.execute(ctx, func() ([]storage.ListResult, error) { return s.backend.List(ctx, prefix) })
 }
 
 // ListPage lists one page of objects with circuit breaker protection.
@@ -205,7 +254,7 @@ func (s *StorageBackend) ListPage(ctx context.Context, opts storage.ListOptions)
 	if !ok {
 		return nil, fmt.Errorf("%w: %T cannot list by page", storage.ErrUnsupportedOperation, s.backend)
 	}
-	return s.execute(func() (*storage.ListPage, error) { return pager.ListPage(ctx, opts) })
+	return s.execute(ctx, func() (*storage.ListPage, error) { return pager.ListPage(ctx, opts) })
 }
 
 // WithBucket returns a new storage backend with a different bucket
@@ -246,10 +295,41 @@ func (s *StorageBackend) IsOpen() bool {
 	return s.cb.State() == gobreaker.StateOpen
 }
 
-// Compile-time proof that the wrapper forwards the paged listing capability.
-// Losing it here would make every backend look unable to paginate, since the
-// registry hands out this wrapper and not the backend itself.
-var _ storage.PagedLister = (*StorageBackend)(nil)
+// Drain forwards to the wrapped backend when it has in-flight work to wait for
+// (storage.Drainer), and is a no-op otherwise.
+//
+// Like ListPage, this is a capability the registry can only see through the
+// wrapper: without forwarding, Registry.CloseAll found nothing to wait for and
+// a shutdown cut ReplicatedStorage's async replications short. It bypasses the
+// breaker on purpose — shutdown has to wait for that work even with the
+// breaker open.
+func (s *StorageBackend) Drain(ctx context.Context) error {
+	if d, ok := s.backend.(storage.Drainer); ok {
+		return d.Drain(ctx)
+	}
+	return nil
+}
+
+// Close forwards to the wrapped backend when it holds something to release
+// (storage.Closer) — jay's connection pool, a replicated backend's pending
+// work — and is a no-op otherwise. It bypasses the breaker for the same reason
+// Drain does.
+func (s *StorageBackend) Close(ctx context.Context) error {
+	if c, ok := s.backend.(storage.Closer); ok {
+		return c.Close(ctx)
+	}
+	return nil
+}
+
+// Compile-time proof that the wrapper forwards the capabilities the registry
+// discovers by type assertion. Losing one here would make every backend look
+// like it lacks it, since the registry hands out this wrapper and not the
+// backend itself.
+var (
+	_ storage.PagedLister = (*StorageBackend)(nil)
+	_ storage.Closer      = (*StorageBackend)(nil)
+	_ storage.Drainer     = (*StorageBackend)(nil)
+)
 
 // StateName returns the breaker state as a word: "closed", "open" or
 // "half-open".

@@ -25,7 +25,7 @@ import (
 
 func TestHandleUpload_BinarySuccess(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -68,7 +68,7 @@ func TestHandleUpload_BinarySuccess(t *testing.T) {
 
 func TestHandleDelivery_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := testConfig()
 	startTime := time.Now()
@@ -115,7 +115,7 @@ func TestHandleDelivery_Success(t *testing.T) {
 
 func TestHandleList_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 	startTime := time.Now()
@@ -143,7 +143,7 @@ func TestHandleList_Success(t *testing.T) {
 
 func TestHandleDelete_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 	startTime := time.Now()
@@ -160,14 +160,14 @@ func TestHandleDelete_Success(t *testing.T) {
 	mockStorage.On("Delete", mock.Anything, "test-key").
 		Return(nil)
 
-	// Borrar el original también tira sus variantes cacheadas.
-	mockProcessor.On("InvalidateCacheForKey", "test-key").Return(0)
-
 	w := httptest.NewRecorder()
 	h.HandleDelete(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	mockStorage.AssertExpectations(t)
+	// Deleting the original drops its cached variants too, keyed by the
+	// backend it lives in (the default one here, which has no name).
+	mockProcessor.AssertCalled(t, "InvalidateCache", []string{"\x00test-key"})
 
 	var response types.DeleteResponse
 	json.Unmarshal(w.Body.Bytes(), &response)
@@ -177,7 +177,7 @@ func TestHandleDelete_Success(t *testing.T) {
 
 func TestHandleHealth_Success(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 	startTime := time.Now()
@@ -199,7 +199,7 @@ func TestHandleHealth_Success(t *testing.T) {
 // Error case tests
 func TestHandleUpload_MissingFile(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{
 		Processing: config.ProcessingConfig{
@@ -223,7 +223,7 @@ func TestHandleUpload_MissingFile(t *testing.T) {
 
 func TestHandleDelivery_MissingID(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 	startTime := time.Now()
@@ -241,7 +241,7 @@ func TestHandleDelivery_MissingID(t *testing.T) {
 
 func TestHandleDelete_InvalidJSON(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	cfg := &config.Config{}
 	startTime := time.Now()

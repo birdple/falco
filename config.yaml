@@ -5,8 +5,8 @@ server:
   write_timeout: "30s"
   idle_timeout: "60s"
   shutdown_timeout: "30s"
-  # Topes de cabecera por request. Más ajustados que los de la stdlib
-  # (1 MiB / 500 valores) porque falco es un CDN de imágenes de cara pública.
+  # Per-request header caps, tighter than the standard library's
+  # (1 MiB / 500 values) because falco is a public-facing image CDN.
   max_header_bytes: 65536
   max_header_value_count: 100
 
@@ -85,7 +85,7 @@ processing:
   default_quality: 85
   default_format: "webp"
   concurrent_workers: 4
-  supported_formats: ["jpeg", "png", "webp"]
+  max_megapixels: 100
   max_dimensions:
     width: 4000
     height: 4000
@@ -108,6 +108,5 @@ logging:
   enable_caller: false
 
 development:
-  debug: true
   enable_pprof: false
   enable_metrics: false

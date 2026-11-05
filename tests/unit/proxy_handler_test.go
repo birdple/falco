@@ -30,7 +30,7 @@ func makeProxyRouter(t *testing.T, mockStorage *mocks.MockStorageBackend, mockPr
 // TestHandleProxy_MissingURL returns 400 when the ?url= parameter is absent.
 func TestHandleProxy_MissingURL(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
 
@@ -48,7 +48,7 @@ func TestHandleProxy_MissingURL(t *testing.T) {
 // known image extension.
 func TestHandleProxy_InvalidExtension(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	router := makeProxyRouter(t, mockStorage, mockProcessor)
 
@@ -64,7 +64,7 @@ func TestHandleProxy_InvalidExtension(t *testing.T) {
 // default allowlist (and PROXY_ALLOWED_HOSTS env var is unset).
 func TestHandleProxy_HostNotAllowed(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
 
@@ -84,7 +84,7 @@ func TestHandleProxy_HostNotAllowed(t *testing.T) {
 // Here we test the guard independently via a URL whose host resolves to loopback.
 func TestHandleProxy_PrivateHostSSRF(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
 
@@ -104,7 +104,7 @@ func TestHandleProxy_PrivateHostSSRF(t *testing.T) {
 // TestHandleProxy_InvalidAbsoluteURL returns 400 for a relative or malformed URL.
 func TestHandleProxy_InvalidAbsoluteURL(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	mockProcessor.On("GetFromCache", mock.Anything).Return([]byte(nil), false).Maybe()
 
@@ -123,13 +123,13 @@ func TestHandleProxy_InvalidAbsoluteURL(t *testing.T) {
 // We use an httptest.Server to simulate the upstream so no real network call is made.
 func TestHandleProxy_SSRFBlocksPrivateEvenIfAllowlisted(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	// Upstream fake image server.
-	// NewTestServer (Go 1.27) limpia solo al terminar el test y falla el test
-	// si el handler paniquea. Se arranca con Start() para quedarse en loopback:
-	// este test necesita justamente una IP privada (127.0.0.1) para comprobar
-	// que el guard SSRF dispara, y la red in-memory no daría una.
+	// NewTestServer (Go 1.27) cleans up on its own when the test ends and fails
+	// the test if the handler panics. It is started with Start() to stay on
+	// loopback: this test needs precisely a private IP (127.0.0.1) to check
+	// that the SSRF guard fires, and the in-memory network would not give one.
 	upstream := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/webp")
 		w.WriteHeader(http.StatusOK)
@@ -138,12 +138,8 @@ func TestHandleProxy_SSRFBlocksPrivateEvenIfAllowlisted(t *testing.T) {
 	}))
 	upstream.Start()
 
-	// Override the allowlist to permit the loopback address used by httptest.
-	// Note: httptest.Server binds to 127.0.0.1; we whitelist "127.0.0.1" AND
-	// skip the SSRF guard for this test by using the server's hostname directly.
-	// Since 127.0.0.1 is private the SSRF guard will still fire — that is
-	// intentional and correct behavior. We assert 403 from the guard here,
-	// demonstrating that the allowlist check passed but SSRF blocked it.
+	// 127.0.0.1 goes into the allowlist so the request passes that check and
+	// reaches the SSRF guard, which is what has to answer 403.
 	t.Setenv("PROXY_ALLOWED_HOSTS", "127.0.0.1")
 
 	router := makeProxyRouter(t, mockStorage, mockProcessor)

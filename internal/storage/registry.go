@@ -48,17 +48,15 @@ func (r *Registry) SetDefault(name string) error {
 // RegisterAlias makes `alias` resolve to the backend registered as `target`.
 //
 // Aliases exist because the name a client asks for and the name an operator
-// declared are configured in two different places, and nothing keeps them in
-// step: falco's bucket names come from STORAGE_BUCKET_<NAME>_* (so they cannot
-// even contain a hyphen), while every consumer hardcodes or configures its own
-// string. Before aliases the mismatch was absorbed silently — an upload naming
-// an unknown bucket landed in the default one and still answered 201. An alias
-// turns that accident into a declaration: the operator states that "birdple-dev"
-// means "jay", and anything NOT declared is refused instead of redirected.
+// declared are configured in two different places: falco's bucket names come
+// from STORAGE_BUCKET_<NAME>_* (so they cannot even contain a hyphen), while
+// every consumer brings its own string. The operator states that "birdple-dev"
+// means "jay", and anything not declared is refused instead of redirected to
+// the default bucket.
 //
 // Registering an alias over an existing backend name, or pointing one at a
-// backend that is not registered, is a configuration error and is refused here
-// rather than discovered on the first request.
+// backend that is not registered, is a configuration error and is refused
+// here rather than on the first request.
 func (r *Registry) RegisterAlias(alias, target string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -158,41 +156,51 @@ func (r *Registry) Len() int {
 	return len(r.backends)
 }
 
-// HealthAll runs health checks on all registered backends.
-// Returns a map of backend name to error (nil if healthy).
-func (r *Registry) HealthAll(ctx context.Context) map[string]error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	results := make(map[string]error, len(r.backends))
-	for name, backend := range r.backends {
-		results[name] = backend.Health(ctx)
-	}
-	return results
-}
-
-// Closer is implemented by backends that leave work in flight and have to be
-// waited on at shutdown — today, ReplicatedStorage with async targets.
+// Closer is implemented by backends that hold something to release or wait
+// for at shutdown: ReplicatedStorage (in-flight async replications) and
+// JayStorage (its connection pool).
 type Closer interface {
 	Close(ctx context.Context) error
 }
 
-// CloseAll waits on every registered backend that has pending work.
+// Drainer is implemented by backends that leave work in flight — today,
+// ReplicatedStorage with async targets. Drain waits for that work and releases
+// nothing.
+//
+// It is separate from Closer because one raw backend can sit behind several
+// registry entries: bucket B's async backup target is bucket A's own backend.
+// Closing A before B has drained would close the very connection B's in-flight
+// replications are writing through.
+type Drainer interface {
+	Drain(ctx context.Context) error
+}
+
+// CloseAll shuts every registered backend down in two passes: first it drains
+// every Drainer, so no replication is still running, and only then closes every
+// Closer.
 //
 // Returns a name → error map containing ONLY the ones that failed; empty means
-// they all finished cleanly. Backends that do not implement Closer are absent:
-// there is nothing to wait for.
+// they all finished cleanly. Backends that implement neither are absent: there
+// is nothing to wait for. A backend registered under two names (the default
+// one is) is closed twice, so Close implementations are idempotent.
 func (r *Registry) CloseAll(ctx context.Context) map[string]error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	failures := make(map[string]error)
 	for name, backend := range r.backends {
+		if drainer, ok := backend.(Drainer); ok {
+			if err := drainer.Drain(ctx); err != nil {
+				failures[name] = err
+			}
+		}
+	}
+	for name, backend := range r.backends {
 		closer, ok := backend.(Closer)
 		if !ok {
 			continue
 		}
-		if err := closer.Close(ctx); err != nil {
+		if err := closer.Close(ctx); err != nil && failures[name] == nil {
 			failures[name] = err
 		}
 	}

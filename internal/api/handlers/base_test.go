@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -84,4 +85,37 @@ func valuesOrNil(h http.Header, key string) []string {
 		return nil
 	}
 	return values
+}
+
+func TestNotModified(t *testing.T) {
+	modified := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	const etag = `"abc-10-0"`
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    bool
+	}{
+		{"no conditional headers", nil, false},
+		{"exact match", map[string]string{"If-None-Match": etag}, true},
+		{"weak match", map[string]string{"If-None-Match": `W/"abc-10-0"`}, true},
+		{"one of a list", map[string]string{"If-None-Match": `"x", "abc-10-0"`}, true},
+		{"star", map[string]string{"If-None-Match": "*"}, true},
+		{"mismatch", map[string]string{"If-None-Match": `"other"`}, false},
+		{"inm wins over ims", map[string]string{"If-None-Match": `"other"`, "If-Modified-Since": modified.Format(http.TimeFormat)}, false},
+		{"not modified since", map[string]string{"If-Modified-Since": modified.Format(http.TimeFormat)}, true},
+		{"modified since", map[string]string{"If-Modified-Since": modified.Add(-time.Hour).Format(http.TimeFormat)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			for k, v := range tc.headers {
+				r.Header.Set(k, v)
+			}
+			assert.Equal(t, tc.want, notModified(r, etag, modified))
+		})
+	}
+	// Cached renders carry the epoch; a date check against it means nothing.
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("If-Modified-Since", modified.Format(http.TimeFormat))
+	assert.False(t, notModified(r, etag, time.Unix(0, 0)))
 }

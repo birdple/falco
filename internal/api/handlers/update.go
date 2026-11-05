@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,6 +33,29 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
+	if sbErr != nil {
+		h.sendStorageBackendError(w, sbErr)
+		return
+	}
+
+	// Enforce per-image ownership BEFORE any mutation. Admin scope bypasses.
+	if ownErr := h.checkOwnership(r, storageBackend, req.Key); ownErr != nil {
+		switch denied, isDenial := errors.AsType[*ownershipError](ownErr); {
+		case isDenial:
+			h.sendError(w, http.StatusForbidden, "FORBIDDEN", denied.Error())
+		case storage.IsNotFound(ownErr):
+			h.sendError(w, http.StatusNotFound, "NOT_FOUND", "Image not found")
+		default:
+			// The backend failed to answer: not a verdict on the caller.
+			fe := retrieveFailure(ownErr)
+			h.sendError(w, fe.status, fe.code, fe.message)
+		}
+		return
+	}
+
+	// Downloaded only once the caller is known to be allowed to replace the
+	// object: an unauthorised update must not cost an outbound fetch.
 	maxSize := h.config.GetMaxFileSizeBytes()
 	// Authenticated, operator-chosen URL: no allowlist to preserve across a
 	// redirect, but the policy is stated explicitly — see downloadFromJSONBody.
@@ -44,32 +68,11 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	urlSize := int64(len(imageData))
 
-	storageBackend, sbErr := h.getStorageBackendScoped(r, req.Storage, req.Bucket)
-	if sbErr != nil {
-		h.sendStorageBackendError(w, sbErr)
-		return
-	}
-
-	// Enforce per-image ownership BEFORE any mutation. Admin scope bypasses.
-	if ownErr := h.checkOwnership(r, storageBackend, req.Key); ownErr != nil {
-		if storage.IsNotFound(ownErr) {
-			h.sendError(w, http.StatusNotFound, "NOT_FOUND", "Image not found")
-			return
-		}
-		h.sendError(w, http.StatusForbidden, "FORBIDDEN", ownErr.Error())
-		return
-	}
-
 	var existingSize int64
 	var existingOwnerID string
-	if exists, err := storageBackend.Exists(ctx, req.Key); err == nil && exists {
-		if body, metadata, err := storageBackend.Retrieve(ctx, req.Key); err == nil {
-			existingSize = metadata.Size
-			if metadata != nil {
-				existingOwnerID = metadata.OwnerID
-			}
-			_ = body.Close() // Only need metadata, close body immediately
-		}
+	if metadata, err := storageBackend.Stat(ctx, req.Key); err == nil && metadata != nil {
+		existingSize = metadata.Size
+		existingOwnerID = metadata.OwnerID
 	}
 
 	imageReader := bytes.NewReader(imageData)
@@ -105,10 +108,10 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The bytes changed but the cache key did not — it derives from key+params —
-	// so without invalidating, the old version kept being served for up to 24
-	// hours and the update looked like it had never applied.
-	h.invalidateCache(req.Key)
+	// The bytes changed but the cache key did not (it derives from key+params):
+	// without invalidating, the previous version keeps being served until its
+	// TTL expires.
+	h.invalidateCache(h.backendNamespace(req.Storage, req.Bucket), req.Key)
 
 	newSize := processedImage.Metadata.Size
 	savedBytes := existingSize - newSize

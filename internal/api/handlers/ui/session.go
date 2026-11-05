@@ -15,21 +15,24 @@ import (
 )
 
 const (
-	// sessionCookie holds an opaque session id. It replaces the old falco_key
-	// cookie, which carried the API key itself — and whose HttpOnly flag was
-	// pointless because the same key was also copied into localStorage, where
-	// any script on the page could read it.
+	// sessionCookie holds an opaque session id, never the API key: a key in a
+	// cookie or in localStorage can be read by any script on the page.
 	sessionCookie = "falco_session"
 
 	// themeCookie remembers the light/dark choice. It is read on the server so
-	// the correct theme is in the first byte of HTML: doing it from an inline
-	// script was blocked by the panel's own CSP, which allows 'unsafe-eval'
-	// (Alpine needs it) but not 'unsafe-inline'.
+	// the theme is in the first byte of HTML: an inline script is blocked by
+	// the panel's CSP, which allows 'unsafe-eval' (Alpine) but not
+	// 'unsafe-inline'.
 	themeCookie = "falco_theme"
 
 	sessionTTL     = 12 * time.Hour
 	sessionSweep   = 15 * time.Minute
 	sessionIDBytes = 32
+
+	// maxSessionsPerKey bounds how many live sessions one API key may hold.
+	// Past it the oldest is dropped, so a script logging in in a loop cannot
+	// grow the in-memory store without limit.
+	maxSessionsPerKey = 20
 )
 
 // Scope is the resolved access of a signed-in session.
@@ -48,9 +51,8 @@ func (s *Scope) CanAccessBucket(bucket string) bool {
 	if s == nil || s.IsAdmin {
 		return true
 	}
-	if len(s.Buckets) == 0 {
-		return true
-	}
+	// An empty set grants nothing. The validator refuses keys that resolve to
+	// no bucket, and this keeps the check fail-closed even if one slips past.
 	return s.Buckets[bucket]
 }
 
@@ -150,9 +152,33 @@ func (s *SessionStore) Create(apiKey string, scope *Scope) (*Session, error) {
 	}
 
 	s.mu.Lock()
+	s.evictOldestForKeyLocked(apiKey)
 	s.sessions[id] = sess
 	s.mu.Unlock()
 	return sess, nil
+}
+
+// evictOldestForKeyLocked drops the oldest sessions of apiKey until there is
+// room for one more. The caller holds s.mu.
+func (s *SessionStore) evictOldestForKeyLocked(apiKey string) {
+	for {
+		var count int
+		var oldestID string
+		var oldest time.Time
+		for id, sess := range s.sessions {
+			if sess.APIKey != apiKey {
+				continue
+			}
+			count++
+			if oldestID == "" || sess.ExpiresAt.Before(oldest) {
+				oldestID, oldest = id, sess.ExpiresAt
+			}
+		}
+		if count < maxSessionsPerKey {
+			return
+		}
+		delete(s.sessions, oldestID)
+	}
 }
 
 // Get returns a live session, or nil if it is unknown or expired.
@@ -195,16 +221,13 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// isSecureRequest reports whether the browser reached us over TLS.
+// isSecureRequest reports whether the browser reached us over TLS. It decides
+// the cookie's Secure flag: setting it over plain HTTP makes the browser drop
+// the cookie and the login bounce in a loop with no error.
 //
-// The cookie used to be written with Secure unconditionally. Over plain HTTP
-// the browser silently drops it, so /ui/auth answered {"ok":true}, the page
-// redirected to the dashboard, and the dashboard bounced straight back to the
-// login — an infinite loop with no error anywhere.
-//
-// X-Forwarded-Proto is honoured only from a trusted proxy, matching the rule
-// the rest of falco already applies to client IPs: otherwise any client could
-// claim HTTPS and have the cookie marked Secure over a plaintext hop.
+// X-Forwarded-Proto is honoured only from a trusted proxy, the same rule falco
+// applies to client IPs: otherwise any client could claim HTTPS and have the
+// cookie marked Secure over a plaintext hop.
 func isSecureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -228,14 +251,21 @@ func isSecureRequest(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
-// setSessionCookie writes the session cookie for this request's scheme.
-func setSessionCookie(w http.ResponseWriter, r *http.Request, sess *Session) {
+// secureCookies decides the Secure flag: forced by COOKIE_SECURE, otherwise
+// following the scheme the browser used. Behind a TLS proxy that is not in
+// TRUSTED_PROXIES the scheme is invisible, which is what COOKIE_SECURE is for.
+func (h *Handler) secureCookies(r *http.Request) bool {
+	return h.cfg.Security.CookieSecure || isSecureRequest(r)
+}
+
+// setSessionCookie writes the session cookie.
+func setSessionCookie(w http.ResponseWriter, sess *Session, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    sess.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isSecureRequest(r),
+		Secure:   secure,
 		// Lax rather than Strict: Strict drops the cookie when the panel is
 		// opened from a link elsewhere, which reads as a random signed-out
 		// state. CSRF is handled by the token, not by the cookie policy.
@@ -246,13 +276,13 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, sess *Session) {
 
 // clearSessionCookie expires the cookie. It has to happen server-side: the
 // cookie is HttpOnly, so scripts cannot remove it.
-func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isSecureRequest(r),
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

@@ -1,18 +1,27 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 )
 
-const redocHTML = `
-<!DOCTYPE html>
+// redocHTML is the API reference page.
+//
+// The ReDoc bundle is pinned to an exact version and carries a Subresource
+// Integrity hash, taken from the npm tarball that unpkg serves byte for byte:
+// this page is same-origin with the API, so a moved "latest" tag or a
+// compromised CDN would otherwise run arbitrary script on falco's origin.
+// To upgrade, change the version and recompute the hash from
+// https://registry.npmjs.org/redoc/-/redoc-<version>.tgz
+// (openssl dgst -sha384 -binary package/bundles/redoc.standalone.js | openssl base64 -A).
+//
+// No web fonts: ReDoc falls back to system fonts, and the page makes no
+// third-party request besides the pinned bundle.
+const redocHTML = `<!DOCTYPE html>
 <html>
 <head>
-    <title>Imagine API Docs</title>
+    <title>Falco API Docs</title>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
     <style>
         body {
             margin: 0;
@@ -22,14 +31,19 @@ const redocHTML = `
 </head>
 <body>
     <redoc spec-url='/docs/openapi.yaml'></redoc>
-    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"> </script>
+    <script src="` + redocBundleURL + `" integrity="` + redocBundleSRI + `" crossorigin="anonymous"></script>
 </body>
 </html>
 `
 
+const (
+	redocBundleURL = "https://unpkg.com/redoc@2.5.4/bundles/redoc.standalone.js"
+	redocBundleSRI = "sha384-w447zOpYfw/1Tv/5AK9NfHTlQIqE3RVR6KY62jCyy9zNDgO64cMwGGP1Fj0zJVf5"
+)
+
 // HandleDocs serves the ReDoc API documentation.
-func (h *Handler) HandleDocs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleDocs(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprint(w, redocHTML)
+	_, _ = w.Write([]byte(redocHTML))
 }

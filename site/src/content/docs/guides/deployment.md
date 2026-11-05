@@ -30,8 +30,10 @@ services:
 
       CORS_ORIGINS: https://yourdomain.com
       TRUSTED_PROXIES: 10.0.0.0/8
+      COOKIE_SECURE: "true"      # TLS ends at the proxy, not here
       LOG_FORMAT: json
       ENABLE_METRICS: "true"
+      SERVER_SHUTDOWN_TIMEOUT: 8s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
@@ -50,16 +52,18 @@ whose signing key is the empty string.
 ## Four things to get right
 
 **Turn both auth flags on.** Neither `API_KEY_REQUIRED` nor `HMAC_REQUIRED` has a
-default, and absent means false — a Falco deployed without them is open. Setting
-`API_KEY_REQUIRED=true` *forces* `HMAC_REQUIRED=true`: the startup validation
-refuses the combination where writes are protected and delivery is not, because
-an `<img>` tag cannot carry an API key. See
-[Authentication](/falco/reference/authentication/).
+default, and absent means false — a Falco deployed without them is open. The two
+go together: the startup validation refuses either one without the other,
+because an `<img>` tag cannot carry an API key and because `/sign` behind no key
+would mint signatures for anyone. Use long random keys — startup warns about any
+shorter than 24 characters. See [Authentication](/falco/reference/authentication/).
 
 **Set `TRUSTED_PROXIES`.** Empty means only loopback is trusted, and
 `X-Forwarded-For` from anywhere else is ignored — fail-closed by design. Behind
 Nginx, Traefik or an ELB, list the proxy's subnet or the per-IP rate limiter
-counts every request against the proxy instead of the client.
+counts every request against the proxy instead of the client. If TLS ends at
+that proxy, also set `COOKIE_SECURE=true`: falco cannot see the original scheme,
+and the admin panel's session cookie should still be `Secure`.
 
 **Pin the tag.** `:latest` moves on every release. `:0.13.0` and `:0.13` do not
 move backwards.
@@ -77,7 +81,11 @@ as a 431.
 
 Give the proxy a generous body limit on `/api/v1/upload` — `MAX_FILE_SIZE_MB`
 (10 by default) is what Falco itself enforces, and a proxy that cuts in lower
-turns a clear `413` from Falco into a confusing one from the proxy.
+turns a clear JSON error from Falco into a confusing one from the proxy.
+
+Keep `SERVER_SHUTDOWN_TIMEOUT` (30s by default) below the orchestrator's grace
+period — Docker's is 10s — or the process is killed mid-drain, along with any
+async backup replication still in flight.
 
 `robots.txt` disallows everything, on purpose: Falco is a CDN origin, not
 indexable content.
@@ -85,14 +93,17 @@ indexable content.
 ## Health
 
 `GET /health` needs no authentication — it is what an orchestrator polls — and
-answers with the version that is actually running:
+answers with the version and commit that are actually running:
 
 ```json
-{"status":"healthy","version":"0.13.0","uptime":"3h12m4s"}
+{"status":"healthy","version":"0.13.0","commit":"abc1234","uptime":"3h12m4s"}
 ```
 
-That version comes from the build, so it is also the fastest way to tell whether
-a deploy actually rolled out.
+Both come from the build, so this is also the fastest way to tell whether a
+deploy actually rolled out. It pings the default backend only, and answers `503`
+with `"status":"unhealthy"` when that fails. `GET /health/ready` checks every
+backend, but sits behind the admin key — see
+[Observability](/falco/reference/observability/).
 
 ## Storage on a real deployment
 

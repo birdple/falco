@@ -13,9 +13,9 @@ const defaultShardCount = 16
 type ShardedCache struct {
 	shards []*LRUCache
 	count  uint64
-	// The seed is created once. maphash.String hashes the string without
-	// copying it to a []byte and without allocating a hasher per call, which is
-	// what the previous fnv version did on EVERY Get/Set/Delete/Contains.
+	// The seed is created once. maphash.String hashes without copying to a
+	// []byte or allocating a hasher per call, and this runs on every
+	// Get/Set/Delete/Contains.
 	seed maphash.Seed
 }
 
@@ -38,7 +38,7 @@ func (sc *ShardedCache) shard(key string) *LRUCache {
 	return sc.shards[maphash.String(sc.seed, key)%sc.count]
 }
 
-// forEach corre f sobre cada shard.
+// forEach runs f on every shard.
 func (sc *ShardedCache) forEach(f func(*LRUCache)) {
 	for _, s := range sc.shards {
 		f(s)
@@ -62,7 +62,9 @@ func (sc *ShardedCache) Get(key string) ([]byte, bool) {
 	return sc.shard(key).Get(key)
 }
 
-// Set stores a value in the cache.
+// Set stores a value in the cache. The size limit that applies is the shard's
+// (maxSize / shard count), so a value larger than that is refused with
+// ErrItemTooLarge even when the cache as a whole has room.
 func (sc *ShardedCache) Set(key string, value []byte, ttl time.Duration) error {
 	return sc.shard(key).Set(key, value, ttl)
 }

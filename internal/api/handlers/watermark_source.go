@@ -105,13 +105,23 @@ func storeWatermarkInCache(source string, data []byte) {
 // Every failure here is reported. A watermark that could not be loaded must not
 // degrade into an unwatermarked image — the caller asked for one, the response
 // would not have it, and nothing in the response would say so.
-func (h *Handler) resolveWatermark(ctx context.Context, backend storage.StorageBackend, params *processor.ProcessingParams) *fetchError {
+func (h *Handler) resolveWatermark(
+	ctx context.Context, backend storage.StorageBackend, namespace string, params *processor.ProcessingParams,
+) *fetchError {
 	source := params.WatermarkSource
 	if source == "" {
 		return nil
 	}
 
-	if data, ok := watermarkFromCache(source); ok {
+	// A stored overlay is read through the image's own backend, so its cache
+	// entry is that backend's too: keyed on the source alone, "wm=logo" read
+	// from bucket A would have been handed to requests for bucket B.
+	cacheKey := source
+	if strings.HasPrefix(source, watermarkStoredPrefix) {
+		cacheKey = cacheObjectKey(namespace, source)
+	}
+
+	if data, ok := watermarkFromCache(cacheKey); ok {
 		params.WatermarkImage = data
 		return nil
 	}
@@ -129,7 +139,7 @@ func (h *Handler) resolveWatermark(ctx context.Context, backend storage.StorageB
 		return err
 	}
 
-	storeWatermarkInCache(source, data)
+	storeWatermarkInCache(cacheKey, data)
 	params.WatermarkImage = data
 	return nil
 }
@@ -195,11 +205,6 @@ func (h *Handler) watermarkFromURL(ctx context.Context, raw string) ([]byte, *fe
 		logger.Warn().Str("host", hostname).Msg("Watermark request to disallowed host")
 		return nil, &fetchError{http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED", "host is not in the watermark allowlist"}
 	}
-	if isPrivateHost(hostname) {
-		logger.Warn().Str("host", hostname).Msg("Watermark SSRF guard triggered")
-		return nil, &fetchError{http.StatusForbidden, "WATERMARK_HOST_NOT_ALLOWED", "host is not allowed"}
-	}
-
 	// Same reason as the proxy: without carrying the allowlist into the
 	// fetch, the host check above would only cover the first hop.
 	fetchCtx, cancel := context.WithTimeout(httputil.WithHostAllowlist(ctx, allowed), watermarkFetchTimeout)

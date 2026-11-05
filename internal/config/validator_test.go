@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,8 @@ func validConfig() *Config {
 			SizeMB: 256,
 		},
 		Processing: ProcessingConfig{
-			MaxFileSizeMB:    10,
-			DefaultQuality:   85,
-			SupportedFormats: []string{"jpeg", "png", "webp"},
+			MaxFileSizeMB:  10,
+			DefaultQuality: 85,
 		},
 	}
 }
@@ -190,10 +190,29 @@ func TestValidator_SubgroupBucketNotInParent(t *testing.T) {
 func TestValidator_InvalidCacheSize(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Cache.SizeMB = 0
+	cfg.Cache.SizeMB = -1
 	err := v.Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid cache size")
+}
+
+// CACHE_SIZE_MB=0 is the documented way to disable the cache, and buildCache
+// honours it — but the validator used to demand >= 1 and refuse to boot.
+func TestValidator_ZeroCacheSizeDisablesTheCache(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cache.SizeMB = 0
+	assert.NoError(t, NewValidator().Validate(cfg))
+}
+
+func TestValidator_CacheCleanupInterval(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cache.CleanupInterval = 0 // the cache falls back to its default
+	assert.NoError(t, NewValidator().Validate(cfg))
+
+	cfg.Cache.CleanupInterval = -time.Second
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cleanup interval")
 }
 
 func TestValidator_InvalidMaxFileSize(t *testing.T) {
@@ -228,13 +247,16 @@ func TestValidator_InvalidQuality(t *testing.T) {
 	}
 }
 
-func TestValidator_InvalidFormat(t *testing.T) {
+func TestValidator_InvalidDefaultFormat(t *testing.T) {
 	v := NewValidator()
 	cfg := validConfig()
-	cfg.Processing.SupportedFormats = []string{"jpeg", "bmp"}
+	cfg.Processing.DefaultFormat = "bmp"
 	err := v.Validate(cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported format")
+	assert.Contains(t, err.Error(), "unsupported default format")
+
+	cfg.Processing.DefaultFormat = "avif"
+	assert.NoError(t, v.Validate(cfg))
 }
 
 func BenchmarkValidator_ValidConfig(b *testing.B) {
@@ -266,4 +288,115 @@ func TestValidator_BoundaryQuality(t *testing.T) {
 			assert.NoError(t, v.Validate(cfg))
 		})
 	}
+}
+
+func TestValidator_HMACRequiresAPIKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Security.HMACRequired = true
+	cfg.Security.HMACKey = "aa"
+	cfg.Security.HMACKeySalt = "bb"
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "api_key_required")
+}
+
+func TestValidator_HMACMaterial(t *testing.T) {
+	secure := func() *Config {
+		cfg := validConfig()
+		cfg.Security.APIKeyRequired = true
+		cfg.Security.APIKey = "admin-key"
+		cfg.Security.HMACRequired = true
+		cfg.Security.HMACKey = "00112233"
+		cfg.Security.HMACKeySalt = "44556677"
+		return cfg
+	}
+	require.NoError(t, NewValidator().Validate(secure()))
+
+	cases := map[string]func(*Config){
+		"key not hex":      func(c *Config) { c.Security.HMACKey = "not-hex" },
+		"salt not hex":     func(c *Config) { c.Security.HMACKeySalt = "zz" },
+		"signature 1 byte": func(c *Config) { c.Security.HMACSignatureSize = 1 },
+		"signature 15":     func(c *Config) { c.Security.HMACSignatureSize = 15 },
+		"signature 33":     func(c *Config) { c.Security.HMACSignatureSize = 33 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := secure()
+			mutate(cfg)
+			assert.Error(t, NewValidator().Validate(cfg))
+		})
+	}
+	for _, size := range []int{0, 16, 32} {
+		cfg := secure()
+		cfg.Security.HMACSignatureSize = size
+		assert.NoError(t, NewValidator().Validate(cfg), "size %d", size)
+	}
+}
+
+// groupConfig has a group over {a, b} with a subgroup over {a}.
+func groupConfig(subKeyBuckets []string) *Config {
+	cfg := validConfig()
+	cfg.Storage.Buckets["a"] = BucketConfig{Type: "filesystem", Path: "/tmp/a"}
+	cfg.Storage.Buckets["b"] = BucketConfig{Type: "filesystem", Path: "/tmp/b"}
+	cfg.Storage.Groups = map[string]GroupConfig{
+		"g": {
+			Buckets: []string{"a", "b"},
+			Subgroups: map[string]SubgroupConfig{
+				"s": {
+					Buckets: []string{"a"},
+					Keys:    []GroupKeyConfig{{Name: "narrow", Key: "k-narrow", Buckets: subKeyBuckets}},
+				},
+			},
+		},
+	}
+	return cfg
+}
+
+func TestValidator_SubgroupKeyBucketOutsideSubgroup(t *testing.T) {
+	require.NoError(t, NewValidator().Validate(groupConfig([]string{"a"})))
+
+	// "b" is in the group but not in the subgroup: before this check the key
+	// resolved to an empty set, which used to mean "every bucket".
+	err := NewValidator().Validate(groupConfig([]string{"b"}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in subgroup")
+}
+
+func TestValidator_DuplicateScopedKeyValue(t *testing.T) {
+	cfg := validConfig()
+	cfg.Storage.Buckets["local"] = BucketConfig{
+		Type: "filesystem", Path: "./data/images",
+		Keys: []BucketKeyConfig{{Name: "one", Key: "same"}},
+	}
+	cfg.Storage.Buckets["other"] = BucketConfig{
+		Type: "filesystem", Path: "./data/other",
+		Keys: []BucketKeyConfig{{Name: "two", Key: "same"}},
+	}
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "same key value")
+}
+
+func TestValidator_ScopedKeyReusesAdminKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Security.APIKey = "admin"
+	cfg.Storage.Buckets["local"] = BucketConfig{
+		Type: "filesystem", Path: "./data/images",
+		Keys: []BucketKeyConfig{{Name: "one", Key: "admin"}},
+	}
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "admin API key")
+}
+
+func TestValidator_APIKeyRequiresHMAC(t *testing.T) {
+	cfg := validConfig()
+	cfg.Security.APIKeyRequired = true
+	cfg.Security.APIKey = "admin"
+	err := NewValidator().Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hmac_required")
+
+	cfg.Security.APIKey = ""
+	assert.Error(t, NewValidator().Validate(cfg), "API key required but empty")
 }

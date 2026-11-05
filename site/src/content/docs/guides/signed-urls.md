@@ -16,11 +16,19 @@ HMAC_SALT=$(openssl rand -hex 16)
 HMAC_REQUIRED=true
 HMAC_REQUIRE_EXPIRY=true
 HMAC_SIGNATURE_SIZE=32
+API_KEY_REQUIRED=true      # HMAC_REQUIRED does not start without it
+API_KEY=…
 ```
 
-With `HMAC_REQUIRED=true` the delivery route is **public by signature**: no API
-key is involved, because a browser cannot attach one to an `<img>` URL. With it
-false, delivery falls back to API key plus scope, so it is never simply open.
+With `HMAC_REQUIRED=true` the delivery route and the
+[proxy](/falco/guides/proxy/) are **public by signature**: no API key is
+involved, because a browser cannot attach one to an `<img>` URL. With it false
+they are simply open — which is why the startup validation only accepts
+`HMAC_REQUIRED` and `API_KEY_REQUIRED` together, both on or both off.
+
+The key material is checked at startup: `HMAC_KEY` and `HMAC_SALT` must be hex,
+and `HMAC_SIGNATURE_SIZE` must be `0` (the full 32 bytes) or between 16 and 32.
+Anything else stops the boot instead of turning every delivery into a `403`.
 
 :::caution[`HMAC_REQUIRE_EXPIRY` has no default on purpose]
 It is read directly from the environment, and if it is missing or unparseable
@@ -40,19 +48,32 @@ curl -X POST localhost:8080/api/v1/sign \
 
 ```json
 {
-  "signed_url": "/api/v1/images/a1b2c3d4?w=800&f=webp&exp=1789456123&sig=Yk3...",
+  "signed_url": "/api/v1/images/a1b2c3d4?exp=1789456123&f=webp&w=800&sig=Yk3...",
   "signature": "Yk3...",
   "expires_at": 1789456123
 }
 ```
 
+Use `signed_url` as returned: it carries the `exp` the signature covers, with
+the query re-encoded in sorted order. (Order does not matter to the verifier,
+which sorts too — but a URL without the signed `exp` does not verify.)
+
 `expires_in` (seconds from now) and `expires_at` (Unix seconds) are mutually
 exclusive. Give neither and the URL carries no expiry at all — which delivery
-accepts only when `HMAC_REQUIRE_EXPIRY=false`.
+accepts only when `HMAC_REQUIRE_EXPIRY=false`. An expiry more than **366 days**
+away is refused with `400 INVALID_EXPIRY`: one centuries out is no expiry at
+all, and would make `HMAC_REQUIRE_EXPIRY=true` meaningless.
 
 Signing honours the caller's scope: a key restricted to one bucket cannot sign a
 URL for another. Without that check, scoped keys would be a lock on the front
-door with the window open.
+door with the window open. The path is authorised the way delivery will resolve
+it — `?b=`, `?bucket=` and `?storage=` alike, and the default bucket when it
+names none — so a key scoped to bucket A cannot sign `?storage=B` either. Proxy
+paths (`/api/v1/proxy/…`) read no bucket, so any authenticated key may sign
+them.
+
+A path containing `#` is refused with `400 INVALID_PATH`: the server and the
+signer would disagree about where the query ends.
 
 If `HMAC_KEY` is empty, `/sign` answers `501 SIGNING_DISABLED` rather than
 handing back an unsigned path.

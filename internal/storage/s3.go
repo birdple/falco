@@ -51,8 +51,8 @@ func NewS3Storage(cfg *S3Config) (*S3Storage, error) {
 
 	// Override endpoint if provided (for MinIO, LocalStack, etc.).
 	//
-	// Via BaseEndpoint rather than EndpointResolverWithOptions: that resolver is
-	// deprecated in aws-sdk-go-v2. r2.go already used the newer form.
+	// Via BaseEndpoint rather than EndpointResolverWithOptions, which is
+	// deprecated in aws-sdk-go-v2.
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
@@ -119,9 +119,11 @@ func (s *S3Storage) Store(ctx context.Context, key string, data io.Reader, metad
 
 // Retrieve retrieves an image by key
 func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *ImageMetadata, error) {
-	// Apply operation timeout
+	// The timeout has to outlive this function: net/http reads the response
+	// body under the request's context, so cancelling it on return (a plain
+	// defer) truncates every body mid-stream. It is released when the caller
+	// closes the body instead.
 	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
-	defer cancel()
 
 	// Get object
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
@@ -130,25 +132,74 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, *I
 	})
 
 	if err != nil {
+		cancel()
 		if isNotFoundError(err) {
 			return nil, nil, ErrImageNotFound
 		}
 		return nil, nil, fmt.Errorf("failed to get object: %w", err)
 	}
 
-	// Decode metadata from S3 metadata
-	metadata, err := s.metadataEncoder.Decode(result.Metadata)
+	metadata, err := s.objectMetadata(key, result.Metadata, result.ContentType, result.ContentLength, result.ETag)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decode metadata: %w", err)
+		_ = result.Body.Close()
+		cancel()
+		return nil, nil, err
 	}
 
-	// Update metadata with S3-specific fields
-	metadata.ID = key
-	metadata.ContentType = aws.ToString(result.ContentType)
-	metadata.Size = *result.ContentLength
-	metadata.ETag = strings.Trim(aws.ToString(result.ETag), `"`)
+	return &cancelOnClose{ReadCloser: result.Body, cancel: cancel}, metadata, nil
+}
 
-	return result.Body, metadata, nil
+// cancelOnClose releases a request context when the body read under it is
+// closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
+// Stat returns an object's metadata with a HeadObject: no body is transferred.
+func (s *S3Storage) Stat(ctx context.Context, key string) (*ImageMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, s3OperationTimeout)
+	defer cancel()
+
+	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, ErrImageNotFound
+		}
+		return nil, fmt.Errorf("failed to head object: %w", err)
+	}
+
+	return s.objectMetadata(key, result.Metadata, result.ContentType, result.ContentLength, result.ETag)
+}
+
+// objectMetadata builds ImageMetadata from what GetObject and HeadObject both
+// answer, so Retrieve and Stat cannot disagree about an object.
+func (s *S3Storage) objectMetadata(key string, userMeta map[string]string, contentType *string, contentLength *int64, etag *string) (*ImageMetadata, error) {
+	metadata, err := s.metadataEncoder.Decode(userMeta)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode metadata: %w", err)
+	}
+
+	// Objects written before the encoder stored the id have none; for those
+	// the key is all there is, which is what was always used here.
+	if metadata.ID == "" {
+		metadata.ID = key
+	}
+	metadata.StorageKey = key
+	metadata.ContentType = aws.ToString(contentType)
+	metadata.Size = aws.ToInt64(contentLength)
+	metadata.ETag = strings.Trim(aws.ToString(etag), `"`)
+
+	return metadata, nil
 }
 
 // Delete deletes an image by key
@@ -234,9 +285,9 @@ func (s *S3Storage) GetStats(ctx context.Context) (*StorageStats, error) {
 
 // List returns every object under prefix, following S3 pagination.
 //
-// The prefix is matched verbatim. This used to append a trailing slash, which
-// made the same prefix list differently on S3 than on jay; directory semantics
-// are the caller's to ask for.
+// The prefix is matched verbatim, with no trailing slash added: directory
+// semantics are the caller's to ask for, and the same prefix lists the same
+// on S3 and on jay.
 func (s *S3Storage) List(ctx context.Context, prefix string) ([]ListResult, error) {
 	var results []ListResult
 

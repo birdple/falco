@@ -1,9 +1,10 @@
 // Package telemetry wires up OpenTelemetry tracing and metrics.
 //
 // This package is a near-copy across owl, auk and falco, and the copies are NOT
-// identical: auk returns early when no OTLP endpoint is configured, while owl
-// and falco initialise the exporter regardless. With no collector listening,
-// those two log "connection refused" until one appears.
+// identical: auk and falco return early when no OTLP endpoint is configured,
+// while owl initialises the exporter regardless. falco used to do the same,
+// and with no collector listening every shutdown spent its whole budget
+// trying to flush spans to localhost:4317.
 //
 // Keep that difference in mind before copying changes between them.
 package telemetry
@@ -26,8 +27,16 @@ import (
 
 // Init initializes OpenTelemetry with OTLP gRPC exporters for traces and metrics.
 // Returns a shutdown function that must be deferred by the caller.
+//
+// Without OTEL_EXPORTER_OTLP_ENDPOINT (or the traces-specific variant) it does
+// nothing and returns a no-op shutdown: telemetry is off, not pointed at a
+// default collector that is not there.
 // Non-fatal: if the collector is unreachable, the service continues without telemetry.
 func Init(ctx context.Context, serviceName string) (shutdown func(context.Context) error, err error) {
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
+		return noop, nil
+	}
+
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceNameKey.String(serviceName),

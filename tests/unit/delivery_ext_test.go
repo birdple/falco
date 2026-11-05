@@ -36,7 +36,7 @@ func makeDeliveryHandler(t *testing.T, mockStorage *mocks.MockStorageBackend, mo
 // extension and uses "webp" as the format default.
 func TestHandleDelivery_ExtWebp(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "abc123"
@@ -75,7 +75,7 @@ func TestHandleDelivery_ExtWebp(t *testing.T) {
 // TestHandleDelivery_ExtJpg checks that /images/abc123.jpg maps to "jpeg".
 func TestHandleDelivery_ExtJpg(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "abc123"
@@ -114,7 +114,7 @@ func TestHandleDelivery_ExtJpg(t *testing.T) {
 // TestHandleDelivery_ExtInvalid checks that /images/abc123.pdf returns 400.
 func TestHandleDelivery_ExtInvalid(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	router := makeDeliveryHandler(t, mockStorage, mockProcessor)
 
@@ -127,11 +127,11 @@ func TestHandleDelivery_ExtInvalid(t *testing.T) {
 	mockStorage.AssertNotCalled(t, "Retrieve", mock.Anything, mock.Anything)
 }
 
-// TestHandleDelivery_NoExt checks that /images/abc123 (no extension) still
-// works exactly as before — no format is inferred from the path.
+// TestHandleDelivery_NoExt: /images/abc123 (no extension) infers no format
+// from the path.
 func TestHandleDelivery_NoExt(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "abc123"
@@ -173,15 +173,15 @@ func TestHandleDelivery_NoExt(t *testing.T) {
 	mockStorage.AssertCalled(t, "Retrieve", mock.Anything, storageKey)
 }
 
-// TestHandleDelivery_ExtWithDirectory cubre el caso en que la extensión viene
-// sobre un id que además trae directorio: /images/fotos/abc123.webp tiene que
-// resolverse contra la clave "fotos/abc123", sin la extensión.
+// TestHandleDelivery_ExtWithDirectory covers an extension on an id that also
+// carries a directory: /images/photos/abc123.webp must resolve to the key
+// "photos/abc123", without the extension.
 func TestHandleDelivery_ExtWithDirectory(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
-	storageKey := "fotos/abc123"
+	storageKey := "photos/abc123"
 
 	mockStorage.On("Retrieve", mock.Anything, storageKey).
 		Return(io.NopCloser(bytes.NewReader(imageData)), &storage.ImageMetadata{
@@ -206,7 +206,7 @@ func TestHandleDelivery_ExtWithDirectory(t *testing.T) {
 
 	router := makeDeliveryHandler(t, mockStorage, mockProcessor)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/images/fotos/abc123.webp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/images/photos/abc123.webp", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -214,13 +214,13 @@ func TestHandleDelivery_ExtWithDirectory(t *testing.T) {
 	mockStorage.AssertCalled(t, "Retrieve", mock.Anything, storageKey)
 }
 
-// TestHandleDelivery_DotInDirectoryOnly cubre el punto que vive en el
-// directorio y no en el id: "v1.2/abc123" NO trae extensión, así que no se le
-// recorta nada y no se rechaza. Buscar el último punto sobre el path completo
-// en vez de sobre el último segmento rompe justo este caso.
+// TestHandleDelivery_DotInDirectoryOnly covers a dot that lives in the
+// directory rather than the id: "v1.2/abc123" has NO extension, so nothing is
+// trimmed and nothing is rejected. Looking for the last dot across the whole
+// path instead of the last segment breaks exactly this case.
 func TestHandleDelivery_DotInDirectoryOnly(t *testing.T) {
 	mockStorage := new(mocks.MockStorageBackend)
-	mockProcessor := new(mocks.MockImageProcessor)
+	mockProcessor := newProcessorMock()
 
 	imageData := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	storageKey := "v1.2/abc123"
