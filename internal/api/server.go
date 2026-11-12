@@ -110,6 +110,9 @@ func (s *Server) useMiddleware(r chi.Router) {
 	r.Use(apimw.RealIP)
 	r.Use(apimw.ZerologRequestLogger)
 	r.Use(middleware.Recoverer)
+	// Early on purpose: any Use middleware wraps the routing, so on the way back
+	// it already knows which route matched.
+	r.Use(routeTag)
 	r.Use(middleware.Timeout(requestTimeout))
 
 	sizeLimiter := apimw.NewRequestSizeLimiter(s.config.GetMaxFileSizeBytes() * 2)
@@ -152,6 +155,32 @@ func (s *Server) useMiddleware(r chi.Router) {
 		AllowCredentials: false,
 		MaxAge:           corsMaxAgeSeconds,
 	}))
+}
+
+// routeTag names the server span after the chi route that matched and sets
+// http.route on it.
+//
+// otelhttp wraps the router from the outside and chi copies the request while
+// routing (r.WithContext), so the r.Pattern chi does set never reaches the span
+// or the metric: without this the span is just "GET" and every {id} endpoint
+// becomes a different "transaction". Reading the pattern after next.ServeHTTP
+// and handing it to telemetry.TagRoute fixes both the span and the
+// http.server.request.duration metric.
+func routeTag(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deferred so a panicking handler — recovered further out — keeps the
+		// route name too.
+		defer func() {
+			rctx := chi.RouteContext(r.Context())
+			if rctx == nil {
+				return
+			}
+			// No route (404, 405) means an empty pattern, and TagRoute leaves the
+			// span alone rather than inventing an endpoint for it.
+			telemetry.TagRoute(r.Context(), r.Method, rctx.RoutePattern())
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // mountUIRoutes mounts the admin panel and its static assets.

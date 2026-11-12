@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/birdple/falco/internal/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -60,12 +61,16 @@ func Setup(cfg Config) {
 		}
 	}
 
+	// El OTel recibe el JSON crudo; si `writer` es el ConsoleWriter, lo
+	// formatea para stdout. MultiWriter manda los mismos bytes a ambos.
+	writer = io.MultiWriter(writer, telemetry.NewLogWriter())
+
 	ctx := zerolog.New(writer).With().Timestamp()
 	if cfg.EnableCaller {
 		ctx = ctx.Caller()
 	}
 
-	Logger = ctx.Logger().Level(level)
+	Logger = ctx.Logger().Level(level).Hook(telemetry.NewTraceHook())
 }
 
 func parseLevel(s string) zerolog.Level {
